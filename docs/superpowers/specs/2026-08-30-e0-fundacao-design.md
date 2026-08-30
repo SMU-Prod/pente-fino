@@ -44,7 +44,7 @@ pentefino/
 │   ├── db/                      schema Drizzle, migrações, withUser, client
 │   ├── core/                    domínio puro, sem I/O (inclui ports/ — só tipos)
 │   ├── adapters/                implementações das ports: local no E0, real depois
-│   ├── ai/                      lint, prompts, provider (fake no E0)
+│   ├── ai/                      lint de termos proibidos + prompts versionados
 │   ├── ui/                      tokens + preset Tailwind
 │   └── config/                  tsconfig, eslint (com a regra custom), tailwind
 └── fixtures/
@@ -137,9 +137,9 @@ Só duas coisas, ambas determinísticas:
 
 **`lint.ts`** — o lint de termos proibidos da §14.3, rodando antes de qualquer exibição. Rejeita e sinaliza para regeneração. Aceita "indevido" e "ilegal" apenas em citação de norma ou em texto de terceiro; fora disso, reprova. É `INV-004` e `INV-005`, e é implementável inteiro hoje.
 
-**`provider.ts`** — a porta `AiProvider` com a implementação de fixture.
+**`prompts/`** — o texto versionado, com a v1 do prompt de extração da §20.3, semeado na tabela `prompts` (A5).
 
-Prompts ficam na tabela `prompts` (A5). O E0 semeia a v1 do prompt de extração da §20.3.
+A porta `AiProvider` vive em `packages/core/ports` e a implementação de fixture em `packages/adapters`, como todas as outras — `packages/ai` não hospeda implementação de porta.
 
 ---
 
