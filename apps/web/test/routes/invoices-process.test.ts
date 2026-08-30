@@ -142,4 +142,48 @@ describe("POST /api/invoices/[id]/process", () => {
     const rows = await ctx.db.query.aiCalls.findMany();
     expect(rows).toHaveLength(1);
   });
+
+  // --- Finding 4: the route's catch used to test
+  // `String(error).includes("not found")`, so a genuine extraction failure
+  // whose message happened to contain those words (a provider replying
+  // "model … not found", say) was mis-reported as a 404 for an invoice that
+  // actually exists. §8 says every error is `{ error: { code, message } }`,
+  // and `extraction_failed` (422) exists in the catalogue precisely for
+  // this case.
+
+  it("returns extraction_failed (422), not a false not_found, when ingest genuinely fails with a message that contains the words \"not found\"", async () => {
+    useCookies(createCookieStore({ pf_session: signSession(sessionA, SECRET) }));
+    vi.mocked(container).mockReturnValue(
+      buildTestContainer({
+        db: ctx.db, storageRoot, mailRoot,
+        ai: { async extractInvoice() { throw new Error("model gpt-9-mini not found"); } },
+      }),
+    );
+
+    const response = await POST(request(), ctxFor(invoiceId));
+    expect(response.status).toBe(422);
+    const body = await response.json();
+    expect(body).toEqual({ error: { code: "extraction_failed", message: expect.any(String) } });
+
+    // The invoice genuinely exists and failed - not the same thing as
+    // "not found" - so it must be left in the real failed state, not queued
+    // or silently reset.
+    const [row] = await ctx.db.select().from(invoices).where(eq(invoices.id, invoiceId));
+    expect(row?.status).toBe("failed");
+  });
+
+  it("returns extraction_failed (422) for a genuine extraction failure with an unrelated message", async () => {
+    useCookies(createCookieStore({ pf_session: signSession(sessionA, SECRET) }));
+    vi.mocked(container).mockReturnValue(
+      buildTestContainer({
+        db: ctx.db, storageRoot, mailRoot,
+        ai: { async extractInvoice() { throw new Error("malformed completion from provider"); } },
+      }),
+    );
+
+    const response = await POST(request(), ctxFor(invoiceId));
+    expect(response.status).toBe(422);
+    const body = await response.json();
+    expect(body.error.code).toBe("extraction_failed");
+  });
 });

@@ -1,5 +1,6 @@
 import { cookies } from "next/headers";
 import { withUser } from "@pentefino/db";
+import { ingestErrorReason } from "@pentefino/jobs";
 import { container } from "@/lib/container.js";
 import { apiError } from "@/lib/errors.js";
 import { SESSION_COOKIE, getSessionSecret, readSession } from "@/lib/session.js";
@@ -42,13 +43,26 @@ export async function POST(_request: Request, ctx: { params: Promise<{ id: strin
     // concern (ADR-02), not something to build here.
     await queue.enqueue("ingest", { invoiceId: id }, { idempotencyKey: `ingest:${id}` });
   } catch (error) {
-    // Defense in depth: the ownership check above already guarantees the
-    // invoice row exists, so the ingest task's own "not found" throw
-    // (apps/jobs/src/tasks/ingest.ts) should be unreachable through this
-    // route today. Kept so a future race (or a caller that reaches the
-    // queue some other way) still degrades to the same not_found instead of
-    // a raw 500.
-    if (String(error).includes("not found")) return apiError("not_found");
+    // Finding 4: this used to test `String(error).includes("not found")`,
+    // which a genuine extraction failure could spoof if a provider's own
+    // message happened to contain those words (e.g. "model … not found") -
+    // returning a false not_found for an invoice that exists and merely
+    // failed. `ingestErrorReason` reads a structural tag `apps/jobs`
+    // attaches itself, so no message text is ever inspected here.
+    //
+    // - invoice_not_found: defense in depth. The ownership check above
+    //   already guarantees the invoice row exists, so this should be
+    //   unreachable through this route today; kept so a future race (or a
+    //   caller that reaches the queue some other way) still degrades to
+    //   the same not_found instead of a raw 500.
+    // - extraction_failed: the real case this route used to get wrong. The
+    //   invoice row and its `invoice_failed` event are already written
+    //   correctly by the ingest task itself - only the HTTP translation
+    //   was missing, leaving this to escape as a bare framework 500 with
+    //   `extraction_failed` (422) sitting unused in the catalogue.
+    const reason = ingestErrorReason(error);
+    if (reason === "invoice_not_found") return apiError("not_found");
+    if (reason === "extraction_failed") return apiError("extraction_failed");
     throw error;
   }
   return Response.json({ invoiceId: id, status: "queued" }, { status: 202 });

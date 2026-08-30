@@ -112,6 +112,11 @@ export const invoiceItems = pgTable("invoice_items", {
   id: text("id").primaryKey(),
   invoiceId: text("invoice_id").notNull().references(() => invoices.id, { onDelete: "cascade" }),
   lineNo: integer("line_no").notNull(),
+  // A stable hash over the item's own identity (section, description,
+  // periodRef, amount) plus an occurrence index for duplicate lines - see
+  // the unique index comment below. `lineNo` stays for ordering/display
+  // only; it is no longer part of any uniqueness constraint.
+  itemKey: text("item_key").notNull(),
   section: text("section"),
   description: text("description").notNull(),
   normalizedDesc: text("normalized_desc").notNull(),
@@ -126,12 +131,17 @@ export const invoiceItems = pgTable("invoice_items", {
   byInvoiceDesc: index("items_invoice_desc").on(t.invoiceId, t.normalizedDesc),
   trgm: index("items_desc_trgm").using("gin", sql`${t.normalizedDesc} gin_trgm_ops`),
   // Lets the ingest job re-run without deleting and reinserting a row: a
-  // line's (invoiceId, lineNo) is stable across re-extraction of the same
-  // invoice, so a rerun can UPSERT onto it instead. That matters because
-  // `findings.itemId` carries `onDelete: "cascade"` — a delete-then-reinsert
-  // strategy would silently destroy any finding already recorded against
-  // the old row the moment a step is retried.
-  uniqInvoiceLine: uniqueIndex("items_invoice_line").on(t.invoiceId, t.lineNo),
+  // line's (invoiceId, itemKey) is stable across re-extraction of the same
+  // invoice - unlike position-derived lineNo, it does not shift when a
+  // re-extraction finds a section reordered or inserted ahead of an
+  // existing one - so a rerun can UPSERT onto it instead. That matters
+  // because `findings.itemId` carries `onDelete: "cascade"` - a
+  // delete-then-reinsert strategy would silently destroy any finding
+  // already recorded against the old row the moment a step is retried, and
+  // keying on position alone (the former `(invoiceId, lineNo)` index) let a
+  // reordering rerun silently overwrite an unrelated row's content while
+  // keeping its id.
+  uniqInvoiceItemKey: uniqueIndex("items_invoice_key").on(t.invoiceId, t.itemKey),
 }));
 
 export const rules = pgTable("rules", {

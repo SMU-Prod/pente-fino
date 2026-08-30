@@ -1,4 +1,5 @@
 import { and, eq, notInArray, sql } from "drizzle-orm";
+import { createHash } from "node:crypto";
 import {
   maskCanonical, maskText, newId, normalizeDescription, runRules, validateInvoice,
 } from "@pentefino/core";
@@ -24,6 +25,59 @@ const EXTRACT_PROMPT_VERSION = 1;
 const MAX_FAILURE_MESSAGE_LENGTH = 500;
 
 type Stage = "extract" | "validate" | "persist";
+
+/**
+ * Pre-E1 fix, finding 4: every error this task throws is now tagged with a
+ * structural `reason`, so a caller (the process route) can tell "the
+ * invoice does not exist" from "extraction genuinely failed" without
+ * inspecting the message text at all. A substring test on the message - the
+ * route used to check `String(error).includes("not found")` - can be
+ * spoofed by an unrelated failure whose own text happens to contain those
+ * words (a provider replying "model … not found", say); a `reason` this
+ * module attaches itself cannot.
+ */
+export type IngestErrorReason = "invoice_not_found" | "extraction_failed";
+
+function taggedError(reason: IngestErrorReason, message: string): Error {
+  return Object.assign(new Error(message), { reason });
+}
+
+/** Reads the `reason` a `taggedError` above attached, if any. */
+export function ingestErrorReason(error: unknown): IngestErrorReason | undefined {
+  if (typeof error !== "object" || error === null || !("reason" in error)) return undefined;
+  const { reason } = error as { reason?: unknown };
+  return reason === "invoice_not_found" || reason === "extraction_failed" ? reason : undefined;
+}
+
+/**
+ * Stable identity for one invoice_items row, independent of where the item
+ * sits in `masked.sections` (pre-E1 fix, line-key stability). `lineNo` - derived
+ * purely from section/item position - used to be the upsert key, but
+ * position is not identity: a re-extraction that finds one extra section
+ * ahead of an existing one shifts every lineNo downstream, so the row that
+ * used to sit at a given lineNo would silently inherit whatever item the
+ * rerun now placed at that same lineNo, keeping its old id but acquiring a
+ * different line's content - the exact foreign-key hazard (`findings.itemId`)
+ * the upsert exists to avoid.
+ *
+ * Hashing (section, description, periodRef, amountCents) instead survives
+ * reordering, insertion, and deletion of sections/items elsewhere in the
+ * invoice. `occurrence` disambiguates two genuinely identical lines within
+ * one invoice (same section, description, periodRef and amount) - without
+ * it they would compute the same key and collide inside a single
+ * `onConflictDoUpdate` batch, which Postgres rejects outright ("ON CONFLICT
+ * DO UPDATE command cannot affect row a second time").
+ */
+function computeItemKey(
+  section: string | undefined,
+  description: string,
+  periodRef: string | undefined,
+  amountCents: number,
+  occurrence: number,
+): string {
+  const raw = [section ?? "", description, periodRef ?? "", String(amountCents), String(occurrence)].join("|");
+  return createHash("sha256").update(raw).digest("hex");
+}
 
 /**
  * extract → validate → mask → rules (PRD §9.2).
@@ -87,7 +141,7 @@ export function createIngestTask(deps: IngestDeps) {
     const invoiceId = String(payload.invoiceId);
 
     const [invoice] = await db.select().from(invoices).where(eq(invoices.id, invoiceId));
-    if (!invoice) throw new Error(`invoice ${invoiceId} not found`);
+    if (!invoice) throw taggedError("invoice_not_found", `invoice ${invoiceId} not found`);
     if (invoice.status === "analyzed") return; // A4: a completed run has no second effect
 
     // Captured as plain values, not read off `invoice` inside the closure:
@@ -155,31 +209,46 @@ export function createIngestTask(deps: IngestDeps) {
       stage = "persist";
       const masked = maskCanonical(canonical);
 
+      // Counts prior occurrences of the same (section, description,
+      // periodRef, amountCents) tuple seen so far in this pass, so two
+      // genuinely identical lines get distinct keys instead of colliding.
+      const occurrenceCounts = new Map<string, number>();
       const rows = masked.sections.flatMap((section, sectionIndex) =>
-        section.items.map((item, itemIndex) => ({
-          id: newId("itm"),
-          invoiceId,
-          lineNo: sectionIndex * 1000 + itemIndex,
-          section: section.name,
-          description: item.description,
-          normalizedDesc: normalizeDescription(item.description),
-          amountCents: item.amountCents,
-          qty: item.qty ?? null,
-          unitPriceCents: item.unitPriceCents ?? null,
-          periodRef: item.periodRef ?? null,
-          meta: item.meta ?? null,
-        })),
+        section.items.map((item, itemIndex) => {
+          const occurrenceGroupKey = [section.name ?? "", item.description, item.periodRef ?? "", item.amountCents]
+            .join("|");
+          const occurrence = occurrenceCounts.get(occurrenceGroupKey) ?? 0;
+          occurrenceCounts.set(occurrenceGroupKey, occurrence + 1);
+          return {
+            id: newId("itm"),
+            invoiceId,
+            lineNo: sectionIndex * 1000 + itemIndex,
+            itemKey: computeItemKey(section.name, item.description, item.periodRef, item.amountCents, occurrence),
+            section: section.name,
+            description: item.description,
+            normalizedDesc: normalizeDescription(item.description),
+            amountCents: item.amountCents,
+            qty: item.qty ?? null,
+            unitPriceCents: item.unitPriceCents ?? null,
+            periodRef: item.periodRef ?? null,
+            meta: item.meta ?? null,
+          };
+        }),
       );
 
       if (rows.length > 0) {
         // UPSERT, not delete-then-reinsert: `findings.itemId` carries
         // `onDelete: "cascade"`, so deleting a row a rerun is about to
         // recreate would silently take any finding pointed at it with it.
-        // Keying on (invoiceId, lineNo) - stable across re-extraction of the
-        // same invoice - lets a retry land on the same row and keep its id.
+        // Keying on (invoiceId, itemKey) - the item's own identity, stable
+        // across a re-extraction that reorders or inserts sections/items
+        // elsewhere in the invoice, unlike the position-derived lineNo this
+        // used to key on - lets a retry land on the same row and keep its
+        // id AND its own content.
         await db.insert(invoiceItems).values(rows).onConflictDoUpdate({
-          target: [invoiceItems.invoiceId, invoiceItems.lineNo],
+          target: [invoiceItems.invoiceId, invoiceItems.itemKey],
           set: {
+            lineNo: sql`excluded.line_no`,
             section: sql`excluded.section`,
             description: sql`excluded.description`,
             normalizedDesc: sql`excluded.normalized_desc`,
@@ -193,22 +262,22 @@ export function createIngestTask(deps: IngestDeps) {
         });
       }
 
-      // The upsert above only ever touches the `(invoiceId, lineNo)` pairs
+      // The upsert above only ever touches the `(invoiceId, itemKey)` pairs
       // *this* run reproduces - it inserts or updates, but nothing ever
       // deletes, so a rerun whose extraction has fewer lines than a prior
       // run left behind used to leave the extra rows in place forever,
       // permanently out of sync with `invoices.canonical`. This is a
-      // targeted delete by lineNo, not a return to blanket
+      // targeted delete by itemKey, not a return to blanket
       // delete-then-reinsert: every row this run DID reproduce was just
       // upserted above and is excluded here, so its id (and anything
-      // pointing at it) is untouched. Only a row whose line genuinely does
+      // pointing at it) is untouched. Only a row whose item genuinely does
       // not exist in the current canonical is removed - and only that row's
-      // own findings, themselves about a line that no longer exists,
+      // own findings, themselves about an item that no longer exists,
       // cascade away with it (`findings.itemId` is `onDelete: "cascade"`).
-      const currentLineNos = rows.map((row) => row.lineNo);
+      const currentItemKeys = rows.map((row) => row.itemKey);
       await db.delete(invoiceItems).where(
-        currentLineNos.length > 0
-          ? and(eq(invoiceItems.invoiceId, invoiceId), notInArray(invoiceItems.lineNo, currentLineNos))
+        currentItemKeys.length > 0
+          ? and(eq(invoiceItems.invoiceId, invoiceId), notInArray(invoiceItems.itemKey, currentItemKeys))
           : eq(invoiceItems.invoiceId, invoiceId),
       );
 
@@ -256,7 +325,13 @@ export function createIngestTask(deps: IngestDeps) {
         await tx.update(invoices).set({ status: "failed" }).where(eq(invoices.id, invoiceId));
         await recordVia(tx, "invoice_failed", { stage, message });
       });
-      throw error;
+      // Tags the original error in place - preserving its real message and
+      // stack for logs - rather than replacing it, so `ingestErrorReason`
+      // can classify it without losing anything a human debugging this
+      // would want to see.
+      throw Object.assign(error instanceof Error ? error : new Error(rawMessage), {
+        reason: "extraction_failed" satisfies IngestErrorReason,
+      });
     }
   };
 }

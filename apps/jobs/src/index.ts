@@ -1,1 +1,3 @@
-export { createIngestTask, type IngestDeps } from "./tasks/ingest.js";
+export {
+  createIngestTask, ingestErrorReason, type IngestDeps, type IngestErrorReason,
+} from "./tasks/ingest.js";

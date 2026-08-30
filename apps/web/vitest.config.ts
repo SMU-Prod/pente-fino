@@ -7,5 +7,9 @@ import { base } from "@pentefino/config/vitest.base";
 // "@/lib/..." need this to resolve the same way `next build`'s webpack does.
 export default mergeConfig(base, defineConfig({
   resolve: { alias: { "@": fileURLToPath(new URL(".", import.meta.url)) } },
-  test: { include: ["test/**/*.test.ts"] },
+  // `test/**/*.spec.ts` picks up §16.3's invariant suites
+  // (`test/invariants/*.spec.ts`); `apps/*` configs used to omit it while
+  // every `packages/*` config already carried it, so a suite added here
+  // would silently never run (finding 7).
+  test: { include: ["test/**/*.test.ts", "test/**/*.spec.ts"] },
 }));

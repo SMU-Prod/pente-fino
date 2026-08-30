@@ -5,10 +5,11 @@ import type { SignedUpload, Storage } from "@pentefino/core/ports";
 
 const TTL_MS = 5 * 60 * 1000;
 
-// Content hashes are hex/base64url digests, never arbitrary strings. Anything
+// Content hashes are hex/base64url digests and owners are ids minted by
+// newId() (nanoid's default alphabet), never arbitrary strings. Anything
 // outside this set (path separators, "..", drive letters) is rejected before
 // it can ever become part of a file key.
-const SAFE_CONTENT_HASH = /^[A-Za-z0-9_-]+$/;
+const SAFE_KEY_SEGMENT = /^[A-Za-z0-9_-]+$/;
 
 const UPLOAD_URL_PATTERN = /^local:\/\/(.+)\?exp=(\d+)&size=(\d+)&hash=([A-Za-z0-9_-]+)&sig=([0-9a-f]+)$/;
 
@@ -64,12 +65,23 @@ export function createLocalStorage(options: {
   }
 
   return {
-    async signUpload({ contentHash, mimeType, sizeBytes }): Promise<SignedUpload> {
-      if (!SAFE_CONTENT_HASH.test(contentHash)) {
+    async signUpload({ owner, contentHash, mimeType, sizeBytes }): Promise<SignedUpload> {
+      if (!SAFE_KEY_SEGMENT.test(owner)) {
+        throw new Error(`refusing unsafe owner: ${owner}`);
+      }
+      if (!SAFE_KEY_SEGMENT.test(contentHash)) {
         throw new Error(`refusing unsafe contentHash: ${contentHash}`);
       }
       const extension = mimeType === "application/pdf" ? "pdf" : "bin";
-      const fileKey = `uploads/${contentHash}.${extension}`;
+      // Scoped by owner (finding 1): RF-102 dedups per
+      // `coalesce(user_id, session_id)`, but a bare `uploads/<hash>.<ext>`
+      // key let two owners share one object on a matching hash. An E1
+      // cleanup deleting one owner's expired invoice would have deleted the
+      // other's file with it, and a caller who merely knew a hash - never
+      // having uploaded anything - could sign for it and have ingest read
+      // someone else's file into their own report. This is the key format
+      // that gets baked into R2 in E1.
+      const fileKey = `uploads/${owner}/${contentHash}.${extension}`;
       const expiresAt = now() + TTL_MS;
       const sig = sign(fileKey, expiresAt, sizeBytes, contentHash);
       pendingUploads.set(fileKey, { sizeBytes, contentHash });

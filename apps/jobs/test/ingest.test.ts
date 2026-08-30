@@ -188,6 +188,27 @@ describe("ingest task", () => {
     await expect(task()({ invoiceId: missingId })).rejects.toThrow(/not found/);
   });
 
+  // --- Pre-E1 fix, finding 4: the process route used to distinguish
+  // "invoice not found" from "extraction genuinely failed" by testing
+  // `String(error).includes("not found")` - a substring an unrelated
+  // provider failure (e.g. "model gpt-9-mini not found") could spoof into a
+  // false 404. Both thrown errors must instead carry a typed, structural
+  // `reason` the route can check without reading message text at all.
+
+  it("tags a missing invoice's error with reason invoice_not_found", async () => {
+    const missingId = newId("inv");
+    await expect(task()({ invoiceId: missingId })).rejects.toMatchObject({ reason: "invoice_not_found" });
+  });
+
+  it("tags a genuine extraction failure with reason extraction_failed, even when its message contains the words \"not found\"", async () => {
+    const failing = createIngestTask({
+      db: ctx.db,
+      storage: createLocalStorage({ root, secret: "s" }),
+      ai: { async extractInvoice() { throw new Error("model gpt-9-mini not found"); } },
+    });
+    await expect(failing({ invoiceId })).rejects.toMatchObject({ reason: "extraction_failed" });
+  });
+
   it("marks the invoice failed and records an event when extraction throws (A8)", async () => {
     const failing = createIngestTask({
       db: ctx.db,
@@ -298,7 +319,13 @@ describe("ingest task", () => {
     expect(after.map((i) => i.id)).toContain(survivingId);
   });
 
-  it("keeps the same rows, with updated content, when a rerun reproduces the same number of items (idempotency)", async () => {
+  // Pre-E1 fix, line-key stability: identity is now (section, description,
+  // periodRef, amountCents), not position - so "same rows, updated content"
+  // only holds when a rerun changes a field that is NOT part of that
+  // identity. `meta` is exactly that: masked and persisted, but not part of
+  // the key. (A rerun that changes the *description* is a different,
+  // deliberate case - see the "replaces the row" test right below.)
+  it("keeps the same rows, with updated non-identity content, when a rerun reproduces the same items (idempotency)", async () => {
     await task()({ invoiceId });
     const before = await ctx.db.select().from(invoiceItems).where(eq(invoiceItems.invoiceId, invoiceId));
     expect(before).toHaveLength(2);
@@ -306,7 +333,38 @@ describe("ingest task", () => {
 
     await ctx.db.update(invoices).set({ status: "validating" }).where(eq(invoices.id, invoiceId));
 
-    const relabelled: InvoiceCanonical = {
+    const withMeta: InvoiceCanonical = {
+      ...canonical,
+      sections: [{
+        name: "Serviços",
+        items: [
+          { description: "Plano pós-pago", amountCents: 9000, meta: { linha: "11999999999" } },
+          { description: "Titular CPF 123.456.789-09", amountCents: 1000 },
+        ],
+      }],
+    };
+    const rerun = createIngestTask({
+      db: ctx.db,
+      storage: createLocalStorage({ root, secret: "s" }),
+      ai: createFixtureAiProvider({ [fileKey]: withMeta }),
+    });
+    await rerun({ invoiceId });
+
+    const after = await ctx.db.select().from(invoiceItems).where(eq(invoiceItems.invoiceId, invoiceId));
+    expect(after).toHaveLength(2);
+    expect(after.map((i) => i.id).sort()).toEqual(idsBefore);
+    expect(after.find((i) => i.description === "Plano pós-pago")?.meta).toEqual({ linha: "11999999999" });
+  });
+
+  it("replaces the row instead of editing it in place when a rerun changes an item's description, because identity is content, not position", async () => {
+    await task()({ invoiceId });
+    const before = await ctx.db.select().from(invoiceItems).where(eq(invoiceItems.invoiceId, invoiceId));
+    const planBefore = before.find((i) => i.description.startsWith("Plano"));
+    expect(planBefore).toBeDefined();
+
+    await ctx.db.update(invoices).set({ status: "validating" }).where(eq(invoices.id, invoiceId));
+
+    const renamed: InvoiceCanonical = {
       ...canonical,
       sections: [{
         name: "Serviços",
@@ -319,14 +377,86 @@ describe("ingest task", () => {
     const rerun = createIngestTask({
       db: ctx.db,
       storage: createLocalStorage({ root, secret: "s" }),
-      ai: createFixtureAiProvider({ [fileKey]: relabelled }),
+      ai: createFixtureAiProvider({ [fileKey]: renamed }),
     });
     await rerun({ invoiceId });
 
     const after = await ctx.db.select().from(invoiceItems).where(eq(invoiceItems.invoiceId, invoiceId));
     expect(after).toHaveLength(2);
-    expect(after.map((i) => i.id).sort()).toEqual(idsBefore);
+    // The old row's own id is gone - a description edit is, by design,
+    // indistinguishable from "this line was removed and a new one added".
+    expect(after.map((i) => i.id)).not.toContain(planBefore!.id);
     expect(after.some((i) => i.description === "Plano pós-pago renovado")).toBe(true);
+  });
+
+  // --- Pre-E1 fix, line-key stability: `lineNo = sectionIndex * 1000 +
+  // itemIndex` used to be the upsert key. It is only stable while section
+  // and item ordering never changes between re-extractions of the same
+  // invoice - a re-extraction that finds one extra section ahead of an
+  // existing one shifts every lineNo downstream. Because the upsert target
+  // was (invoiceId, lineNo), the row that used to sit at a given lineNo kept
+  // its id but silently inherited whatever item the rerun now placed at that
+  // same lineNo - exactly the foreign-key hazard (`findings.itemId`) the
+  // upsert exists to avoid. The row must instead be keyed on the item's own
+  // identity, so it survives reordering with both its id AND its own content
+  // intact.
+
+  it("keeps an existing item's id pointed at its own content when a re-extraction inserts a new section ahead of it", async () => {
+    await task()({ invoiceId });
+    const before = await ctx.db.select().from(invoiceItems).where(eq(invoiceItems.invoiceId, invoiceId));
+    const plan = before.find((i) => i.description.startsWith("Plano"));
+    expect(plan).toBeDefined();
+    const planId = plan!.id;
+
+    await ctx.db.update(invoices).set({ status: "validating" }).where(eq(invoices.id, invoiceId));
+
+    // A brand-new section ahead of "Serviços" pushes it from sectionIndex 0
+    // to 1, shifting every lineNo the old formula would have computed for it.
+    const shifted: InvoiceCanonical = {
+      ...canonical,
+      totalCents: canonical.totalCents + 500,
+      sections: [
+        { name: "Descontos", items: [{ description: "Desconto fidelidade", amountCents: 500 }] },
+        ...canonical.sections,
+      ],
+    };
+    const rerun = createIngestTask({
+      db: ctx.db,
+      storage: createLocalStorage({ root, secret: "s" }),
+      ai: createFixtureAiProvider({ [fileKey]: shifted }),
+    });
+    await rerun({ invoiceId });
+
+    const [afterRow] = await ctx.db.select().from(invoiceItems).where(eq(invoiceItems.id, planId));
+    expect(afterRow?.description).toBe("Plano pós-pago");
+    expect(afterRow?.amountCents).toBe(9000);
+
+    const items = await ctx.db.select().from(invoiceItems).where(eq(invoiceItems.invoiceId, invoiceId));
+    expect(items).toHaveLength(3);
+  });
+
+  it("keeps two genuinely identical lines in one invoice as distinct rows instead of colliding on one key", async () => {
+    const duplicateLines: InvoiceCanonical = {
+      ...canonical,
+      totalCents: 2000,
+      sections: [{
+        name: "Serviços",
+        items: [
+          { description: "Chamada local", amountCents: 1000 },
+          { description: "Chamada local", amountCents: 1000 },
+        ],
+      }],
+    };
+    const withDuplicates = createIngestTask({
+      db: ctx.db,
+      storage: createLocalStorage({ root, secret: "s" }),
+      ai: createFixtureAiProvider({ [fileKey]: duplicateLines }),
+    });
+    await withDuplicates({ invoiceId });
+
+    const items = await ctx.db.select().from(invoiceItems).where(eq(invoiceItems.invoiceId, invoiceId));
+    expect(items).toHaveLength(2);
+    expect(new Set(items.map((i) => i.id)).size).toBe(2);
   });
 
   // --- Finding 2: a status change and its event must land together or not

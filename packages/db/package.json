@@ -12,12 +12,12 @@
     "db:generate": "drizzle-kit generate"
   },
   "dependencies": {
+    "@electric-sql/pglite": "^0.2.15",
     "@pentefino/core": "workspace:*",
     "drizzle-orm": "^0.38.3",
     "postgres": "^3.4.5"
   },
   "devDependencies": {
-    "@electric-sql/pglite": "^0.2.15",
     "@pentefino/config": "workspace:*",
     "@types/node": "^22.10.5",
     "drizzle-kit": "^0.30.1",

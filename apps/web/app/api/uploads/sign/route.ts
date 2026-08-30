@@ -88,7 +88,11 @@ export async function POST(request: Request) {
   // holds trivially for a repeat sign - the guard below only decides whether
   // a second invoice row and a second invoice_uploaded event are created.
   const already = (await scoped.invoices()).find((row) => row.contentHash === contentHash);
-  const signed = await storage.signUpload({ contentHash, mimeType, sizeBytes });
+  // owner: sessionId - the same identifier the dedup check right above uses,
+  // and RF-102's `coalesce(user_id, session_id)` index keys on - so the
+  // minted storage key is scoped to this session and can never collide with
+  // another owner's object for the same content hash (finding 1).
+  const signed = await storage.signUpload({ owner: sessionId, contentHash, mimeType, sizeBytes });
   const invoiceId = already?.id ?? await scoped.insertInvoice({
     contentHash,
     source: mimeType === "application/pdf" ? "pdf_text" : "photo",

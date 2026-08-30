@@ -181,7 +181,7 @@ describe("schema", () => {
 
     const itemId = newId("itm");
     await ctx.db.insert(invoiceItems).values({
-      id: itemId, invoiceId, lineNo: 1, description: "item", normalizedDesc: "item",
+      id: itemId, invoiceId, lineNo: 1, itemKey: "test-item-key", description: "item", normalizedDesc: "item",
       amountCents: 100,
     });
 

@@ -52,13 +52,15 @@ const FIXTURE_PATH = fileURLToPath(
 const fixture = JSON.parse(readFileSync(FIXTURE_PATH, "utf8"));
 
 // Stand-in upload bytes ("%PDF"). `createLocalStorage`'s `signUpload()`
-// derives the fileKey deterministically from the content hash
-// (`uploads/<hash>.<ext>`, see packages/adapters/src/storage/local.ts), so
-// the exact key the sign route will mint can be computed ahead of time and
-// used to register the AI fixture before any route runs.
+// now scopes the fileKey by owner (`uploads/<owner>/<hash>.<ext>`, finding 1
+// - see packages/adapters/src/storage/local.ts), and for a brand-new visitor
+// the owner is a session id the sign route mints itself, so the exact key
+// can no longer be computed ahead of time. The AI fixture is registered
+// against `fixtures`, a plain object the container closes over by reference
+// (see createFixtureAiProvider), once the real fileKey comes back from the
+// sign response instead.
 const FILE_BYTES = new Uint8Array([37, 80, 68, 70]);
 const FILE_HASH = createHash("sha256").update(FILE_BYTES).digest("hex");
-const FILE_KEY = `uploads/${FILE_HASH}.pdf`;
 
 // RF-140: anonymous sessions live for 30 days. `invoices.session_id` carries
 // a real foreign key to `anonymous_sessions.id`, so the session row must
@@ -68,14 +70,20 @@ const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 let ctx: TestDb;
 let storageRoot: string;
 let mailRoot: string;
+// Mutated by the acceptance test once the real (owner-scoped) fileKey comes
+// back from the sign route - `createFixtureAiProvider` reads from this same
+// object by reference at call time, not at construction time, so mutating it
+// after `buildTestContainer` already ran still reaches the ai adapter below.
+let fixtures: Record<string, unknown>;
 
 beforeEach(async () => {
   process.env.SESSION_SIGNING_SECRET = SECRET;
   ctx = await createTestDb();
   storageRoot = mkdtempSync(join(tmpdir(), "pf-e2e-storage-"));
   mailRoot = mkdtempSync(join(tmpdir(), "pf-e2e-mail-"));
+  fixtures = {};
   vi.mocked(container).mockReturnValue(
-    buildTestContainer({ db: ctx.db, storageRoot, mailRoot, fixtures: { [FILE_KEY]: fixture } }),
+    buildTestContainer({ db: ctx.db, storageRoot, mailRoot, fixtures }),
   );
 });
 
@@ -110,10 +118,15 @@ describe("E0 acceptance · a fixture invoice crosses the empty pipeline", () => 
     }));
     expect(signResponse.status).toBe(200);
     const signed = await signResponse.json();
-    expect(signed.fileKey).toBe(FILE_KEY);
+    // Owner-scoped (finding 1): the real key is `uploads/<sessionId>/<hash>.pdf`,
+    // and the session id is minted by the route itself for a brand-new
+    // visitor, so it is only known now - not before this request ran.
+    expect(signed.fileKey).toMatch(new RegExp(`^uploads/ses_[^/]+/${FILE_HASH}\\.pdf$`));
     const invoiceId: string = signed.invoiceId;
     // The cookie a real browser would carry into every request that follows.
     expect(store.has("pf_session")).toBe(true);
+
+    fixtures[signed.fileKey] = fixture;
 
     // 2 · the bytes land in storage. A client would PUT them straight to the
     // signed URL (R2 in production) - E0 exposes no app route for that step,
@@ -210,7 +223,7 @@ describe("E0 acceptance · a fixture invoice crosses the empty pipeline", () => 
 
     const storage = createLocalStorage({ root: storageRoot, secret: "s" });
     const signed = await storage.signUpload({
-      contentHash: FILE_HASH, mimeType: "application/pdf", sizeBytes: FILE_BYTES.length,
+      owner: sessionId, contentHash: FILE_HASH, mimeType: "application/pdf", sizeBytes: FILE_BYTES.length,
     });
     await storage.put(signed.fileKey, FILE_BYTES);
     const invoiceId = await scoped.insertInvoice({
@@ -258,7 +271,7 @@ describe("E0 acceptance · a fixture invoice crosses the empty pipeline", () => 
 
     const storage = createLocalStorage({ root: storageRoot, secret: "s" });
     const signed = await storage.signUpload({
-      contentHash: FILE_HASH, mimeType: "application/pdf", sizeBytes: FILE_BYTES.length,
+      owner: sessionId, contentHash: FILE_HASH, mimeType: "application/pdf", sizeBytes: FILE_BYTES.length,
     });
     await storage.put(signed.fileKey, FILE_BYTES);
     const invoiceId = await scoped.insertInvoice({

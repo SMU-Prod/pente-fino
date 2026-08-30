@@ -1,5 +1,5 @@
 {
-  "id": "d86e2dad-b84c-43b2-aff3-211a36a37d24",
+  "id": "5e3f2ca6-82e3-41d5-a29b-07a17def418b",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -1141,6 +1141,12 @@
           "primaryKey": false,
           "notNull": true
         },
+        "item_key": {
+          "name": "item_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
         "section": {
           "name": "section",
           "type": "text",
@@ -1239,6 +1245,27 @@
           "isUnique": false,
           "concurrently": false,
           "method": "gin",
+          "with": {}
+        },
+        "items_invoice_key": {
+          "name": "items_invoice_key",
+          "columns": [
+            {
+              "expression": "invoice_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "item_key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
           "with": {}
         }
       },

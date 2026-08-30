@@ -1,4 +1,5 @@
 import type { Database } from "@pentefino/db";
+import type { AiProvider } from "@pentefino/core/ports";
 import {
   createFixtureAiProvider, createInProcessQueue, createLocalMailer, createLocalStorage, type TaskHandler,
 } from "@pentefino/adapters";
@@ -19,11 +20,16 @@ export function buildTestContainer(options: {
   storageRoot: string;
   mailRoot: string;
   fixtures?: Record<string, unknown>;
+  // Lets a test inject a provider that fails in an arbitrary, controlled
+  // way (finding 4) - `fixtures` alone can only produce the fixture
+  // provider's own fixed "no fixture registered" message, never a message
+  // shaped like a real provider's failure.
+  ai?: AiProvider;
 }) {
-  const { db, storageRoot, mailRoot, fixtures = {} } = options;
+  const { db, storageRoot, mailRoot, fixtures = {}, ai: aiOverride } = options;
   const handlers: Record<string, TaskHandler> = {};
   const storage = createLocalStorage({ root: storageRoot, secret: "test-upload-secret" });
-  const ai = createFixtureAiProvider(fixtures);
+  const ai = aiOverride ?? createFixtureAiProvider(fixtures);
   const queue = createInProcessQueue(handlers);
   const mailer = createLocalMailer(mailRoot);
   handlers.ingest = createIngestTask({ db, storage, ai });

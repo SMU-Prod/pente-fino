@@ -24,36 +24,89 @@ function sha256(body: Uint8Array): string {
   return createHash("sha256").update(body).digest("hex");
 }
 
+const owner = "ses_owner00000000000000";
+
 describe("local storage", () => {
   it("signs an upload and returns a file key", async () => {
-    const signed = await storage().signUpload({ contentHash: "abc", mimeType: "application/pdf", sizeBytes: 1000 });
+    const signed = await storage().signUpload({
+      owner, contentHash: "abc", mimeType: "application/pdf", sizeBytes: 1000,
+    });
     expect(signed.fileKey).toContain("abc");
     expect(signed.uploadUrl).toContain("sig=");
   });
 
+  // --- Finding 1: two owners must never share one object. RF-102's dedup
+  // index is `(coalesce(user_id, session_id), content_hash)` - per owner -
+  // but the key minted here used to drop the owner entirely, so two tenants
+  // uploading a file with the same hash collided on one storage object: an
+  // RF-110 cleanup deleting one owner's expired invoice would delete the
+  // other's file too, and a caller who merely knew a hash (never uploaded
+  // anything) could sign for it and have ingest extract someone else's file
+  // into their own report.
+
+  it("scopes the file key to the owner, so two owners with the same content hash do not collide", async () => {
+    const s = storage();
+    const a = await s.signUpload({
+      owner: "ses_ownerA000000000000", contentHash: "abc", mimeType: "application/pdf", sizeBytes: 1000,
+    });
+    const b = await s.signUpload({
+      owner: "ses_ownerB000000000000", contentHash: "abc", mimeType: "application/pdf", sizeBytes: 1000,
+    });
+    expect(a.fileKey).not.toBe(b.fileKey);
+    expect(a.fileKey).toContain("ses_ownerA000000000000");
+    expect(b.fileKey).toContain("ses_ownerB000000000000");
+  });
+
+  it("does not let owner B's put land on owner A's file key for the same content hash", async () => {
+    const s = storage();
+    const bodyA = new Uint8Array([1, 2, 3]);
+    const bodyB = new Uint8Array([1, 2, 3]); // same bytes - same hash - different owner
+    const a = await s.signUpload({
+      owner: "ses_ownerA000000000000", contentHash: sha256(bodyA), mimeType: "application/pdf", sizeBytes: 3,
+    });
+    const b = await s.signUpload({
+      owner: "ses_ownerB000000000000", contentHash: sha256(bodyB), mimeType: "application/pdf", sizeBytes: 3,
+    });
+    await s.put(a.fileKey, bodyA);
+    await expect(s.exists(b.fileKey)).resolves.toBe(false);
+    await s.delete(a.fileKey);
+    // Deleting owner A's object must never remove owner B's - the whole
+    // point of scoping the key is that RF-110's cleanup for one owner can
+    // never touch another owner's file (finding 1).
+    await s.put(b.fileKey, bodyB);
+    await expect(s.exists(b.fileKey)).resolves.toBe(true);
+  });
+
+  it("rejects an owner containing a path separator, before ever minting a URL", async () => {
+    const s = storage();
+    await expect(
+      s.signUpload({ owner: "../evil", contentHash: "abc", mimeType: "application/pdf", sizeBytes: 1 }),
+    ).rejects.toThrow();
+  });
+
   it("accepts a fresh signature", async () => {
     const s = storage();
-    const signed = await s.signUpload({ contentHash: "abc", mimeType: "application/pdf", sizeBytes: 1000 });
+    const signed = await s.signUpload({ owner, contentHash: "abc", mimeType: "application/pdf", sizeBytes: 1000 });
     expect(s.verify(signed.uploadUrl).valid).toBe(true);
   });
 
   it("rejects the signature after five minutes, because the fake honours the real contract", async () => {
     const s = storage();
-    const signed = await s.signUpload({ contentHash: "abc", mimeType: "application/pdf", sizeBytes: 1000 });
+    const signed = await s.signUpload({ owner, contentHash: "abc", mimeType: "application/pdf", sizeBytes: 1000 });
     clock += 5 * 60 * 1000 + 1;
     expect(s.verify(signed.uploadUrl)).toMatchObject({ valid: false, reason: "expired" });
   });
 
   it("accepts a signature at exactly the five-minute boundary", async () => {
     const s = storage();
-    const signed = await s.signUpload({ contentHash: "abc", mimeType: "application/pdf", sizeBytes: 1000 });
+    const signed = await s.signUpload({ owner, contentHash: "abc", mimeType: "application/pdf", sizeBytes: 1000 });
     clock += 5 * 60 * 1000;
     expect(s.verify(signed.uploadUrl)).toMatchObject({ valid: true });
   });
 
   it("rejects a tampered signature", async () => {
     const s = storage();
-    const signed = await s.signUpload({ contentHash: "abc", mimeType: "application/pdf", sizeBytes: 1000 });
+    const signed = await s.signUpload({ owner, contentHash: "abc", mimeType: "application/pdf", sizeBytes: 1000 });
     expect(s.verify(signed.uploadUrl.replace(/sig=\w+/, "sig=deadbeef"))).toMatchObject({
       valid: false,
       reason: "bad_signature",
@@ -62,7 +115,7 @@ describe("local storage", () => {
 
   it("rejects a shortened signature without throwing", async () => {
     const s = storage();
-    const signed = await s.signUpload({ contentHash: "abc", mimeType: "application/pdf", sizeBytes: 1000 });
+    const signed = await s.signUpload({ owner, contentHash: "abc", mimeType: "application/pdf", sizeBytes: 1000 });
     expect(() => s.verify(signed.uploadUrl.replace(/sig=[0-9a-f]+/, "sig=ab"))).not.toThrow();
     expect(s.verify(signed.uploadUrl.replace(/sig=[0-9a-f]+/, "sig=ab"))).toMatchObject({
       valid: false,
@@ -72,8 +125,8 @@ describe("local storage", () => {
 
   it("rejects a modified file key", async () => {
     const s = storage();
-    const signed = await s.signUpload({ contentHash: "abc", mimeType: "application/pdf", sizeBytes: 1000 });
-    const tampered = signed.uploadUrl.replace("uploads/abc.pdf", "uploads/other.pdf");
+    const signed = await s.signUpload({ owner, contentHash: "abc", mimeType: "application/pdf", sizeBytes: 1000 });
+    const tampered = signed.uploadUrl.replace(`uploads/${owner}/abc.pdf`, `uploads/${owner}/other.pdf`);
     expect(s.verify(tampered)).toMatchObject({ valid: false, reason: "bad_signature" });
   });
 
@@ -89,6 +142,7 @@ describe("local storage", () => {
     const s = storage();
     const body = new Uint8Array([1, 2, 3]);
     const { fileKey } = await s.signUpload({
+      owner,
       contentHash: sha256(body),
       mimeType: "application/pdf",
       sizeBytes: body.length,
@@ -112,6 +166,7 @@ describe("local storage", () => {
     const s = storage();
     const body = new Uint8Array([9]);
     const { fileKey } = await s.signUpload({
+      owner,
       contentHash: sha256(body),
       mimeType: "application/pdf",
       sizeBytes: body.length,
@@ -126,6 +181,7 @@ describe("local storage", () => {
       const s = storage();
       const body = new Uint8Array([7]);
       const { fileKey } = await s.signUpload({
+        owner,
         contentHash: sha256(body),
         mimeType: "application/pdf",
         sizeBytes: body.length,
@@ -154,6 +210,7 @@ describe("local storage", () => {
       const s = storage();
       const body = new Uint8Array([1, 2, 3]);
       const { fileKey } = await s.signUpload({
+        owner,
         contentHash: sha256(body),
         mimeType: "application/pdf",
         sizeBytes: body.length,
@@ -165,6 +222,7 @@ describe("local storage", () => {
       const s = storage();
       const signedBody = new Uint8Array([1, 2, 3]);
       const { fileKey } = await s.signUpload({
+        owner,
         contentHash: sha256(signedBody),
         mimeType: "application/pdf",
         sizeBytes: signedBody.length,
@@ -184,6 +242,7 @@ describe("local storage", () => {
       const s = storage();
       const body = new Uint8Array([10, 20, 30, 40]);
       const { fileKey } = await s.signUpload({
+        owner,
         contentHash: sha256(body),
         mimeType: "application/pdf",
         sizeBytes: body.length,
@@ -197,14 +256,14 @@ describe("local storage", () => {
     it("rejects a content hash containing '..' before ever minting a URL", async () => {
       const s = storage();
       await expect(
-        s.signUpload({ contentHash: "../../evil", mimeType: "application/pdf", sizeBytes: 1 }),
+        s.signUpload({ owner, contentHash: "../../evil", mimeType: "application/pdf", sizeBytes: 1 }),
       ).rejects.toThrow();
     });
 
     it("rejects a content hash containing a path separator", async () => {
       const s = storage();
       await expect(
-        s.signUpload({ contentHash: "sub/dir", mimeType: "application/pdf", sizeBytes: 1 }),
+        s.signUpload({ owner, contentHash: "sub/dir", mimeType: "application/pdf", sizeBytes: 1 }),
       ).rejects.toThrow();
     });
 

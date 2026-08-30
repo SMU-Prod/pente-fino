@@ -153,6 +153,7 @@ CREATE TABLE "invoice_items" (
 	"id" text PRIMARY KEY NOT NULL,
 	"invoice_id" text NOT NULL,
 	"line_no" integer NOT NULL,
+	"item_key" text NOT NULL,
 	"section" text,
 	"description" text NOT NULL,
 	"normalized_desc" text NOT NULL,
@@ -331,6 +332,7 @@ CREATE INDEX "events_case_time" ON "events" USING btree ("case_id","occurred_at"
 CREATE INDEX "events_type_time" ON "events" USING btree ("type","occurred_at");--> statement-breakpoint
 CREATE INDEX "items_invoice_desc" ON "invoice_items" USING btree ("invoice_id","normalized_desc");--> statement-breakpoint
 CREATE INDEX "items_desc_trgm" ON "invoice_items" USING gin ("normalized_desc" gin_trgm_ops);--> statement-breakpoint
+CREATE UNIQUE INDEX "items_invoice_key" ON "invoice_items" USING btree ("invoice_id","item_key");--> statement-breakpoint
 CREATE UNIQUE INDEX "invoices_owner_hash" ON "invoices" USING btree (coalesce("user_id", "session_id"),"content_hash");--> statement-breakpoint
 CREATE INDEX "invoices_user_issuer_period" ON "invoices" USING btree ("user_id","issuer_id","period_start");--> statement-breakpoint
 CREATE UNIQUE INDEX "prompts_slug_version" ON "prompts" USING btree ("slug","version");--> statement-breakpoint
