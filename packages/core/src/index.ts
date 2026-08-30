@@ -5,3 +5,4 @@ export { RULE_KINDS, type RuleKind, type RuleSpec, type LegalRef } from "./rules
 export type { Finding } from "./rules/finding.js";
 export { STAGES, type Stage, type Playbook } from "./cases/playbook.js";
 export { ContestDocument } from "./documents/contest.js";
+export { normalizeDescription } from "./invoice/normalize.js";
