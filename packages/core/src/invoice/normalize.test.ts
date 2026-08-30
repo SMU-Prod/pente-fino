@@ -102,4 +102,50 @@ describe("normalizeDescription", () => {
       expect(normalizeDescription(once)).toBe(once);
     }
   });
+
+  it("tells apart installment codes that differ only by a chained digit-group prefix", () => {
+    const a = normalizeDescription("Combo 3-6-12X");
+    const b = normalizeDescription("Combo 3-6-9X");
+    expect(a).not.toBe(b);
+    expect(a).toContain("36");
+    expect(b).toContain("36");
+  });
+
+  it("tells apart equipment codes that share the same three-digit second group shape", () => {
+    expect(normalizeDescription("Modem instalado RTA-123-456"))
+      .not.toBe(normalizeDescription("Modem instalado RTA-123-789"));
+  });
+
+  it("tells apart postal codes that are not date-shaped", () => {
+    expect(normalizeDescription("Taxa instalacao CEP 01310-100"))
+      .not.toBe(normalizeDescription("Taxa instalacao CEP 04543-011"));
+  });
+
+  it("tells apart chained product tiers without eating the leading groups", () => {
+    const a = normalizeDescription("Plano 4-5-6G");
+    const b = normalizeDescription("Plano 4-5-7G");
+    expect(a).not.toBe(b);
+    expect(a).toContain("45");
+    expect(b).toContain("45");
+  });
+
+  it("still matches a hyphen-joined recurring line across cycles after the rule 1 tightening", () => {
+    expect(normalizeDescription("Mensalidade-01/2026")).toBe(normalizeDescription("Mensalidade-02/2026"));
+  });
+
+  it("is idempotent for the tightened rule 1 cases", () => {
+    for (const input of [
+      "Combo 3-6-12X",
+      "Combo 3-6-9X",
+      "Modem instalado RTA-123-456",
+      "Modem instalado RTA-123-789",
+      "Taxa instalacao CEP 01310-100",
+      "Taxa instalacao CEP 04543-011",
+      "Plano 4-5-6G",
+      "Plano 4-5-7G",
+    ]) {
+      const once = normalizeDescription(input);
+      expect(normalizeDescription(once)).toBe(once);
+    }
+  });
 });
