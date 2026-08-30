@@ -26,16 +26,29 @@ type WordHit = { index: number; end: number };
 // "is" rather than appending "s"/"es" — ilegal/ilegais, judicial/judiciais.
 const L_PLURAL_ENDING = /(?:al|el|il|ol|ul)$/;
 
+// Words ending in the nasal diphthong "-ão" pluralize irregularly: the
+// diphthong itself shifts, most commonly to "-ões" (ação -> ações), but
+// also to "-ães" (cão -> cães) or "-ãos" (mão -> mãos) for other words.
+// This is not a suffix on top of the singular spelling, so it needs its
+// own rule rather than falling out of the "s"/"es" default below. `word`
+// here is already accent-folded (see `fold`), so "-ão" has already lost
+// its tilde and reads as the plain letters "ao"; the three plural endings
+// are matched against that same folded alphabet — "-ao" -> "-oes"/"-aes"/
+// "-aos" — never against a literal "ã" or "õ".
+const AO_PLURAL_ENDING = /ao$/;
+
 /**
- * Extends an already-escaped word with its regular Portuguese plural, so
- * the term list stays singular while the matcher still catches the
- * inflected form a real message would use:
+ * Extends an already-escaped, already-folded word with its regular
+ * Portuguese plural, so the term list stays singular while the matcher
+ * still catches the inflected form a real message would use:
  *   - words ending in -al/-el/-il/-ol/-ul drop the "l" and add "is"
  *     (ilegal -> ilegais, judicial -> judiciais);
+ *   - words ending in -ão (folded to -ao) also match the same stem with
+ *     -ões, -ães or -ãos (folded to -oes/-aes/-aos): ação -> ações;
  *   - every other word optionally takes a trailing "s" or "es"
  *     (advogado -> advogados, parecer -> pareceres).
- * This is deliberately not general morphology: only this one regular
- * pattern. It is applied to every word of a multi-word term (see
+ * This is deliberately not general morphology: only these specific,
+ * regular patterns. It is applied to every word of a multi-word term (see
  * `findWord`), not only the last, so a phrase that pluralizes every word —
  * "processos judiciais", not just "processo judiciais" — is still caught.
  * Each suffix is optional, so the base form and every mixed singular/plural
@@ -45,6 +58,10 @@ function withPlural(word: string): string {
   if (L_PLURAL_ENDING.test(word)) {
     const stem = word.slice(0, -1);
     return `(?:${word}|${stem}is)`;
+  }
+  if (AO_PLURAL_ENDING.test(word)) {
+    const stem = word.slice(0, -2);
+    return `(?:${word}|${stem}oes|${stem}aes|${stem}aos)`;
   }
   return `${word}(?:es|s)?`;
 }

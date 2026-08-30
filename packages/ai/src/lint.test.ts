@@ -328,18 +328,40 @@ describe("lintUserFacingText — every word of a multi-word term widens for its 
 
   // "ação" -> "ações" is an irregular Portuguese plural: the nasal
   // diphthong itself shifts (ã+o -> õ+e), it is not a regular suffix on
-  // top of the singular spelling. That shift is outside the one widening
-  // rule this lint implements (an optional "s"/"es" suffix, plus the
-  // "-l" -> "-is" alternation for words ending in -al/-el/-il/-ol/-ul), so
-  // "ação judicial" does not itself widen to match "ações judiciais" - this
-  // sentence still reports a violation, but only via the unrelated
-  // "entraremos com" term. This is a known, deliberate limitation, not an
-  // oversight: pin it here so a future change to the rule is a conscious
-  // decision, not a silent regression either way.
-  it("still reports a violation for 'Entraremos com ações judiciais', but via 'entraremos com', not 'ação judicial' ('ação' pluralizes irregularly)", () => {
+  // top of the singular spelling. `withPlural` now has a dedicated
+  // "-ão" -> "-ões"/"-ães"/"-ãos" alternation for exactly this case (see
+  // lint.ts), so this sentence reports a violation via BOTH terms it
+  // actually contains, not just the unrelated "entraremos com" one.
+  it("reports a violation for 'Entraremos com ações judiciais' via both 'entraremos com' and 'ação judicial'", () => {
     const result = lintUserFacingText("Entraremos com ações judiciais");
     expect(result.ok).toBe(false);
     expect(result.violations.some((v) => v.term === "entraremos com")).toBe(true);
-    expect(result.violations.some((v) => v.term === "acao judicial")).toBe(false);
+    expect(result.violations.some((v) => v.term === "acao judicial")).toBe(true);
+  });
+});
+
+/**
+ * "ação" -> "ações" is an irregular Portuguese plural (the nasal diphthong
+ * itself shifts, ã+o -> õ+e) rather than a suffix on the singular spelling,
+ * so it needed its own alternation in `withPlural` (ação/ações/aões-style
+ * endings folded to -ao/-oes/-aes/-aos) alongside the regular "s"/"es" and
+ * "-al"/"-is" widenings. These pin that alternation without adding any new
+ * FORBIDDEN_TERMS entry — the list keeps only the singular "ação judicial".
+ */
+describe("lintUserFacingText — the irregular '-ão' plural of a §14.3 term", () => {
+  it("catches the '-ão' -> '-ões' plural of 'ação judicial' ('ações judiciais')", () => {
+    const result = lintUserFacingText("Cuidamos de ações judiciais para você");
+    expect(result.ok).toBe(false);
+    expect(result.violations.some((v) => v.term === "acao judicial")).toBe(true);
+  });
+
+  it("still matches the base singular form ('Podemos abrir uma ação judicial')", () => {
+    const result = lintUserFacingText("Podemos abrir uma ação judicial");
+    expect(result.ok).toBe(false);
+    expect(result.violations.some((v) => v.term === "acao judicial")).toBe(true);
+  });
+
+  it("does not flag an unrelated '-ão'/'-ões' word ('promoção', 'instalação')", () => {
+    expect(lintUserFacingText("O plano tem uma promoção de instalação").ok).toBe(true);
   });
 });
