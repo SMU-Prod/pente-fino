@@ -106,10 +106,22 @@ export function withUser(session: Session, db: Db = getUnscopedDb()) {
       return issuer ?? null;
     },
 
-    async recordEvent(type: EventType, payload: Record<string, unknown> = {}) {
+    /**
+     * `invoiceId` is optional because a handful of event types (a
+     * `session_claimed`, say) are not about any one invoice at all, so there
+     * is nothing to stamp. Whenever a caller does have an invoice id at
+     * hand, it must pass it: A3 says the event trail is what metrics, the
+     * adaptive engine and auditing all read, and `events.invoiceId` is the
+     * column that lets a consumer correlate the trail to one specific
+     * invoice instead of an entire session - a session can hold more than
+     * one invoice, and a session-scoped read alone cannot tell their events
+     * apart.
+     */
+    async recordEvent(type: EventType, payload: Record<string, unknown> = {}, invoiceId?: string) {
       await db.insert(events).values({
         id: newId("evt"), type, payload,
         ...(userId ? { userId } : { sessionId }),
+        ...(invoiceId ? { invoiceId } : {}),
       });
     },
 

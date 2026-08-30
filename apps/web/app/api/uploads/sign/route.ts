@@ -95,7 +95,7 @@ export async function POST(request: Request) {
     fileKey: signed.fileKey,
   });
 
-  if (!already) await scoped.recordEvent("invoice_uploaded", { source: mimeType });
+  if (!already) await scoped.recordEvent("invoice_uploaded", { source: mimeType }, invoiceId);
 
   const response = Response.json({ uploadUrl: signed.uploadUrl, fileKey: signed.fileKey, invoiceId });
   if (!validExistingSessionId) {

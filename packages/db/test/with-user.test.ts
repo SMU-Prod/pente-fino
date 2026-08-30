@@ -74,6 +74,28 @@ describe("withUser", () => {
     expect(rows[0]?.userId).toBe(alice);
   });
 
+  // --- A3: the event trail must be correlatable to one specific invoice
+  // through the real `events.invoiceId` column, not only through the
+  // owner-scoped `userId`/`sessionId` columns a session with more than one
+  // invoice cannot tell apart by themselves.
+
+  it("stamps invoiceId on a recorded event when it is passed", async () => {
+    const scoped = withUser({ userId: alice }, ctx.db);
+    const invoiceId = await scoped.insertInvoice({ contentHash: "evt-inv-1", source: "pdf_text" });
+    await scoped.recordEvent("invoice_uploaded", { source: "pdf_text" }, invoiceId);
+
+    const [row] = await ctx.db.select().from(events).where(eq(events.userId, alice));
+    expect(row?.invoiceId).toBe(invoiceId);
+  });
+
+  it("leaves invoiceId null when it is not passed", async () => {
+    const scoped = withUser({ userId: alice }, ctx.db);
+    await scoped.recordEvent("invoice_uploaded", { source: "pdf_text" });
+
+    const [row] = await ctx.db.select().from(events).where(eq(events.userId, alice));
+    expect(row?.invoiceId).toBeNull();
+  });
+
   // --- ownership cannot be forged by the caller ---
   //
   // `insertInvoice` and `recordEvent` spread the true owner *after* the

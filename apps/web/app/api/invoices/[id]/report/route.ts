@@ -35,6 +35,6 @@ export async function GET(_request: Request, ctx: { params: Promise<{ id: string
   // above, and `null` when the invoice has no issuer assigned yet.
   const issuer = await scoped.issuerForInvoice(id);
 
-  await scoped.recordEvent("report_viewed", { invoiceId: id });
+  await scoped.recordEvent("report_viewed", {}, id);
   return Response.json({ invoice, findings, totals: { suspectCents, doubledCents }, issuer });
 }

@@ -1,8 +1,9 @@
 # Golden set
 
 Vazio de propósito. **10 faturas reais anonimizadas por emissor**, meta de 50
-(PRD §16.2). O CI trava merge quando o acerto de extração cai (RNF-16), então
-sem estes arquivos essa trava não existe.
+(PRD §16.2). Quando este conjunto e o workflow de CI existirem, o CI vai
+travar merge se o acerto de extração cair (RNF-16) — hoje nenhum dos dois
+existe neste repositório, então essa trava ainda não existe.
 
 ## O que é preciso
 
@@ -23,8 +24,9 @@ fixtures/golden/claro-movel/2026-07/
 
 ## Anonimização
 
-`pnpm golden:anonymize <arquivo>` troca CPF, nome, endereço e número de linha
-preservando o layout — o layout é justamente o que está sob teste.
+Um script `pnpm golden:anonymize <arquivo>` vai trocar CPF, nome, endereço e
+número de linha preservando o layout — o layout é justamente o que está sob
+teste. Esse script ainda não existe.
 
 ## Casos negativos
 
