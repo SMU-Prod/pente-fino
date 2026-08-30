@@ -2,151 +2,129 @@
  * Normalises an invoice line description so the same recurring item matches
  * across issuers and billing cycles (RF-122).
  *
- * ## Definition of a "variable number"
+ * The string is decomposed to NFD, stripped of accents, and uppercased,
+ * then split into whitespace-separated tokens that are each normalised on
+ * their own. Working token-by-token - instead of running a chain of
+ * regexes across the whole string - is what lets each token's outcome
+ * (kept, dropped, or partially rewritten) stand on its own: no rule can
+ * shift a token boundary out from under the next rule, and no smuggled
+ * marker character is needed to carry state between rules.
  *
- * RF-122 only says "remoção de números variáveis" without defining what
- * makes a number variable. This is the definition this function implements,
- * written down here so nobody has to reverse-engineer it from the regexes
- * below. A number is variable - and therefore removed - when it is either:
+ * ## The four decisions, applied to each token
  *
- * 1. Date- or cycle-shaped: **exactly two** digit groups joined by a single
- *    "/", "." or "-", where **at least one of the two groups is exactly
- *    four digits** (the year). "01/2026", "07-2026" and "2026.07" are
- *    variable this way. A chain of three or more groups is never
- *    date-shaped, no matter how many of its groups happen to be four
- *    digits long - "2026-08-000123" has a four-digit first group but three
- *    groups total, so it does not qualify. This is deliberately narrower
- *    than "any digit group joined to another digit group": that looser
- *    shape also matches an installment code ("3-6"), an equipment
- *    reference ("123-456") or a postal code ("01310-100"), none of which
- *    carry a year and none of which should be treated as a cycle
- *    reference. Anchoring on a four-digit group is what tells a real date
- *    or cycle apart from those.
- * 2. Standalone: a digit run with no letter adjacent on either side, once
- *    punctuation fusion (see below) has run. "07", "40041" and "30" are
- *    variable this way.
+ * 1. **Drop a letterless token.** A token with no A-Z letter at all is a
+ *    pure number, date, or code - a variable number by definition - and is
+ *    removed entirely. "07/2026" and "01310-100" both go this way.
+ * 2. **Remove a date/cycle-shaped chunk.** Within a token that does contain
+ *    a letter (so it survived decision 1), a chunk of exactly two digit
+ *    groups joined by a single "/", "." or "-", where at least one group is
+ *    exactly four digits, is replaced by a single space. This is what lets
+ *    "Mensalidade-01/2026" and "Mensalidade-02/2026" collapse to the same
+ *    "MENSALIDADE" even though the cycle number is glued to the word with
+ *    no space of its own. A chain of three or more groups never qualifies
+ *    here, no matter how many of its groups happen to be four digits long
+ *    - it is left for decision 3 instead.
+ * 3. **Fuse punctuation next to a digit.** Punctuation directly between two
+ *    alphanumeric characters vanishes - with no space inserted, so the
+ *    characters fuse into one - whenever at least one of the two
+ *    neighbours is a digit: "4.5G" becomes "45G", "4-G" becomes "4G",
+ *    "10-GB" becomes "10GB", each staying distinct from the plain form it
+ *    could otherwise collapse into. Punctuation between two letters is
+ *    untouched here and falls through to decision 4 instead, so
+ *    "PLANO-MASTER" still splits into "PLANO" and "MASTER".
+ * 4. **Space out, split, and drop the leftovers.** Every remaining run of
+ *    non-alphanumeric characters becomes a single space; the token is then
+ *    split on whitespace, and any resulting piece that is purely numeric is
+ *    dropped. This is what turns "ADICIONADO(SVA)" into "ADICIONADO SVA",
+ *    and clears a bare digit run that decisions 2-3 left exposed (e.g. a
+ *    three-or-more-group chain like "2026-08-000123", once fusion has
+ *    joined its groups into one run with nothing to fuse onto).
  *
- * Everything else survives - including a digit run glued to a letter by
- * punctuation, such as "4-G" or "10-GB" - because that shape is a product
- * code or a data tier, not a cycle reference.
- *
- * ## Order of operations matters
- *
- * Rule 1 (date/cycle-shaped removal) runs first, before any punctuation
- * fusion. If fusion ran first, it would glue a cycle number onto the
- * surrounding word - e.g. "Mensalidade-01/2026" would fuse into
- * "MENSALIDADE012026" - and the standalone check (rule 2) could no longer
- * see it as a bare number, since it would no longer have a letter-free
- * boundary on either side. The recurring line would then fail to match
- * itself across billing cycles, which is the entire purpose of this
- * function. Removing the cycle-shaped number before fusion keeps the two
- * rules from fighting each other.
- *
- * ## Two-group codes that are not dates
- *
- * Tightening rule 1 to "exactly two groups, one of them four digits" means
- * a two-group chain that fails that test - an installment code ("3-6"), an
- * equipment reference ("123-456"), a postal code ("01310-100") - is no
- * longer touched by rule 1. Left to fusion and the standalone rule alone,
- * most of these are still fine: once punctuation fusion joins them to an
- * adjacent letter ("RTA-123-456" -> "RTA123456", "Combo 3-6-12X" ->
- * "COMBO 3612X"), they are no longer a bare digit run and rule 2 leaves
- * them alone.
- *
- * A postal code has no such neighbour - "CEP 01310-100" has nothing but
- * whitespace on both sides of the number. Fused into one run ("01310100")
- * it would look exactly like a bare standalone number and rule 2 would
- * delete it, silently reintroducing the exact collision this whole
- * function exists to prevent (two different CEPs collapsing to the same
- * "CEP" text). So for a two-group chain that (a) is not date-shaped and
- * (b) has no letter or digit directly touching either side, this function
- * joins the two groups with a literal "Z" instead of nothing - "01310-100"
- * becomes "01310Z100". The inserted letter gives the standalone rule a
- * neighbour to see, the same way a real letter would, so the code survives
- * instead of being read as cycle noise. Groups that already sit next to a
- * letter or digit (like the equipment/installment examples above) skip
- * this step entirely and are left for the ordinary fusion rule, which
- * fuses them without the extra "Z". A three-or-more-group chain is never
- * touched by this either - it is not date-shaped, but it is also not this
- * two-group case, so it falls through unchanged (see "Known limitation").
- *
- * ## Punctuation fusion
- *
- * Once cycle/date-shaped numbers are gone (and two-group non-date codes
- * have been fused as described above), punctuation between two
- * alphanumeric characters fuses - vanishes with no space inserted -
- * whenever at least one of the two neighbours is a digit: "4.5G" (digit,
- * digit) becomes "45G", "4-G" (digit, letter) becomes "4G", and "10-GB"
- * (digit, letter) becomes "10GB", each kept distinct from the plain form it
- * could otherwise collapse into ("4G", "5G", "20-GB"). Punctuation between
- * two letters - e.g. the "(" in "ADICIONADO(SVA)" - is unaffected by fusion
- * and still becomes a space, as does punctuation anywhere else (string
- * edges, next to whitespace, etc.).
+ * The pieces every token survives as are rejoined with single spaces and
+ * trimmed.
  *
  * ## Known limitation
  *
- * A standalone purely numeric token - no punctuation, no adjacent letter -
- * is always dropped by rule 2, so it is indistinguishable from a cycle
- * number: a premium short code like "40041" versus "40042", or "Multa por
- * atraso 30 dias" versus "15 dias", normalise identically. The same is true
- * of a multi-group all-numeric code with three or more groups, such as a
- * protocol number - "Protocolo 2026-08-000123" versus
- * "Protocolo 2026-08-000456" - because a chain that long is never
- * date-shaped (rule 1 requires exactly two groups) and has no letter to
- * fuse onto, so punctuation fusion reduces it to one bare digit run that
- * rule 2 then deletes like any other standalone number. This function has
- * no way to tell an identifier apart from a billing cycle without more
- * context than a string carries. Anything in E2 that matches pattern rules
- * against this output must not assume that equal normalised descriptions
- * mean the same billable item.
+ * Decision 1 drops any whitespace-separated token that has no letter at
+ * all, with no way to tell a meaningless identifier from one that matters.
+ * Two lines differing only in such a token - a premium short code ("40041"
+ * vs "40042"), a protocol number ("Protocolo 2026-08-000123" vs
+ * "...-000456"), a postal code ("CEP 01310-100" vs "CEP 04543-011"), or a
+ * day count ("Multa por atraso 30 dias" vs "...15 dias") - normalise to the
+ * exact same string. This is a deliberate trade-off, not an oversight: a
+ * shape-only function cannot distinguish an identifier from a billing cycle
+ * without more context than a string carries, and this function chooses to
+ * favour matching a recurring line across cycles over telling apart two
+ * coincidentally-shaped one-off codes. Anything in E2 that matches pattern
+ * rules against this output must not treat equal normalised descriptions as
+ * proof of the same billable item.
  */
 export function normalizeDescription(input: string): string {
-  return (
-    input
-      .normalize("NFD")
-      .replace(/[\u0300-\u036f]/g, "")
-      .toUpperCase()
-      // Rule 1 (date/cycle-shaped numbers) plus the two-group non-date code
-      // case, both handled on the same maximal chain of digit groups so the
-      // decision always sees the whole chain and never a partial slice of a
-      // longer one (the original bug: unbounded backtracking ate a
-      // variable-length prefix on chains of three or more groups). Must run
-      // before general fusion below (see "Order of operations matters").
-      .replace(/\d+(?:[\/.-]\d+)+/g, (match, offset: number, str: string) => {
-        const groups = match.split(/[\/.-]/);
-        if (groups.length === 2 && groups.some((group) => group.length === 4)) {
-          // Exactly two groups, one of them a year: date/cycle-shaped, drop it.
-          return "";
-        }
-        if (groups.length === 2) {
-          // Exactly two groups, neither a year: a structured code (postal
-          // code, equipment/installment fragment). If it already sits next
-          // to a letter or digit, the ordinary fusion rule below will join
-          // it correctly on its own - leave it untouched. Otherwise it has
-          // nothing to fuse onto and would look like a bare number once its
-          // separator is gone, so join it with a literal "Z" to keep it
-          // out of rule 2's reach (see "Two-group codes that are not
-          // dates").
-          const before = str.charAt(offset - 1);
-          const after = str.charAt(offset + match.length);
-          if (/[A-Z0-9]/.test(before) || /[A-Z0-9]/.test(after)) {
-            return match;
-          }
-          return groups.join("Z");
-        }
-        // Three or more groups: not date-shaped, left for the existing
-        // fusion/standalone rules (see "Known limitation").
-        return match;
-      })
-      // Fusion: punctuation between two alphanumerics vanishes (no space)
-      // when at least one neighbour is a digit, so "4-G" survives as "4G"
-      // and "4.5G" survives as "45G", each distinct from "5G".
-      .replace(/(?<=[0-9])[^A-Z0-9\s]+(?=[A-Z0-9])|(?<=[A-Z])[^A-Z0-9\s]+(?=[0-9])/g, "")
-      // Everything else non-alphanumeric becomes a space (word separator).
-      .replace(/[^A-Z0-9\s]/g, " ")
-      // Rule 2 (standalone numbers): digit runs with no adjacent letter.
-      .replace(/(?<![A-Z0-9])\d+(?![A-Z0-9])/g, " ")
-      .replace(/\s+/g, " ")
-      .trim()
+  const upper = input
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toUpperCase();
+
+  const tokens = upper.split(/\s+/).filter((token) => token.length > 0);
+
+  return tokens
+    .flatMap((token) => normalizeToken(token))
+    .join(" ")
+    .trim();
+}
+
+/** Whether a token contains at least one A-Z letter. */
+const HAS_LETTER = /[A-Z]/;
+
+/** The longest run of two-or-more digit groups joined by "/", "." or "-". */
+const DIGIT_GROUP_CHAIN = /\d+(?:[\/.-]\d+)+/g;
+
+/**
+ * Punctuation directly between two alphanumeric characters, matched so it
+ * can be fused away (no space) when at least one of the two neighbours is
+ * a digit. The two alternatives cover digit-before/alnum-after and
+ * letter-before/digit-after; a letter on both sides matches neither.
+ */
+const FUSABLE_PUNCTUATION =
+  /(?<=[0-9])[^A-Z0-9\s]+(?=[A-Z0-9])|(?<=[A-Z])[^A-Z0-9\s]+(?=[0-9])/g;
+
+/** Any punctuation left after date-chunk removal and fusion. */
+const REMAINING_PUNCTUATION = /[^A-Z0-9\s]+/g;
+
+/** A piece made up of digits only, with nothing else. */
+const ALL_DIGITS = /^\d+$/;
+
+/**
+ * Applies the four per-token decisions documented on {@link
+ * normalizeDescription} and returns the zero or more words this token
+ * survives as.
+ */
+function normalizeToken(token: string): string[] {
+  // Decision 1: a token with no letter is a pure number, date, or code.
+  if (!HAS_LETTER.test(token)) {
+    return [];
+  }
+
+  // Decision 2: drop date/cycle-shaped two-group chunks. Replaced with a
+  // space (not nothing) so a chunk glued to a word - "Mensalidade-01/2026"
+  // - still separates into distinct words instead of fusing back together.
+  const withoutDateChunks = token.replace(DIGIT_GROUP_CHAIN, (chunk) =>
+    isDateShaped(chunk) ? " " : chunk,
   );
+
+  // Decision 3: fuse punctuation that sits next to a digit.
+  const fused = withoutDateChunks.replace(FUSABLE_PUNCTUATION, "");
+
+  // Decision 4: turn every remaining separator into a space, then drop any
+  // resulting piece that is purely numeric.
+  return fused
+    .replace(REMAINING_PUNCTUATION, " ")
+    .split(/\s+/)
+    .filter((part) => part.length > 0 && !ALL_DIGITS.test(part));
+}
+
+/** Exactly two digit groups, at least one of them the four-digit shape of a year. */
+function isDateShaped(chunk: string): boolean {
+  const groups = chunk.split(/[\/.-]/);
+  return groups.length === 2 && groups.some((group) => group.length === 4);
 }

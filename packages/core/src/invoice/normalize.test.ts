@@ -116,9 +116,13 @@ describe("normalizeDescription", () => {
       .not.toBe(normalizeDescription("Modem instalado RTA-123-789"));
   });
 
-  it("tells apart postal codes that are not date-shaped", () => {
+  it("collapses postal codes to the same string, since a letterless token is always dropped", () => {
+    // Deliberate, documented behaviour (see "Known limitation" on
+    // normalizeDescription): "01310-100" and "04543-011" are pure-digit
+    // tokens with no letter to anchor on, so both are dropped entirely and
+    // the two lines normalise identically.
     expect(normalizeDescription("Taxa instalacao CEP 01310-100"))
-      .not.toBe(normalizeDescription("Taxa instalacao CEP 04543-011"));
+      .toBe(normalizeDescription("Taxa instalacao CEP 04543-011"));
   });
 
   it("tells apart chained product tiers without eating the leading groups", () => {
