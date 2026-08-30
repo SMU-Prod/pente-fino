@@ -25,6 +25,7 @@ CREATE TABLE "aggregates" (
 	"confirmed_by_user" integer DEFAULT 0 NOT NULL,
 	"dismissed_by_user" integer DEFAULT 0 NOT NULL,
 	"resolved" integer DEFAULT 0 NOT NULL,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
@@ -50,7 +51,8 @@ CREATE TABLE "anonymous_sessions" (
 	"id" text PRIMARY KEY NOT NULL,
 	"claimed_by_user_id" text,
 	"expires_at" timestamp with time zone NOT NULL,
-	"created_at" timestamp with time zone DEFAULT now() NOT NULL
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
 CREATE TABLE "case_documents" (
@@ -66,6 +68,7 @@ CREATE TABLE "case_documents" (
 	"sent_at" timestamp with time zone,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
+	CONSTRAINT "case_documents_stage_values" CHECK ("case_documents"."stage" in ('draft','sac','ombudsman','consumidor_gov','regulator','procon','jec_ready','closed')),
 	CONSTRAINT "case_documents_kind_values" CHECK ("case_documents"."kind" in ('sac_script','contest_letter','gov_text','regulator_text','dossier'))
 );
 --> statement-breakpoint
@@ -79,7 +82,9 @@ CREATE TABLE "case_protocols" (
 	"response_due_at" timestamp with time zone NOT NULL,
 	"response_received_at" timestamp with time zone,
 	"response_summary" text,
-	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
+	CONSTRAINT "case_protocols_stage_values" CHECK ("case_protocols"."stage" in ('draft','sac','ombudsman','consumidor_gov','regulator','procon','jec_ready','closed'))
 );
 --> statement-breakpoint
 CREATE TABLE "cases" (
@@ -111,6 +116,7 @@ CREATE TABLE "entitlements" (
 	"source" text NOT NULL,
 	"external_id" text,
 	"valid_until" timestamp with time zone,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "entitlements_source_values" CHECK ("entitlements"."source" in ('stripe','revenuecat','manual'))
 );
@@ -154,7 +160,9 @@ CREATE TABLE "invoice_items" (
 	"qty" real,
 	"unit_price_cents" integer,
 	"period_ref" text,
-	"meta" jsonb
+	"meta" jsonb,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
 CREATE TABLE "invoices" (
@@ -204,6 +212,7 @@ CREATE TABLE "prompts" (
 	"model_default" text NOT NULL,
 	"status" text DEFAULT 'draft' NOT NULL,
 	"metrics" jsonb,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "prompts_status_values" CHECK ("prompts"."status" in ('draft','active','retired'))
 );
@@ -214,6 +223,7 @@ CREATE TABLE "reference_flags" (
 	"flag" text NOT NULL,
 	"value_cents_per_100kwh" integer NOT NULL,
 	"source_url" text NOT NULL,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "reference_flags_competence_unique" UNIQUE("competence"),
 	CONSTRAINT "reference_flags_flag_values" CHECK ("reference_flags"."flag" in ('verde','amarela','vermelha_1','vermelha_2','escassez'))
@@ -232,6 +242,7 @@ CREATE TABLE "reference_tariffs" (
 	"te_cents_mwh" integer NOT NULL,
 	"source_url" text NOT NULL,
 	"imported_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
@@ -245,6 +256,7 @@ CREATE TABLE "rule_metrics" (
 	"confirmed" integer DEFAULT 0 NOT NULL,
 	"contested" integer DEFAULT 0 NOT NULL,
 	"resolved" integer DEFAULT 0 NOT NULL,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
@@ -263,6 +275,8 @@ CREATE TABLE "rules" (
 	"author" text NOT NULL,
 	"reason" text NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
+	CONSTRAINT "rules_category_values" CHECK ("rules"."category" in ('telecom','card','energy','water')),
 	CONSTRAINT "rules_kind_values" CHECK ("rules"."kind" in ('pattern','delta','threshold','reference','confirm','arithmetic','suppressor')),
 	CONSTRAINT "rules_status_values" CHECK ("rules"."status" in ('draft','shadow','active','paused'))
 );
@@ -274,6 +288,7 @@ CREATE TABLE "seo_pages" (
 	"title" text NOT NULL,
 	"body_md" text NOT NULL,
 	"status" text DEFAULT 'draft' NOT NULL,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "seo_pages_status_values" CHECK ("seo_pages"."status" in ('draft','published'))
 );

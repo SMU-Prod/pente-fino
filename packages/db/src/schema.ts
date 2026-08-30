@@ -1,12 +1,17 @@
 // Transcribed from PRD.md §6.2, verbatim in column names, types, defaults,
 // and indexes. Two additions on top, both required by §6.1 but omitted by
-// §6.2's prose, and both spelled out in .superpowers/sdd/task-7-brief.md:
+// §6.2's prose:
 //
 //   (a) a `check()` CHECK constraint for every text column that models an
-//       enum (§6.1: "Enums: text com CHECK, não enum nativo").
-//   (b) `updated_at` on the tables §6.2 left without it (§6.1: "Toda
-//       tabela: created_at, updated_at"). `events` is the sole exception:
-//       an event is immutable by definition, so it keeps only `occurred_at`.
+//       enum (§6.1: "Enums: text com CHECK, não enum nativo"). This covers
+//       every enum-shaped column, including `rules.category` (same domain
+//       as `issuers.category`) and `case_documents.stage` /
+//       `case_protocols.stage` (same domain as `cases.stage`, per §7.4's
+//       Stage set: draft, sac, ombudsman, consumidor_gov, regulator,
+//       procon, jec_ready, closed).
+//   (b) `created_at` and `updated_at` on every table (§6.1: "Toda tabela:
+//       created_at, updated_at"). `events` is the sole exception: an event
+//       is immutable by definition, so it keeps only `occurred_at`.
 //
 // `invoices.status` also gains `validating` in its CHECK: §6.2's inline
 // comment omits it, but §9.2's invoice state machine
@@ -54,6 +59,7 @@ export const anonymousSessions = pgTable("anonymous_sessions", {
   claimedByUserId: text("claimed_by_user_id").references(() => users.id),
   expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
 export const issuers = pgTable("issuers", {
@@ -114,6 +120,8 @@ export const invoiceItems = pgTable("invoice_items", {
   unitPriceCents: integer("unit_price_cents"),
   periodRef: text("period_ref"),
   meta: jsonb("meta").$type<Record<string, string | number>>(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => ({
   byInvoiceDesc: index("items_invoice_desc").on(t.invoiceId, t.normalizedDesc),
   trgm: index("items_desc_trgm").using("gin", sql`${t.normalizedDesc} gin_trgm_ops`),
@@ -134,8 +142,10 @@ export const rules = pgTable("rules", {
   author: text("author").notNull(),
   reason: text("reason").notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => ({
   slugVersion: uniqueIndex("rules_slug_version").on(t.slug, t.version),
+  categoryValues: check("rules_category_values", sql`${t.category} in ('telecom','card','energy','water')`),
   kindValues: check(
     "rules_kind_values",
     sql`${t.kind} in ('pattern','delta','threshold','reference','confirm','arithmetic','suppressor')`,
@@ -210,6 +220,10 @@ export const caseDocuments = pgTable("case_documents", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => ({
+  stageValues: check(
+    "case_documents_stage_values",
+    sql`${t.stage} in ('draft','sac','ombudsman','consumidor_gov','regulator','procon','jec_ready','closed')`,
+  ),
   kindValues: check(
     "case_documents_kind_values",
     sql`${t.kind} in ('sac_script','contest_letter','gov_text','regulator_text','dossier')`,
@@ -226,8 +240,14 @@ export const caseProtocols = pgTable("case_protocols", {
   responseDueAt: timestamp("response_due_at", { withTimezone: true }).notNull(),
   responseReceivedAt: timestamp("response_received_at", { withTimezone: true }),
   responseSummary: text("response_summary"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
-});
+}, (t) => ({
+  stageValues: check(
+    "case_protocols_stage_values",
+    sql`${t.stage} in ('draft','sac','ombudsman','consumidor_gov','regulator','procon','jec_ready','closed')`,
+  ),
+}));
 
 // The one table without `updated_at`: an event is immutable by definition,
 // so it carries only `occurred_at`.
@@ -272,6 +292,7 @@ export const prompts = pgTable("prompts", {
   modelDefault: text("model_default").notNull(),
   status: text("status").notNull().default("draft"), // draft|active|retired
   metrics: jsonb("metrics").$type<Record<string, number>>(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => ({
   slugVersion: uniqueIndex("prompts_slug_version").on(t.slug, t.version),
@@ -291,6 +312,7 @@ export const referenceTariffs = pgTable("reference_tariffs", {
   teCentsMwh: integer("te_cents_mwh").notNull(),
   sourceUrl: text("source_url").notNull(),
   importedAt: timestamp("imported_at", { withTimezone: true }).notNull().defaultNow(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => ({ lookup: index("tariffs_lookup").on(t.issuerCnpj, t.subgroup, t.validFrom) }));
 
@@ -300,6 +322,7 @@ export const referenceFlags = pgTable("reference_flags", {
   flag: text("flag").notNull(), // verde|amarela|vermelha_1|vermelha_2|escassez
   valueCentsPer100Kwh: integer("value_cents_per_100kwh").notNull(),
   sourceUrl: text("source_url").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => ({
   flagValues: check(
@@ -318,6 +341,7 @@ export const aggregates = pgTable("aggregates", {
   confirmedByUser: integer("confirmed_by_user").notNull().default(0),
   dismissedByUser: integer("dismissed_by_user").notNull().default(0),
   resolved: integer("resolved").notNull().default(0),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => ({ uniq: uniqueIndex("agg_uniq").on(t.issuerId, t.normalizedDesc, t.period) }));
 
@@ -328,6 +352,7 @@ export const entitlements = pgTable("entitlements", {
   source: text("source").notNull(), // stripe|revenuecat|manual
   externalId: text("external_id"),
   validUntil: timestamp("valid_until", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => ({
   byUser: index("entitlements_user").on(t.userId),
@@ -341,6 +366,7 @@ export const seoPages = pgTable("seo_pages", {
   title: text("title").notNull(),
   bodyMd: text("body_md").notNull(),
   status: text("status").notNull().default("draft"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => ({
   uniq: uniqueIndex("seo_uniq").on(t.issuerId, t.chargeSlug),
@@ -357,6 +383,7 @@ export const ruleMetrics = pgTable("rule_metrics", {
   confirmed: integer("confirmed").notNull().default(0),
   contested: integer("contested").notNull().default(0),
   resolved: integer("resolved").notNull().default(0),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => ({ uniq: uniqueIndex("rule_metrics_uniq").on(t.ruleSlug, t.ruleVersion, t.day) }));
 

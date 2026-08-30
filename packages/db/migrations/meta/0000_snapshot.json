@@ -1,5 +1,5 @@
 {
-  "id": "53ca422f-be83-45d2-b061-cea3195bd8ac",
+  "id": "d86e2dad-b84c-43b2-aff3-211a36a37d24",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -151,6 +151,13 @@
           "primaryKey": false,
           "notNull": true,
           "default": 0
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
         },
         "updated_at": {
           "name": "updated_at",
@@ -342,6 +349,13 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
         }
       },
       "indexes": {},
@@ -466,6 +480,10 @@
       "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {
+        "case_documents_stage_values": {
+          "name": "case_documents_stage_values",
+          "value": "\"case_documents\".\"stage\" in ('draft','sac','ombudsman','consumidor_gov','regulator','procon','jec_ready','closed')"
+        },
         "case_documents_kind_values": {
           "name": "case_documents_kind_values",
           "value": "\"case_documents\".\"kind\" in ('sac_script','contest_letter','gov_text','regulator_text','dossier')"
@@ -531,6 +549,13 @@
           "primaryKey": false,
           "notNull": false
         },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
         "updated_at": {
           "name": "updated_at",
           "type": "timestamp with time zone",
@@ -558,7 +583,12 @@
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
-      "checkConstraints": {},
+      "checkConstraints": {
+        "case_protocols_stage_values": {
+          "name": "case_protocols_stage_values",
+          "value": "\"case_protocols\".\"stage\" in ('draft','sac','ombudsman','consumidor_gov','regulator','procon','jec_ready','closed')"
+        }
+      },
       "isRLSEnabled": false
     },
     "public.cases": {
@@ -783,6 +813,13 @@
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
         },
         "updated_at": {
           "name": "updated_at",
@@ -1151,6 +1188,20 @@
           "type": "jsonb",
           "primaryKey": false,
           "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
         }
       },
       "indexes": {
@@ -1576,6 +1627,13 @@
           "primaryKey": false,
           "notNull": false
         },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
         "updated_at": {
           "name": "updated_at",
           "type": "timestamp with time zone",
@@ -1652,6 +1710,13 @@
           "type": "text",
           "primaryKey": false,
           "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
         },
         "updated_at": {
           "name": "updated_at",
@@ -1754,6 +1819,13 @@
         },
         "imported_at": {
           "name": "imported_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "created_at": {
+          "name": "created_at",
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": true,
@@ -1865,6 +1937,13 @@
           "primaryKey": false,
           "notNull": true,
           "default": 0
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
         },
         "updated_at": {
           "name": "updated_at",
@@ -2001,6 +2080,13 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
         }
       },
       "indexes": {
@@ -2045,6 +2131,10 @@
       "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {
+        "rules_category_values": {
+          "name": "rules_category_values",
+          "value": "\"rules\".\"category\" in ('telecom','card','energy','water')"
+        },
         "rules_kind_values": {
           "name": "rules_kind_values",
           "value": "\"rules\".\"kind\" in ('pattern','delta','threshold','reference','confirm','arithmetic','suppressor')"
@@ -2096,6 +2186,13 @@
           "primaryKey": false,
           "notNull": true,
           "default": "'draft'"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
         },
         "updated_at": {
           "name": "updated_at",
