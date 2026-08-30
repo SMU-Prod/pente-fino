@@ -125,6 +125,13 @@ export const invoiceItems = pgTable("invoice_items", {
 }, (t) => ({
   byInvoiceDesc: index("items_invoice_desc").on(t.invoiceId, t.normalizedDesc),
   trgm: index("items_desc_trgm").using("gin", sql`${t.normalizedDesc} gin_trgm_ops`),
+  // Lets the ingest job re-run without deleting and reinserting a row: a
+  // line's (invoiceId, lineNo) is stable across re-extraction of the same
+  // invoice, so a rerun can UPSERT onto it instead. That matters because
+  // `findings.itemId` carries `onDelete: "cascade"` — a delete-then-reinsert
+  // strategy would silently destroy any finding already recorded against
+  // the old row the moment a step is retried.
+  uniqInvoiceLine: uniqueIndex("items_invoice_line").on(t.invoiceId, t.lineNo),
 }));
 
 export const rules = pgTable("rules", {

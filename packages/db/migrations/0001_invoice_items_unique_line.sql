@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX "items_invoice_line" ON "invoice_items" USING btree ("invoice_id","line_no");

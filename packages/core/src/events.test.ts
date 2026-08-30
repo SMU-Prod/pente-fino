@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest";
 import { EVENTS } from "./events.js";
 
 describe("EVENTS", () => {
-  it("carries every event named in PRD §15.1", () => {
-    expect(EVENTS).toHaveLength(27);
+  it("carries every event named in PRD §15.1, plus the two ingest terminals Task 13 added", () => {
+    expect(EVENTS).toHaveLength(29);
   });
 
   it("has no duplicates, because names are a contract", () => {
@@ -21,5 +21,10 @@ describe("EVENTS", () => {
     ]) {
       expect(EVENTS).toContain(step);
     }
+  });
+
+  it("names both terminal transitions of the §9.2 invoice state machine", () => {
+    expect(EVENTS).toContain("invoice_analyzed");
+    expect(EVENTS).toContain("invoice_failed");
   });
 });

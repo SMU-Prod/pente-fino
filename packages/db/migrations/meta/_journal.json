@@ -8,6 +8,13 @@
       "when": 1788092669889,
       "tag": "0000_init",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1788102145007,
+      "tag": "0001_invoice_items_unique_line",
+      "breakpoints": true
     }
   ]
 }

@@ -18,6 +18,31 @@ importers:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@22.20.1)
 
+  apps/jobs:
+    dependencies:
+      '@pentefino/adapters':
+        specifier: workspace:*
+        version: link:../../packages/adapters
+      '@pentefino/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@pentefino/db':
+        specifier: workspace:*
+        version: link:../../packages/db
+      drizzle-orm:
+        specifier: ^0.38.3
+        version: 0.38.4(@electric-sql/pglite@0.2.17)(postgres@3.4.9)
+    devDependencies:
+      '@pentefino/config':
+        specifier: workspace:*
+        version: link:../../packages/config
+      '@types/node':
+        specifier: ^22.10.5
+        version: 22.20.1
+      vitest:
+        specifier: ^2.1.8
+        version: 2.1.9(@types/node@22.20.1)
+
   packages/adapters:
     dependencies:
       '@pentefino/core':
