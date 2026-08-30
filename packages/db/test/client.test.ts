@@ -1,10 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { getDb } from "../src/client.js";
+import { getUnscopedDb } from "../src/client.js";
 
-// getDb() must fail fast and clearly when misconfigured, rather than
+// getUnscopedDb() must fail fast and clearly when misconfigured, rather than
 // attempting a real network connection with an undefined URL. We never want
 // this test opening an actual socket.
-describe("getDb", () => {
+describe("getUnscopedDb", () => {
   const original = process.env.DATABASE_URL;
 
   beforeEach(() => {
@@ -17,6 +17,6 @@ describe("getDb", () => {
   });
 
   it("throws a clear error when DATABASE_URL is not set", () => {
-    expect(() => getDb()).toThrow(/DATABASE_URL is not set/);
+    expect(() => getUnscopedDb()).toThrow(/DATABASE_URL is not set/);
   });
 });

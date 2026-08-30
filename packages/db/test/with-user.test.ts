@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { eq } from "drizzle-orm";
 import { newId } from "@pentefino/core";
 import { createTestDb, type TestDb } from "../src/testing.js";
-import { anonymousSessions, cases, findings, issuers, rules, users } from "../src/schema.js";
+import { anonymousSessions, cases, events, findings, invoices, issuers, rules, users } from "../src/schema.js";
 import { withUser } from "../src/with-user.js";
 
 let ctx: TestDb;
@@ -73,9 +74,53 @@ describe("withUser", () => {
     expect(rows[0]?.userId).toBe(alice);
   });
 
+  // --- ownership cannot be forged by the caller ---
+  //
+  // `insertInvoice` and `recordEvent` spread the true owner *after* the
+  // caller-supplied values, which is what makes a forged owner impossible
+  // today. These tests pin that ordering directly against the raw row
+  // (bypassing the read path's own ownership filter) so a future refactor
+  // that reorders the spread — or that inlines `payload` into the insert —
+  // fails loudly instead of silently reopening INV-008.
+  it("cannot be tricked into stamping a forged owner via insertInvoice values", async () => {
+    const scoped = withUser({ userId: alice }, ctx.db);
+    const invoiceId = await scoped.insertInvoice({
+      contentHash: "forged-inv",
+      source: "pdf_text",
+      // A caller has no legitimate way to pass `userId` here — `NewInvoice`
+      // doesn't declare it — so this simulates a bug or a malicious caller
+      // reaching past the type system, not a supported usage.
+      userId: bob,
+    } as unknown as Parameters<typeof scoped.insertInvoice>[0]);
+
+    const [row] = await ctx.db.select().from(invoices).where(eq(invoices.id, invoiceId));
+    expect(row?.userId).toBe(alice);
+    expect(row?.sessionId).toBeNull();
+  });
+
+  it("cannot be tricked into stamping a forged owner via the event payload", async () => {
+    const scoped = withUser({ userId: alice }, ctx.db);
+    const foreignSessionId = newId("ses");
+    await scoped.recordEvent("invoice_uploaded", { sessionId: foreignSessionId, source: "pdf_text" });
+
+    const [row] = await ctx.db.select().from(events).where(eq(events.userId, alice));
+    expect(row?.userId).toBe(alice);
+    expect(row?.sessionId).toBeNull();
+    // The forged value only ever lived inside the opaque payload column.
+    expect(row?.payload).toMatchObject({ sessionId: foreignSessionId });
+  });
+
   it("refuses to build a scope with neither owner", () => {
     // @ts-expect-error deliberately invalid session
     expect(() => withUser({}, ctx.db)).toThrow();
+  });
+
+  it("refuses to build a scope with an empty userId", () => {
+    expect(() => withUser({ userId: "" }, ctx.db)).toThrow();
+  });
+
+  it("refuses to build a scope with an empty sessionId", () => {
+    expect(() => withUser({ sessionId: "" }, ctx.db)).toThrow();
   });
 
   // --- ownership isolation, one test per method that could leak across users ---

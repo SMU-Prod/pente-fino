@@ -1,11 +1,11 @@
 import { and, desc, eq } from "drizzle-orm";
 import { newId, type EventType } from "@pentefino/core";
-import { getDb } from "./client.js";
+import { getUnscopedDb } from "./client.js";
 import { cases, events, findings, invoices } from "./schema.js";
 
 export type Session = { userId: string } | { sessionId: string };
 
-type Db = ReturnType<typeof getDb>;
+type Db = ReturnType<typeof getUnscopedDb>;
 
 type NewInvoice = {
   contentHash: string;
@@ -17,7 +17,16 @@ type NewInvoice = {
 /**
  * The single door to user data (INV-008). Every read and write here carries
  * the ownership filter, and the eslint rule `require-with-user` stops any
- * other module from importing the raw client.
+ * other module outside `packages/db` from reaching around it: it forbids
+ * importing `getUnscopedDb` or `schema` from `@pentefino/db`, and it forbids
+ * reaching a raw driver module (`postgres`, `drizzle-orm/postgres-js`,
+ * `drizzle-orm/pglite`, `@electric-sql/pglite`, or any subpath of one) via
+ * static import, dynamic `import()`, `require()`, or re-export. A
+ * legitimate unscoped caller — a background job with no user session, say —
+ * can still get past the gate, but only visibly: it carries an explicit
+ * `// eslint-disable-next-line pentefino/require-with-user` with a reason on
+ * the same line, so the exception shows up in review and in grep instead of
+ * hiding in a rule allowlist.
  *
  * Each predicate below is built against the table it filters, not reused
  * across tables: `invoices` and `events` each carry their own `userId` /
@@ -25,7 +34,7 @@ type NewInvoice = {
  * created before a session claims an account), so an anonymous session can
  * never own one.
  */
-export function withUser(session: Session, db: Db = getDb()) {
+export function withUser(session: Session, db: Db = getUnscopedDb()) {
   const userId = "userId" in session ? session.userId : null;
   const sessionId = "sessionId" in session ? session.sessionId : null;
   if (!userId && !sessionId) throw new Error("withUser requires a userId or a sessionId");
