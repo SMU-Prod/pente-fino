@@ -8,3 +8,6 @@ export { ContestDocument } from "./documents/contest.js";
 export { normalizeDescription } from "./invoice/normalize.js";
 export { validateInvoice, type ValidationResult, type ValidationFailure } from "./invoice/validate.js";
 export { maskCanonical, maskText, containsPii } from "./invoice/mask.js";
+export { runRules, type ActiveRule, type RuleEngineInput } from "./rules/engine.js";
+export { nextStage, type StageEvent, type StageTransition } from "./cases/next-stage.js";
+export { diffInvoices, type InvoiceDiff, type PairedItem } from "./diff/index.js";
