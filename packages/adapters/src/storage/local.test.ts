@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createLocalStorage } from "./local.js";
@@ -17,6 +18,10 @@ afterEach(() => {
 
 function storage() {
   return createLocalStorage({ root, secret: "test-secret", now: () => clock });
+}
+
+function sha256(body: Uint8Array): string {
+  return createHash("sha256").update(body).digest("hex");
 }
 
 describe("local storage", () => {
@@ -82,21 +87,110 @@ describe("local storage", () => {
 
   it("round trips a body", async () => {
     const s = storage();
-    const { fileKey } = await s.signUpload({ contentHash: "abc", mimeType: "application/pdf", sizeBytes: 3 });
-    await s.put(fileKey, new Uint8Array([1, 2, 3]));
-    expect(await s.get(fileKey)).toEqual(new Uint8Array([1, 2, 3]));
+    const body = new Uint8Array([1, 2, 3]);
+    const { fileKey } = await s.signUpload({
+      contentHash: sha256(body),
+      mimeType: "application/pdf",
+      sizeBytes: body.length,
+    });
+    await s.put(fileKey, body);
+    expect(await s.get(fileKey)).toEqual(body);
   });
 
   it("returns null for a key that was never written", async () => {
     expect(await storage().get("nope")).toBeNull();
   });
 
+  it("propagates a non-not-found error instead of masking it as a missing key", async () => {
+    const s = storage();
+    const fileKey = "uploads/this-is-a-directory";
+    mkdirSync(join(root, fileKey), { recursive: true });
+    await expect(s.get(fileKey)).rejects.toThrow();
+  });
+
   it("deletes", async () => {
     const s = storage();
-    const { fileKey } = await s.signUpload({ contentHash: "abc", mimeType: "application/pdf", sizeBytes: 1 });
-    await s.put(fileKey, new Uint8Array([9]));
+    const body = new Uint8Array([9]);
+    const { fileKey } = await s.signUpload({
+      contentHash: sha256(body),
+      mimeType: "application/pdf",
+      sizeBytes: body.length,
+    });
+    await s.put(fileKey, body);
     await s.delete(fileKey);
     expect(await s.get(fileKey)).toBeNull();
+  });
+
+  describe("exists", () => {
+    it("reports true for a key that was written", async () => {
+      const s = storage();
+      const body = new Uint8Array([7]);
+      const { fileKey } = await s.signUpload({
+        contentHash: sha256(body),
+        mimeType: "application/pdf",
+        sizeBytes: body.length,
+      });
+      await s.put(fileKey, body);
+      expect(await s.exists(fileKey)).toBe(true);
+    });
+
+    it("reports false for a key that was never written", async () => {
+      expect(await storage().exists("nope")).toBe(false);
+    });
+
+    it("propagates a non-not-found error instead of masking it as absent", async () => {
+      const s = storage();
+      const fileKey = "uploads/this-is-also-a-directory";
+      mkdirSync(join(root, fileKey), { recursive: true });
+      // A directory does exist at this path, so this must not silently report
+      // absence - either way, it must not swallow the distinction the way a
+      // bare existsSync() would.
+      await expect(s.exists(fileKey)).resolves.toBe(true);
+    });
+  });
+
+  describe("enforcing the signed upload's declared constraints", () => {
+    it("rejects a put whose body length does not match the signed size", async () => {
+      const s = storage();
+      const body = new Uint8Array([1, 2, 3]);
+      const { fileKey } = await s.signUpload({
+        contentHash: sha256(body),
+        mimeType: "application/pdf",
+        sizeBytes: body.length,
+      });
+      await expect(s.put(fileKey, new Uint8Array([1, 2]))).rejects.toMatchObject({ reason: "size_mismatch" });
+    });
+
+    it("rejects a put whose body content hash does not match the signed content hash", async () => {
+      const s = storage();
+      const signedBody = new Uint8Array([1, 2, 3]);
+      const { fileKey } = await s.signUpload({
+        contentHash: sha256(signedBody),
+        mimeType: "application/pdf",
+        sizeBytes: signedBody.length,
+      });
+      const differentBody = new Uint8Array([4, 5, 6]); // same length, different bytes and hash
+      await expect(s.put(fileKey, differentBody)).rejects.toMatchObject({ reason: "hash_mismatch" });
+    });
+
+    it("rejects a put for a fileKey that was never signed", async () => {
+      const s = storage();
+      await expect(s.put("uploads/never-signed.pdf", new Uint8Array([1]))).rejects.toMatchObject({
+        reason: "unsigned",
+      });
+    });
+
+    it("accepts a put whose body matches the signed size and content hash exactly", async () => {
+      const s = storage();
+      const body = new Uint8Array([10, 20, 30, 40]);
+      const { fileKey } = await s.signUpload({
+        contentHash: sha256(body),
+        mimeType: "application/pdf",
+        sizeBytes: body.length,
+      });
+      await expect(s.put(fileKey, body)).resolves.toBeUndefined();
+      expect(await s.get(fileKey)).toEqual(body);
+    });
   });
 
   describe("path traversal hardening", () => {
@@ -142,13 +236,13 @@ describe("local storage", () => {
 
     it("never creates a file outside the storage root even when asked to", async () => {
       const s = storage();
-      const outsideMarker = join(root, "..", `pf-outside-marker-${Date.now()}`);
+      const marker = `pf-outside-marker-${Date.now()}`;
+      const outsideMarker = join(root, "..", marker);
       try {
-        await s.put("../" + `pf-outside-marker-${Date.now()}`, new Uint8Array([1]));
+        await s.put("../" + marker, new Uint8Array([1]));
       } catch {
         // expected: the adapter must refuse, not write outside root.
       }
-      const { existsSync } = await import("node:fs");
       expect(existsSync(outsideMarker)).toBe(false);
     });
   });

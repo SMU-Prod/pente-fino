@@ -1,5 +1,5 @@
-import { createHmac, timingSafeEqual } from "node:crypto";
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createHash, createHmac, timingSafeEqual } from "node:crypto";
+import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import type { SignedUpload, Storage } from "@pentefino/core/ports";
 
@@ -9,6 +9,18 @@ const TTL_MS = 5 * 60 * 1000;
 // outside this set (path separators, "..", drive letters) is rejected before
 // it can ever become part of a file key.
 const SAFE_CONTENT_HASH = /^[A-Za-z0-9_-]+$/;
+
+const UPLOAD_URL_PATTERN = /^local:\/\/(.+)\?exp=(\d+)&size=(\d+)&hash=([A-Za-z0-9_-]+)&sig=([0-9a-f]+)$/;
+
+// Node's fs errors carry a `code` string; anything else about the shape of
+// `error` is not something we want to assume.
+function isEnoent(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT";
+}
+
+function putError(reason: "unsigned" | "size_mismatch" | "hash_mismatch", message: string): Error {
+  return Object.assign(new Error(message), { reason });
+}
 
 /**
  * Filesystem stand-in for R2. It signs and expires for real: a fake that
@@ -23,8 +35,17 @@ export function createLocalStorage(options: {
   const now = options.now ?? Date.now;
   const storageRoot = resolve(options.root);
 
-  function sign(fileKey: string, expiresAt: number): string {
-    return createHmac("sha256", options.secret).update(`${fileKey}:${expiresAt}`).digest("hex");
+  // What each signUpload() call promised: the size and content hash that a
+  // later put() for the same fileKey must actually deliver. This is the
+  // in-memory equivalent of the policy a real R2 presigned PUT enforces
+  // through its signature - put() has no access to the uploadUrl, only to
+  // the fileKey, so the promise has to be kept somewhere it can look it up.
+  const pendingUploads = new Map<string, { sizeBytes: number; contentHash: string }>();
+
+  function sign(fileKey: string, expiresAt: number, sizeBytes: number, contentHash: string): string {
+    return createHmac("sha256", options.secret)
+      .update(`${fileKey}:${expiresAt}:${sizeBytes}:${contentHash}`)
+      .digest("hex");
   }
 
   // Every fileKey - whether minted by signUpload or handed in directly by a
@@ -43,23 +64,41 @@ export function createLocalStorage(options: {
   }
 
   return {
-    async signUpload({ contentHash, mimeType }): Promise<SignedUpload> {
+    async signUpload({ contentHash, mimeType, sizeBytes }): Promise<SignedUpload> {
       if (!SAFE_CONTENT_HASH.test(contentHash)) {
         throw new Error(`refusing unsafe contentHash: ${contentHash}`);
       }
       const extension = mimeType === "application/pdf" ? "pdf" : "bin";
       const fileKey = `uploads/${contentHash}.${extension}`;
       const expiresAt = now() + TTL_MS;
-      const sig = sign(fileKey, expiresAt);
+      const sig = sign(fileKey, expiresAt, sizeBytes, contentHash);
+      pendingUploads.set(fileKey, { sizeBytes, contentHash });
       return {
         fileKey,
-        uploadUrl: `local://${fileKey}?exp=${expiresAt}&sig=${sig}`,
+        uploadUrl: `local://${fileKey}?exp=${expiresAt}&size=${sizeBytes}&hash=${contentHash}&sig=${sig}`,
         expiresAt: new Date(expiresAt).toISOString(),
       };
     },
 
     async put(fileKey, body) {
       const target = pathFor(fileKey);
+      const pending = pendingUploads.get(fileKey);
+      if (!pending) {
+        throw putError("unsigned", `refusing put for a fileKey with no signed upload: ${fileKey}`);
+      }
+      if (body.length !== pending.sizeBytes) {
+        throw putError(
+          "size_mismatch",
+          `refusing put: body length ${body.length} does not match the signed size ${pending.sizeBytes}`,
+        );
+      }
+      const actualHash = createHash("sha256").update(body).digest("hex");
+      if (actualHash !== pending.contentHash) {
+        throw putError(
+          "hash_mismatch",
+          `refusing put: body content hash does not match the signed content hash for ${fileKey}`,
+        );
+      }
       mkdirSync(dirname(target), { recursive: true });
       writeFileSync(target, body);
     },
@@ -68,8 +107,20 @@ export function createLocalStorage(options: {
       const target = pathFor(fileKey);
       try {
         return new Uint8Array(readFileSync(target));
-      } catch {
-        return null;
+      } catch (error) {
+        if (isEnoent(error)) return null;
+        throw error;
+      }
+    },
+
+    async exists(fileKey) {
+      const target = pathFor(fileKey);
+      try {
+        statSync(target);
+        return true;
+      } catch (error) {
+        if (isEnoent(error)) return false;
+        throw error;
       }
     },
 
@@ -79,10 +130,17 @@ export function createLocalStorage(options: {
     },
 
     verify(uploadUrl) {
-      const match = /^local:\/\/(.+)\?exp=(\d+)&sig=([0-9a-f]+)$/.exec(uploadUrl);
+      const match = UPLOAD_URL_PATTERN.exec(uploadUrl);
       if (!match) return { fileKey: "", valid: false, reason: "bad_signature" };
-      const [, fileKey, exp, sig] = match as unknown as [string, string, string, string];
-      const expected = sign(fileKey, Number(exp));
+      const [, fileKey, exp, size, hash, sig] = match as unknown as [
+        string,
+        string,
+        string,
+        string,
+        string,
+        string,
+      ];
+      const expected = sign(fileKey, Number(exp), Number(size), hash);
       const a = Buffer.from(sig, "hex");
       const b = Buffer.from(expected, "hex");
       if (a.length !== b.length || !timingSafeEqual(a, b)) {
