@@ -27,15 +27,19 @@ type WordHit = { index: number; end: number };
 const L_PLURAL_ENDING = /(?:al|el|il|ol|ul)$/;
 
 /**
- * Extends an already-escaped last word with its regular Portuguese plural,
- * so the term list stays singular while the matcher still catches the
+ * Extends an already-escaped word with its regular Portuguese plural, so
+ * the term list stays singular while the matcher still catches the
  * inflected form a real message would use:
  *   - words ending in -al/-el/-il/-ol/-ul drop the "l" and add "is"
  *     (ilegal -> ilegais, judicial -> judiciais);
  *   - every other word optionally takes a trailing "s" or "es"
  *     (advogado -> advogados, parecer -> pareceres).
  * This is deliberately not general morphology: only this one regular
- * pattern, applied only to the final word of the term, per §14.3.
+ * pattern. It is applied to every word of a multi-word term (see
+ * `findWord`), not only the last, so a phrase that pluralizes every word —
+ * "processos judiciais", not just "processo judiciais" — is still caught.
+ * Each suffix is optional, so the base form and every mixed singular/plural
+ * combination across the words keep matching too.
  */
 function withPlural(word: string): string {
   if (L_PLURAL_ENDING.test(word)) {
@@ -52,15 +56,14 @@ function withPlural(word: string): string {
  * words — a line break, a tab, a non-breaking space, or more than one
  * plain space — counts as the same gap a single ASCII space would. Each
  * piece is escaped after the split, so a literal space is never itself
- * escaped or folded into a character class. The final word is then widened
- * to also accept its regular plural (see `withPlural`), since the boundary
+ * escaped or folded into a character class. Every word is then widened to
+ * also accept its regular plural (see `withPlural`), since the boundary
  * lookaround below still keeps a bare prefix like "advogadoria" from
  * matching "advogado".
  */
 function findWord(haystack: string, needle: string): WordHit[] {
   const words = needle.split(" ").map((word) => word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
-  const lastIndex = words.length - 1;
-  const pattern = words.map((word, i) => (i === lastIndex ? withPlural(word) : word)).join("\\s+");
+  const pattern = words.map((word) => withPlural(word)).join("\\s+");
   const regex = new RegExp(`(?<![\\p{L}\\p{N}])${pattern}(?![\\p{L}\\p{N}])`, "gu");
   const hits: WordHit[] = [];
   let match: RegExpExecArray | null;

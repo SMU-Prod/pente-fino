@@ -276,7 +276,7 @@ describe("lintUserFacingText — regular Portuguese plurals of §14.3 terms", ()
     expect(lintUserFacingText("Isso foi resolvido juridicamente, sem processo.").ok).toBe(true);
   });
 
-  it("pluralizes only the final word of a multi-word term ('processo judiciais')", () => {
+  it("still matches a mixed form where only the last word of a multi-word term is pluralized ('processo judiciais')", () => {
     expect(lintUserFacingText("Vamos abrir um processo judiciais assim que possível").ok).toBe(false);
   });
 
@@ -291,5 +291,55 @@ describe("lintUserFacingText — regular Portuguese plurals of §14.3 terms", ()
     const start = text.indexOf("indevidas");
     const end = start + "indevidas".length;
     expect(lintUserFacingText(text, { citations: [{ start, end }] }).ok).toBe(true);
+  });
+});
+
+/**
+ * The plural widening used to touch only the final word of a multi-word
+ * term, so a phrase with EVERY word pluralized ("processos judiciais", not
+ * just "processo judiciais") slipped through undetected. `withPlural` is
+ * now applied to every word of the term (see lint.ts), so the base form,
+ * the fully plural form, and every mixed combination all still match.
+ */
+describe("lintUserFacingText — every word of a multi-word term widens for its plural", () => {
+  it("catches every word of 'processo judicial' pluralized ('Vamos abrir processos judiciais')", () => {
+    const result = lintUserFacingText("Vamos abrir processos judiciais");
+    expect(result.ok).toBe(false);
+    expect(result.violations.some((v) => v.term === "processo judicial")).toBe(true);
+  });
+
+  it("still matches the base singular form ('Podemos abrir uma ação judicial')", () => {
+    const result = lintUserFacingText("Podemos abrir uma ação judicial");
+    expect(result.ok).toBe(false);
+    expect(result.violations.some((v) => v.term === "acao judicial")).toBe(true);
+  });
+
+  it("still matches a mixed form, plural on the first word only ('processo judiciais' -> also true when reversed: 'processos judicial')", () => {
+    const result = lintUserFacingText("Vamos abrir processos judicial");
+    expect(result.ok).toBe(false);
+    expect(result.violations.some((v) => v.term === "processo judicial")).toBe(true);
+  });
+
+  it("still matches a mixed form, plural on the last word only ('processo judiciais')", () => {
+    const result = lintUserFacingText("processo judiciais");
+    expect(result.ok).toBe(false);
+    expect(result.violations.some((v) => v.term === "processo judicial")).toBe(true);
+  });
+
+  // "ação" -> "ações" is an irregular Portuguese plural: the nasal
+  // diphthong itself shifts (ã+o -> õ+e), it is not a regular suffix on
+  // top of the singular spelling. That shift is outside the one widening
+  // rule this lint implements (an optional "s"/"es" suffix, plus the
+  // "-l" -> "-is" alternation for words ending in -al/-el/-il/-ol/-ul), so
+  // "ação judicial" does not itself widen to match "ações judiciais" - this
+  // sentence still reports a violation, but only via the unrelated
+  // "entraremos com" term. This is a known, deliberate limitation, not an
+  // oversight: pin it here so a future change to the rule is a conscious
+  // decision, not a silent regression either way.
+  it("still reports a violation for 'Entraremos com ações judiciais', but via 'entraremos com', not 'ação judicial' ('ação' pluralizes irregularly)", () => {
+    const result = lintUserFacingText("Entraremos com ações judiciais");
+    expect(result.ok).toBe(false);
+    expect(result.violations.some((v) => v.term === "entraremos com")).toBe(true);
+    expect(result.violations.some((v) => v.term === "acao judicial")).toBe(false);
   });
 });
