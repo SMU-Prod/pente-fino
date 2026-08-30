@@ -21,3 +21,14 @@ export const RULE_KINDS = [
   "pattern", "delta", "threshold", "reference", "confirm", "arithmetic", "suppressor",
 ] as const;
 export type RuleKind = (typeof RULE_KINDS)[number];
+
+/**
+ * Compile-time proof that RULE_KINDS covers exactly the `kind` discriminants of
+ * RuleSpec — no fewer, no more. `AssertEqual` performs the bidirectional
+ * `extends` check (each union must be assignable to the other), and asserting
+ * it against a `const` turns any drift between the union and the array into a
+ * `tsc` error instead of a silent runtime gap.
+ */
+type AssertEqual<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
+const _ruleKindsCoverRuleSpecExactly: AssertEqual<RuleKind, RuleSpec["kind"]> = true;
+void _ruleKindsCoverRuleSpecExactly;

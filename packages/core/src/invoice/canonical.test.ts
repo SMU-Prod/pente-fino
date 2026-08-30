@@ -48,4 +48,44 @@ describe("InvoiceCanonical", () => {
     const bad = { ...valid, extraction: { confidence: 1.4, warnings: [] } };
     expect(InvoiceCanonical.safeParse(bad).success).toBe(false);
   });
+
+  it("rejects a confidence below 0", () => {
+    const bad = { ...valid, extraction: { confidence: -0.1, warnings: [] } };
+    expect(InvoiceCanonical.safeParse(bad).success).toBe(false);
+  });
+
+  it("accepts an invoice with no cnpj, because it is optional", () => {
+    const noCnpj = { ...valid, issuer: { name: valid.issuer.name, category: valid.issuer.category } };
+    expect(InvoiceCanonical.safeParse(noCnpj).success).toBe(true);
+  });
+
+  it("rejects a malformed dueDate", () => {
+    expect(InvoiceCanonical.safeParse({ ...valid, dueDate: "10-08-2026" }).success).toBe(false);
+  });
+
+  it("rejects a malformed period.start", () => {
+    const bad = { ...valid, period: { ...valid.period, start: "not-a-date" } };
+    expect(InvoiceCanonical.safeParse(bad).success).toBe(false);
+  });
+
+  it("rejects a malformed period.end", () => {
+    const bad = { ...valid, period: { ...valid.period, end: "31/07/2026" } };
+    expect(InvoiceCanonical.safeParse(bad).success).toBe(false);
+  });
+
+  it("rejects an empty sections array", () => {
+    expect(InvoiceCanonical.safeParse({ ...valid, sections: [] }).success).toBe(false);
+  });
+
+  it("rejects a fractional amountCents", () => {
+    const bad = {
+      ...valid,
+      sections: [{ name: "Serviços", items: [{ description: "Plano pós-pago", amountCents: 99.9 }] }],
+    };
+    expect(InvoiceCanonical.safeParse(bad).success).toBe(false);
+  });
+
+  it("rejects a fractional totalCents", () => {
+    expect(InvoiceCanonical.safeParse({ ...valid, totalCents: 129.9 }).success).toBe(false);
+  });
 });
