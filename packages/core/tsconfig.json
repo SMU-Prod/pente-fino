@@ -1,0 +1,1 @@
+{ "extends": "@pentefino/config/tsconfig.base.json", "include": ["src"] }
