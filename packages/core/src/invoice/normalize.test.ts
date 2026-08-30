@@ -152,4 +152,45 @@ describe("normalizeDescription", () => {
       expect(normalizeDescription(once)).toBe(once);
     }
   });
+
+  it("tells apart equipment codes whose four-digit run is not a plausible month", () => {
+    expect(normalizeDescription("Modem instalado RTA-1234-56"))
+      .not.toBe(normalizeDescription("Modem instalado RTA-1234-99"));
+  });
+
+  it("tells apart account codes whose four-digit run is not a plausible month", () => {
+    expect(normalizeDescription("Conta1234-5678"))
+      .not.toBe(normalizeDescription("Conta1234-9999"));
+  });
+
+  it("still matches a recurring line across cycles after the month check is added", () => {
+    expect(normalizeDescription("Mensalidade-01/2026")).toBe(normalizeDescription("Mensalidade-02/2026"));
+  });
+
+  it("recognises a cycle across a year boundary, in either group order", () => {
+    expect(normalizeDescription("Mensalidade-12/2026")).toBe("MENSALIDADE");
+    expect(normalizeDescription("Mensalidade-01/2027")).toBe("MENSALIDADE");
+  });
+
+  it("keeps the digits of a chunk whose non-year group is not a plausible month", () => {
+    const result = normalizeDescription("Serie2024-13");
+    expect(result).toContain("202413");
+  });
+
+  it("is idempotent for the month-plausibility cases", () => {
+    for (const input of [
+      "Modem instalado RTA-1234-56",
+      "Modem instalado RTA-1234-99",
+      "Conta1234-5678",
+      "Conta1234-9999",
+      "Mensalidade-01/2026",
+      "Mensalidade-02/2026",
+      "Mensalidade-12/2026",
+      "Mensalidade-01/2027",
+      "Serie2024-13",
+    ]) {
+      const once = normalizeDescription(input);
+      expect(normalizeDescription(once)).toBe(once);
+    }
+  });
 });

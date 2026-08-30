@@ -17,13 +17,20 @@
  *    removed entirely. "07/2026" and "01310-100" both go this way.
  * 2. **Remove a date/cycle-shaped chunk.** Within a token that does contain
  *    a letter (so it survived decision 1), a chunk of exactly two digit
- *    groups joined by a single "/", "." or "-", where at least one group is
- *    exactly four digits, is replaced by a single space. This is what lets
- *    "Mensalidade-01/2026" and "Mensalidade-02/2026" collapse to the same
- *    "MENSALIDADE" even though the cycle number is glued to the word with
- *    no space of its own. A chain of three or more groups never qualifies
- *    here, no matter how many of its groups happen to be four digits long
- *    - it is left for decision 3 instead.
+ *    groups joined by a single "/", "." or "-" is replaced by a single space
+ *    when one group is exactly four digits (a year) and the other group
+ *    parses to a plausible month, 1 through 12. "01/2026", "2026-08" and
+ *    "12/2026" all qualify this way. Requiring a plausible month - not just
+ *    a four-digit group - is what keeps an equipment or account code that
+ *    merely happens to contain a four-digit run ("RTA-1234-56",
+ *    "Conta1234-5678", "1234-9999") from being mistaken for a date: neither
+ *    "56" nor "5678" nor "9999" is a month, so those chunks are left alone.
+ *    This is what lets "Mensalidade-01/2026" and "Mensalidade-02/2026"
+ *    collapse to the same "MENSALIDADE" even though the cycle number is
+ *    glued to the word with no space of its own. A chain of three or more
+ *    groups never qualifies here, no matter how many of its groups happen
+ *    to be four digits long or plausible months - it is left for decision 3
+ *    instead.
  * 3. **Fuse punctuation next to a digit.** Punctuation directly between two
  *    alphanumeric characters vanishes - with no space inserted, so the
  *    characters fuse into one - whenever at least one of the two
@@ -43,21 +50,41 @@
  * The pieces every token survives as are rejoined with single spaces and
  * trimmed.
  *
- * ## Known limitation
+ * ## Known limitations
  *
- * Decision 1 drops any whitespace-separated token that has no letter at
- * all, with no way to tell a meaningless identifier from one that matters.
- * Two lines differing only in such a token - a premium short code ("40041"
- * vs "40042"), a protocol number ("Protocolo 2026-08-000123" vs
- * "...-000456"), a postal code ("CEP 01310-100" vs "CEP 04543-011"), or a
- * day count ("Multa por atraso 30 dias" vs "...15 dias") - normalise to the
- * exact same string. This is a deliberate trade-off, not an oversight: a
- * shape-only function cannot distinguish an identifier from a billing cycle
- * without more context than a string carries, and this function chooses to
- * favour matching a recurring line across cycles over telling apart two
- * coincidentally-shaped one-off codes. Anything in E2 that matches pattern
- * rules against this output must not treat equal normalised descriptions as
- * proof of the same billable item.
+ * This function tells recurring items apart from one-off codes by shape
+ * alone, and shape alone cannot always get it right. Three classes of
+ * mismatch are accepted as a deliberate trade-off rather than patched:
+ *
+ * 1. **A letterless token is always dropped, matching or not.** Decision 1
+ *    drops any whitespace-separated token that has no letter at all, with
+ *    no way to tell a meaningless identifier from one that matters. Two
+ *    lines differing only in such a token - a premium short code ("40041"
+ *    vs "40042"), a protocol number ("Protocolo 2026-08-000123" vs
+ *    "...-000456"), a postal code ("CEP 01310-100" vs "CEP 04543-011"), or a
+ *    day count ("Multa por atraso 30 dias" vs "...15 dias") - normalise to
+ *    the exact same string.
+ * 2. **A year-month pair is indistinguishable from an equipment code that
+ *    happens to look like one.** "Equipamento ONU-2024-01" and
+ *    "Equipamento ONU-2024-02" both normalise to "EQUIPAMENTO ONU", because
+ *    "2024-01" and "2024-02" both have the exact shape of a billing cycle
+ *    (a four-digit group plus a 1-12 group). Nothing in the string says
+ *    whether "01" and "02" are months or an equipment revision number, so
+ *    two distinct revisions collapse together the same way two cycles of
+ *    the same recurring charge are meant to.
+ * 3. **A three-or-more-group date glued to a word is never recognised as a
+ *    cycle.** "Mensalidade15/01/2026Ref" does not collapse with the same
+ *    line for a different billing date written the same glued way, because
+ *    decision 2 only strips exactly two digit groups - a chain of three or
+ *    more is deliberately left alone (see decision 2) so that a protocol
+ *    number such as "Protocolo 2026-08-000123" keeps its digits instead of
+ *    having a leading year-month pair stripped out of the middle of it.
+ *
+ * In every case, a shape-only function cannot distinguish an identifier
+ * from a billing cycle without more context than a string carries. Anything
+ * in E2 that matches pattern rules against this output must not treat equal
+ * normalised descriptions as proof of the same billable item, nor different
+ * normalised descriptions as proof of a different item.
  */
 export function normalizeDescription(input: string): string {
   const upper = input
@@ -123,8 +150,29 @@ function normalizeToken(token: string): string[] {
     .filter((part) => part.length > 0 && !ALL_DIGITS.test(part));
 }
 
-/** Exactly two digit groups, at least one of them the four-digit shape of a year. */
+/**
+ * Exactly two digit groups where one is a four-digit year and the other
+ * parses as a plausible month (1-12). Checked both ways round so either
+ * group order - "01/2026" (month first) or "2026-08" (year first) -
+ * qualifies.
+ */
 function isDateShaped(chunk: string): boolean {
   const groups = chunk.split(/[\/.-]/);
-  return groups.length === 2 && groups.some((group) => group.length === 4);
+  if (groups.length !== 2) {
+    return false;
+  }
+  const [first, second] = groups;
+  if (first === undefined || second === undefined) {
+    return false;
+  }
+  return (
+    (first.length === 4 && isPlausibleMonth(second)) ||
+    (second.length === 4 && isPlausibleMonth(first))
+  );
+}
+
+/** Whether a digit group parses as a month number from 1 to 12. */
+function isPlausibleMonth(group: string): boolean {
+  const value = Number(group);
+  return value >= 1 && value <= 12;
 }
