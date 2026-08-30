@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
+import { PgDatabase } from "drizzle-orm/pg-core";
 import { dirname, join } from "node:path";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -233,5 +234,203 @@ describe("ingest task", () => {
     expect(row?.status).toBe("failed");
     const rows = await ctx.db.select().from(events).where(eq(events.invoiceId, orphanId));
     expect(rows.map((r) => r.type)).toContain("invoice_failed");
+  });
+
+  // --- Finding 1: a rerun that reproduces fewer items than before must not
+  // leave the old, now-nonexistent lines behind. Each case forces the
+  // invoice back to "validating" between runs, the same crash simulation the
+  // "preserves invoice_item ids" test above uses, so the `analyzed` guard
+  // does not short-circuit the rerun.
+
+  it("removes items a rerun no longer reproduces, so invoice_items matches invoices.canonical (idempotency)", async () => {
+    await task()({ invoiceId });
+    const before = await ctx.db.select().from(invoiceItems).where(eq(invoiceItems.invoiceId, invoiceId));
+    expect(before).toHaveLength(2);
+
+    await ctx.db.update(invoices).set({ status: "validating" }).where(eq(invoices.id, invoiceId));
+
+    // totalCents must track the shrunk item sum: validation (RF-108) rejects
+    // anything more than 1% off, and a rejected invoice never reaches persist.
+    const shrunk: InvoiceCanonical = {
+      ...canonical,
+      totalCents: 9000,
+      sections: [{ name: "Serviços", items: [canonical.sections[0]!.items[0]!] }],
+    };
+    const rerun = createIngestTask({
+      db: ctx.db,
+      storage: createLocalStorage({ root, secret: "s" }),
+      ai: createFixtureAiProvider({ [fileKey]: shrunk }),
+    });
+    await rerun({ invoiceId });
+
+    const after = await ctx.db.select().from(invoiceItems).where(eq(invoiceItems.invoiceId, invoiceId));
+    expect(after).toHaveLength(1);
+    expect(after[0]?.description.startsWith("Plano")).toBe(true);
+
+    const [row] = await ctx.db.select().from(invoices).where(eq(invoices.id, invoiceId));
+    const storedCanonical = row?.canonical as InvoiceCanonical;
+    expect(storedCanonical.sections[0]?.items).toHaveLength(1);
+  });
+
+  it("keeps prior lines and adds the new one when a rerun reproduces more items than before (idempotency)", async () => {
+    const shrunk: InvoiceCanonical = {
+      ...canonical,
+      totalCents: 9000,
+      sections: [{ name: "Serviços", items: [canonical.sections[0]!.items[0]!] }],
+    };
+    const first = createIngestTask({
+      db: ctx.db,
+      storage: createLocalStorage({ root, secret: "s" }),
+      ai: createFixtureAiProvider({ [fileKey]: shrunk }),
+    });
+    await first({ invoiceId });
+    const before = await ctx.db.select().from(invoiceItems).where(eq(invoiceItems.invoiceId, invoiceId));
+    expect(before).toHaveLength(1);
+    const survivingId = before[0]!.id;
+
+    await ctx.db.update(invoices).set({ status: "validating" }).where(eq(invoices.id, invoiceId));
+
+    await task()({ invoiceId }); // full two-item canonical
+
+    const after = await ctx.db.select().from(invoiceItems).where(eq(invoiceItems.invoiceId, invoiceId));
+    expect(after).toHaveLength(2);
+    expect(after.map((i) => i.id)).toContain(survivingId);
+  });
+
+  it("keeps the same rows, with updated content, when a rerun reproduces the same number of items (idempotency)", async () => {
+    await task()({ invoiceId });
+    const before = await ctx.db.select().from(invoiceItems).where(eq(invoiceItems.invoiceId, invoiceId));
+    expect(before).toHaveLength(2);
+    const idsBefore = before.map((i) => i.id).sort();
+
+    await ctx.db.update(invoices).set({ status: "validating" }).where(eq(invoices.id, invoiceId));
+
+    const relabelled: InvoiceCanonical = {
+      ...canonical,
+      sections: [{
+        name: "Serviços",
+        items: [
+          { description: "Plano pós-pago renovado", amountCents: 9000 },
+          { description: "Titular CPF 123.456.789-09", amountCents: 1000 },
+        ],
+      }],
+    };
+    const rerun = createIngestTask({
+      db: ctx.db,
+      storage: createLocalStorage({ root, secret: "s" }),
+      ai: createFixtureAiProvider({ [fileKey]: relabelled }),
+    });
+    await rerun({ invoiceId });
+
+    const after = await ctx.db.select().from(invoiceItems).where(eq(invoiceItems.invoiceId, invoiceId));
+    expect(after).toHaveLength(2);
+    expect(after.map((i) => i.id).sort()).toEqual(idsBefore);
+    expect(after.some((i) => i.description === "Plano pós-pago renovado")).toBe(true);
+  });
+
+  // --- Finding 2: a status change and its event must land together or not
+  // at all. Simulated here by poisoning the shared `PgDatabase` prototype so
+  // the very insert that writes `invoice_analyzed` fails, and everything
+  // after it fails too (standing in for a crash that kills the connection).
+  // Without a transaction wrapping the status update and the event insert,
+  // the update - a separate, already-awaited statement - has already
+  // committed by the time the insert fails, stranding the invoice at
+  // `analyzed` with no `invoice_analyzed` event and, because the guard at
+  // the top of `ingest` short-circuits on `status === "analyzed"`, no way
+  // for a retry to ever repair it.
+  it("does not strand the invoice at analyzed with no invoice_analyzed event when the event write fails (A3)", async () => {
+    // Both originals must be captured BEFORE either prototype method is
+    // replaced, or the "original" saved for restoration is actually the
+    // already-patched version - which would leak the patch into every test
+    // that runs afterward.
+    const originalInsert = PgDatabase.prototype.insert;
+    const originalUpdate = PgDatabase.prototype.update;
+    let poisoned = false;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (PgDatabase.prototype as any).insert = function (this: unknown, table: unknown) {
+      if (poisoned) throw new Error("simulated connection loss (poisoned)");
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const builder: any = originalInsert.call(this, table as never);
+      if (table === events) {
+        const originalValues = builder.values.bind(builder);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        builder.values = (vals: any) => {
+          if (vals?.type === "invoice_analyzed") {
+            poisoned = true;
+            throw new Error("simulated connection loss while writing invoice_analyzed");
+          }
+          return originalValues(vals);
+        };
+      }
+      return builder;
+    };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (PgDatabase.prototype as any).update = new Proxy(originalUpdate, {
+      apply(target, thisArg, args) {
+        if (poisoned) throw new Error("simulated connection loss (poisoned)");
+        return Reflect.apply(target, thisArg, args);
+      },
+    });
+
+    try {
+      await expect(task()({ invoiceId })).rejects.toThrow();
+
+      const [row] = await ctx.db.select().from(invoices).where(eq(invoices.id, invoiceId));
+      expect(row?.status).not.toBe("analyzed");
+
+      const rows = await ctx.db.select().from(events).where(eq(events.invoiceId, invoiceId));
+      expect(rows.map((r) => r.type)).not.toContain("invoice_analyzed");
+    } finally {
+      PgDatabase.prototype.insert = originalInsert;
+      PgDatabase.prototype.update = originalUpdate;
+    }
+  });
+
+  // --- Finding 3: the invoice_failed payload must never carry raw error
+  // text verbatim - a provider that echoes invoice content into an error
+  // message must not turn that into a stored leak.
+  it("masks PII in the invoice_failed message and caps its length (INV-007)", async () => {
+    const longTail = "x".repeat(2000);
+    const failing = createIngestTask({
+      db: ctx.db,
+      storage: createLocalStorage({ root, secret: "s" }),
+      ai: {
+        async extractInvoice() {
+          throw new Error(`malformed completion near CPF 123.456.789-09 ${longTail}`);
+        },
+      },
+    });
+    await expect(failing({ invoiceId })).rejects.toThrow();
+
+    const rows = await ctx.db.select().from(events).where(eq(events.invoiceId, invoiceId));
+    const failedEvent = rows.find((r) => r.type === "invoice_failed");
+    const payload = failedEvent?.payload as { message?: string } | undefined;
+    expect(payload?.message).toBeDefined();
+    expect(payload!.message).not.toMatch(/\d{3}\.\d{3}\.\d{3}-\d{2}/);
+    expect(payload!.message!.length).toBeLessThanOrEqual(500);
+  });
+
+  // --- Finding 4: item.meta is masked by maskCanonical but must survive
+  // into invoice_items instead of being silently dropped.
+  it("carries item.meta through to invoice_items", async () => {
+    const withMeta: InvoiceCanonical = {
+      ...canonical,
+      totalCents: 9000,
+      sections: [{
+        name: "Serviços",
+        items: [
+          { description: "Plano pós-pago", amountCents: 9000, meta: { linha: "11987654321" } },
+        ],
+      }],
+    };
+    const withMetaTask = createIngestTask({
+      db: ctx.db,
+      storage: createLocalStorage({ root, secret: "s" }),
+      ai: createFixtureAiProvider({ [fileKey]: withMeta }),
+    });
+    await withMetaTask({ invoiceId });
+
+    const items = await ctx.db.select().from(invoiceItems).where(eq(invoiceItems.invoiceId, invoiceId));
+    expect(items[0]?.meta).toEqual({ linha: "11987654321" });
   });
 });
