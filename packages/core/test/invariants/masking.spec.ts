@@ -33,6 +33,9 @@ const dirty: InvoiceCanonical = {
             barcode: "8" + "1".repeat(43),
             digitableLine: "34191.79001 01043.510047 91020.150008 1 84660000019500",
             lineNumber: 42,
+            // Critical 1 (fix pass 2): a CPF captured by the extractor as a
+            // number, not a string — must not round-trip raw.
+            holderCpf: 12345678909,
           },
         },
       ],
@@ -73,6 +76,11 @@ describe("INV-007 · no PII is persisted in canonical", () => {
     expect(serialised).not.toMatch(ADDRESS_SHAPE);
     expect(serialised).not.toMatch(BARCODE_SHAPE);
     expect(serialised).not.toMatch(DIGITABLE_LINE_SHAPE);
+  });
+
+  it("masks a numeric meta value that is a real CPF (Critical 1)", () => {
+    const masked = maskCanonical(dirty);
+    expect(masked.sections[0]?.items[2]?.meta?.holderCpf).toBe("[CPF]");
   });
 
   it("keeps the issuer cnpj, which is company data and not personal", () => {
