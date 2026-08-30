@@ -1,11 +1,31 @@
 import { and, desc, eq } from "drizzle-orm";
 import { newId, type EventType } from "@pentefino/core";
 import { getUnscopedDb } from "./client.js";
-import { cases, events, findings, invoices } from "./schema.js";
+import { anonymousSessions, cases, events, findings, invoices } from "./schema.js";
 
 export type Session = { userId: string } | { sessionId: string };
 
 type Db = ReturnType<typeof getUnscopedDb>;
+
+/**
+ * Creates the `anonymous_sessions` row a fresh session id needs before any
+ * invoice can reference it: `invoices.session_id` carries a real foreign key
+ * to `anonymous_sessions.id`, so inserting an invoice for a session id that
+ * has no matching row fails at the database level. A caller that mints a new
+ * session id (the web app's upload-sign route, at this writing) must call
+ * this before the first `insertInvoice` for that session.
+ *
+ * `onConflictDoNothing` on the primary key makes this idempotent: a second
+ * call for a session id that already exists is a silent no-op, not an error
+ * and not a refreshed `expiresAt`. The expiry duration is a product policy
+ * (RF-140's 30 days), not a persistence concern, so it is a required
+ * parameter rather than a constant hard-coded in this package.
+ */
+export async function ensureAnonymousSession(sessionId: string, expiresAt: Date, db: Db = getUnscopedDb()) {
+  await db.insert(anonymousSessions)
+    .values({ id: sessionId, expiresAt })
+    .onConflictDoNothing({ target: anonymousSessions.id });
+}
 
 type NewInvoice = {
   contentHash: string;
