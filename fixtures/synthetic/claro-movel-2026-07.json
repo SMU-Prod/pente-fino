@@ -1,0 +1,18 @@
+{
+  "_note": "Fatura sintética, escrita à mão para o teste do caminho vazio. NÃO é golden set: não veio de fatura real e não mede acerto de extração.",
+  "issuer": { "name": "Claro Móvel", "cnpj": "40432544000147", "category": "telecom" },
+  "period": { "start": "2026-07-01", "end": "2026-07-31" },
+  "dueDate": "2026-08-10",
+  "totalCents": 12990,
+  "sections": [
+    {
+      "name": "Serviços",
+      "items": [
+        { "description": "Plano pós-pago 20GB", "amountCents": 9990 },
+        { "description": "Aplicativos Digitais - Revista X", "amountCents": 1500 },
+        { "description": "Titular CPF 123.456.789-09", "amountCents": 1500 }
+      ]
+    }
+  ],
+  "extraction": { "confidence": 0.96, "warnings": [] }
+}
