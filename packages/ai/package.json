@@ -1,0 +1,11 @@
+{
+  "name": "@pentefino/ai",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "exports": { ".": "./src/index.ts" },
+  "scripts": { "test": "vitest run", "typecheck": "tsc --noEmit", "lint": "eslint ." },
+  "dependencies": { "@pentefino/core": "workspace:*", "zod": "^3.23.8" },
+  "devDependencies": { "@pentefino/config": "workspace:*", "vitest": "^2.1.8" }
+}

@@ -1,0 +1,45 @@
+/**
+ * PRD §13.1.
+ *
+ * Theme resolution order matters here: the middle rule below is an
+ * unconditional "dark unless explicitly light" fallback, and the
+ * `prefers-color-scheme: light` rule after it re-asserts light for a
+ * visitor whose system prefers light and who set no `data-theme`.
+ * Both rules match `:root` with equal specificity (0,2,0), so the one
+ * that appears later in the cascade wins the tie — which is why the
+ * light media rule must stay AFTER the dark-fallback rule, not before it.
+ * Moving it earlier would make a light-system, no-preference visitor see
+ * the dark palette.
+ */
+:root {
+  --paper: #FBF8F3; --card: #FFFFFF; --ink: #191411;
+  --ink-2: #54483F; --ink-3: #8A7C71; --line: #E4DCD1;
+  --mark: #C0432A; --mark-soft: #FAEAE5;
+  --ok: #1F6B4F; --ok-soft: #E3F0E9;
+  --deep: #1E2A2E;
+  --font-display: "Fraunces", Georgia, serif;
+  --font-body: "IBM Plex Sans", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+}
+
+/* Dark unless the page explicitly opts into light via data-theme. */
+:root[data-theme="dark"], :root:not([data-theme="light"]) {
+  --paper: #14100E; --card: #1D1815; --ink: #F3EEE7;
+  --ink-2: #C3B8AC; --ink-3: #8A7C71; --line: #2E2721;
+  --mark: #F0836A; --mark-soft: #3A211B;
+  --ok: #7ECBA4; --ok-soft: #1B2E25;
+  /* --deep is intentionally absent: PRD gives one value for both themes. */
+}
+
+/* Re-asserts light when the system prefers it and no theme was forced dark. */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --paper: #FBF8F3; --card: #FFFFFF; --ink: #191411;
+    --ink-2: #54483F; --ink-3: #8A7C71; --line: #E4DCD1;
+    --mark: #C0432A; --mark-soft: #FAEAE5;
+    --ok: #1F6B4F; --ok-soft: #E3F0E9;
+  }
+}
+
+/* Numbers always line up — §13.1. */
+.tabular { font-variant-numeric: tabular-nums; }

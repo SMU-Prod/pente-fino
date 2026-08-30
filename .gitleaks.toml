@@ -1,0 +1,22 @@
+[extend]
+useDefault = true
+
+# INV: gitleaks compiles rule regexes with Go's regexp package (RE2), which
+# does not support lookahead/lookbehind. A regex written with `(?!...)`
+# fails at config-load time with "invalid or unsupported Perl syntax", which
+# would break this rule (and the whole scan) on every run. The placeholder
+# is excluded via a rule-scoped allowlist instead, which RE2 does support.
+#
+# The key-name alternation is non-capturing on purpose: gitleaks reports
+# whatever the first capturing group matched as "the secret" when no
+# `secretGroup` is configured. A capturing group here would make it report
+# the *key name* (e.g. "SESSION_SIGNING_SECRET") instead of the value,
+# which would also make the allowlist regex below compare against the key
+# name and never see the placeholder value it is meant to exempt.
+[[rules]]
+id = "pentefino-dev-secret"
+description = "Dev placeholder secrets must never carry a real value"
+regex = '''(?:UPLOAD_SIGNING_SECRET|SESSION_SIGNING_SECRET)\s*=\s*["']?[A-Za-z0-9/+=_-]{16,}'''
+
+  [rules.allowlist]
+  regexes = ['''dev-only-secret''']

@@ -4,5 +4,8 @@ node_modules/
 dist/
 .data/
 *.log
+*.tsbuildinfo
 .env
 .env.local
+.superpowers/
+coverage/
