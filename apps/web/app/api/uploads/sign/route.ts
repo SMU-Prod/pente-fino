@@ -10,18 +10,31 @@ import { container } from "@/lib/container.js";
 
 const MAX_BYTES = 15 * 1024 * 1024;
 
-// RF-104 requires validating the *actual* file type by magic bytes, never by
-// a client-declared MIME type or a filename extension. This route runs
-// before any bytes exist - it only signs an upload URL from metadata the
-// client asserts about a file it has not sent yet - so the check below is a
-// best-effort, spoofable early rejection for UX only (fail fast on an
-// obviously wrong declared type). The authoritative magic-byte check has to
-// run once real bytes are available: either inside the storage adapter's
-// `put()` (`packages/adapters/src/storage/local.ts`, Task 11) before it
-// writes the object, or as a first step of the ingest task
-// (`apps/jobs/src/tasks/ingest.ts`, Task 13) before the AI provider ever
-// sees the file. Neither does that today - RF-104 is not fully closed until
-// one of them does.
+// RF-104 sets two limits and a type-validation rule, and this route can only
+// fully close one of the three. The size check below (MAX_BYTES) is exact
+// and authoritative - the client declares `sizeBytes` and that is a real
+// number regardless of what the file turns out to contain. The other two are
+// not, and both are recorded here rather than left to be rediscovered apart:
+//
+//   - type validation must use the *actual* file's magic bytes, never a
+//     client-declared MIME type or a filename extension. This route runs
+//     before any bytes exist - it only signs an upload URL from metadata the
+//     client asserts about a file it has not sent yet - so the `ACCEPTED`
+//     check below is a best-effort, spoofable early rejection for UX only
+//     (fail fast on an obviously wrong declared type). The authoritative
+//     check has to run once real bytes are available: either inside the
+//     storage adapter's `put()` (`packages/adapters/src/storage/local.ts`,
+//     Task 11) before it writes the object, or as a first step of the
+//     ingest task (`apps/jobs/src/tasks/ingest.ts`, Task 13) before the AI
+//     provider ever sees the file.
+//   - the 12-page limit has no equivalent check here at all: a page count
+//     cannot be derived from a declared MIME type and byte size, so there is
+//     nothing this route could even attempt. It belongs where the file is
+//     actually parsed - the real extractor arriving in E1 - which is also
+//     where whichever magic-byte check above lands should live, if that
+//     turns out to be the same place.
+//
+// RF-104 is not fully closed until both of those exist somewhere.
 const ACCEPTED = ["application/pdf", "image/jpeg", "image/png", "image/heic"];
 
 const Body = z.object({

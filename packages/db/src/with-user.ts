@@ -1,7 +1,7 @@
 import { and, desc, eq } from "drizzle-orm";
 import { newId, type EventType } from "@pentefino/core";
 import { getUnscopedDb } from "./client.js";
-import { anonymousSessions, cases, events, findings, invoices } from "./schema.js";
+import { anonymousSessions, cases, events, findings, invoices, issuers } from "./schema.js";
 
 export type Session = { userId: string } | { sessionId: string };
 
@@ -87,6 +87,23 @@ export function withUser(session: Session, db: Db = getUnscopedDb()) {
         .where(and(eq(invoices.id, invoiceId), ownsInvoice));
       if (!owned) return [];
       return db.select().from(findings).where(eq(findings.invoiceId, invoiceId));
+    },
+
+    /**
+     * Same ownership gate as `findingsForInvoice`: a caller can only ever
+     * learn the issuer of an invoice it owns. Returns `null` both when the
+     * invoice is not (yet) owned by this session/user and when it is owned
+     * but has no issuer assigned yet (`invoices.issuerId` is nullable -
+     * issuer detection, RF-105/RF-106, is not implemented at E0) - the PRD
+     * §8.2 report shape declares `issuer` as always present, so this never
+     * omits the key, only its value.
+     */
+    async issuerForInvoice(invoiceId: string) {
+      const [owned] = await db.select({ issuerId: invoices.issuerId }).from(invoices)
+        .where(and(eq(invoices.id, invoiceId), ownsInvoice));
+      if (!owned?.issuerId) return null;
+      const [issuer] = await db.select().from(issuers).where(eq(issuers.id, owned.issuerId));
+      return issuer ?? null;
     },
 
     async recordEvent(type: EventType, payload: Record<string, unknown> = {}) {

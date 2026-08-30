@@ -29,6 +29,17 @@ export async function POST(_request: Request, ctx: { params: Promise<{ id: strin
   if (!owned) return apiError("not_found");
 
   try {
+    // Known gap, not a silent one (Task 14): the ingest task's own guard
+    // against re-running a completed job is a plain read-then-act check
+    // (`invoice.status === "analyzed"`, in `apps/jobs/src/tasks/ingest.ts`),
+    // with nothing holding a lock between the read and the write. Two
+    // genuinely concurrent requests for the same invoice can both read
+    // "not yet analyzed" before either has written anything, and both go on
+    // to make a real AI call. The in-process queue's idempotency-key dedup
+    // above only protects concurrent `enqueue` calls within *this* process's
+    // queue instance - real protection against that race needs a durable
+    // queue with per-key locking or exactly-once execution, which is an E5
+    // concern (ADR-02), not something to build here.
     await queue.enqueue("ingest", { invoiceId: id }, { idempotencyKey: `ingest:${id}` });
   } catch (error) {
     // Defense in depth: the ownership check above already guarantees the

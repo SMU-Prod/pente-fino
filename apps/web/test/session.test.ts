@@ -23,6 +23,15 @@ describe("anonymous session cookie (ADR-07)", () => {
     expect(readSession("garbage", secret)).toBeNull();
   });
 
+  it("round trips a session id that itself contains the separator character", () => {
+    // readSession finds the separator with lastIndexOf(".") specifically so
+    // a sessionId containing "." still round-trips: the *last* "." in the
+    // cookie value is always the real separator, because sign() only ever
+    // appends one more segment after it.
+    const cookie = signSession("ses_abc.def", secret);
+    expect(readSession(cookie, secret)).toBe("ses_abc.def");
+  });
+
   it("rejects an empty session id even when the signature is otherwise valid", () => {
     // Built by hand, bypassing signSession's own guard against signing an
     // empty id, so this pins readSession's own defense independently of it.

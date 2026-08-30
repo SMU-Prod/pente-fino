@@ -25,6 +25,7 @@ const sessionA = "ses_owner00000000000000";
 const sessionB = "ses_other00000000000000";
 let invoiceId: string;
 let findingId: string;
+let issuerId: string;
 
 beforeEach(async () => {
   process.env.SESSION_SIGNING_SECRET = SECRET;
@@ -37,7 +38,7 @@ beforeEach(async () => {
     { id: sessionA, expiresAt: new Date(Date.now() + 60_000) },
     { id: sessionB, expiresAt: new Date(Date.now() + 60_000) },
   ]);
-  const issuerId = newId("iss");
+  issuerId = newId("iss");
   await ctx.db.insert(issuers).values({ id: issuerId, slug: issuerId, category: "telecom", displayName: "Claro" });
   invoiceId = newId("inv");
   await ctx.db.insert(invoices).values({
@@ -120,6 +121,30 @@ describe("GET /api/invoices/[id]/report", () => {
     expect(body.findings).toHaveLength(1);
     expect(body.findings[0].id).toBe(findingId);
     expect(body.totals).toEqual({ suspectCents: 1500, doubledCents: 700 });
+  });
+
+  // --- PRD §8.2 declares `issuer` in this endpoint's response shape; it was
+  // missing entirely (Task 14, finding 2).
+
+  it("includes the issuer, loaded through the same ownership-scoped path as findings (PRD §8.2)", async () => {
+    useCookies(createCookieStore({ pf_session: signSession(sessionA, SECRET) }));
+    const response = await GET(request(), ctxFor(invoiceId));
+    const body = await response.json();
+    expect(body.issuer).toMatchObject({ id: issuerId, displayName: "Claro" });
+  });
+
+  it("returns issuer: null when the invoice has no issuer assigned yet", async () => {
+    useCookies(createCookieStore({ pf_session: signSession(sessionA, SECRET) }));
+    const noIssuerId = newId("inv");
+    await ctx.db.insert(invoices).values({
+      id: noIssuerId, sessionId: sessionA, contentHash: "no-issuer-hash", source: "pdf_text", status: "analyzed",
+    });
+
+    const response = await GET(
+      new Request(`http://localhost/api/invoices/${noIssuerId}/report`), ctxFor(noIssuerId),
+    );
+    const body = await response.json();
+    expect(body.issuer).toBeNull();
   });
 
   it("records a report_viewed event for the owning session", async () => {

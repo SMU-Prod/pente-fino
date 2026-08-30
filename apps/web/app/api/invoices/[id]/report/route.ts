@@ -30,7 +30,11 @@ export async function GET(_request: Request, ctx: { params: Promise<{ id: string
   const findings = await scoped.findingsForInvoice(id);
   const suspectCents = findings.reduce((acc, f) => acc + f.amountCents, 0);
   const doubledCents = findings.reduce((acc, f) => acc + (f.doubledCents ?? 0), 0);
+  // PRD §8.2 declares `issuer` in this response's shape; loaded through the
+  // same ownership-scoped path (`scoped`, from `withUser`) as `findings`
+  // above, and `null` when the invoice has no issuer assigned yet.
+  const issuer = await scoped.issuerForInvoice(id);
 
   await scoped.recordEvent("report_viewed", { invoiceId: id });
-  return Response.json({ invoice, findings, totals: { suspectCents, doubledCents } });
+  return Response.json({ invoice, findings, totals: { suspectCents, doubledCents }, issuer });
 }
