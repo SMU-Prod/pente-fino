@@ -7,3 +7,4 @@ export { STAGES, type Stage, type Playbook } from "./cases/playbook.js";
 export { ContestDocument } from "./documents/contest.js";
 export { normalizeDescription } from "./invoice/normalize.js";
 export { validateInvoice, type ValidationResult, type ValidationFailure } from "./invoice/validate.js";
+export { maskCanonical, maskText, containsPii } from "./invoice/mask.js";
