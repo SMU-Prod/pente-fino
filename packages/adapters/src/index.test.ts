@@ -55,6 +55,10 @@ describe("buildAdapters", () => {
     expect(() => buildAdapters({ LOCAL_DATA_ROOT: root, AI_GATEWAY_API_KEY: "x" })).toThrow(/AI_GATEWAY_API_KEY/);
   });
 
+  it("throws naming RESEND_API_KEY when a real mailer credential is present but unimplemented", () => {
+    expect(() => buildAdapters({ LOCAL_DATA_ROOT: root, RESEND_API_KEY: "x" })).toThrow(/RESEND_API_KEY/);
+  });
+
   it("does not throw for unrelated environment variables", () => {
     expect(() => buildAdapters({ LOCAL_DATA_ROOT: root, PATH: "/usr/bin", NODE_ENV: "test" })).not.toThrow();
   });

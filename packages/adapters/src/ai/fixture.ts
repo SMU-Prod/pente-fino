@@ -7,18 +7,21 @@ import type { AiProvider } from "@pentefino/core/ports";
  * very same Zod schema the real provider will validate its output with
  * (A7), so a fixture that would not pass validation in production does not
  * pass it here either. A file key with no matching fixture fails loudly
- * instead of inventing an invoice (A8). It always reports zero cost, so the
- * ai_calls ledger never mistakes a fixture run for a paid one.
+ * instead of inventing an invoice (A8). Lookup is gated on key presence,
+ * not on the looked-up value: a fixture explicitly registered as
+ * `undefined` is a different situation from an unregistered key, and must
+ * fail Zod validation loudly rather than being reported as "no fixture".
+ * It always reports zero cost, so the ai_calls ledger never mistakes a
+ * fixture run for a paid one.
  */
 export function createFixtureAiProvider(fixtures: Record<string, unknown>): AiProvider {
   return {
     async extractInvoice({ fileKey }) {
-      const fixture = fixtures[fileKey];
-      if (fixture === undefined) {
+      if (!(fileKey in fixtures)) {
         throw new Error(`no extraction fixture registered for file key "${fileKey}"`);
       }
 
-      const canonical = InvoiceCanonical.parse(fixture);
+      const canonical = InvoiceCanonical.parse(fixtures[fileKey]);
 
       return {
         canonical,

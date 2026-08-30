@@ -36,4 +36,18 @@ describe("fixture ai provider", () => {
     await expect(ai.extractInvoice({ fileKey: "uploads/missing.pdf", promptVersion: 1 }))
       .rejects.toThrow(/missing/);
   });
+
+  it("treats a fixture explicitly registered as undefined as invalid input, not as an unregistered key", async () => {
+    const ai = createFixtureAiProvider({ "uploads/explicit-undefined.pdf": undefined });
+
+    let thrown: unknown;
+    try {
+      await ai.extractInvoice({ fileKey: "uploads/explicit-undefined.pdf", promptVersion: 1 });
+    } catch (err) {
+      thrown = err;
+    }
+
+    expect(thrown).toBeInstanceOf(Error);
+    expect((thrown as Error).message).not.toMatch(/no extraction fixture registered/);
+  });
 });

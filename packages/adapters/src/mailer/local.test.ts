@@ -47,4 +47,20 @@ describe("local mailer", () => {
     await mailer.send({ to: "user@example.com", subject: "Hi", body: "Body" });
     expect(readdirSync(nested)).toHaveLength(1);
   });
+
+  it("rejects a \"to\" containing a line feed instead of writing an injected header", async () => {
+    const mailer = createLocalMailer(root);
+    await expect(
+      mailer.send({ to: "user@example.com\nBcc: attacker@evil.com", subject: "Hi", body: "Body" }),
+    ).rejects.toThrow(/"to"/);
+    expect(readdirSync(root)).toHaveLength(0);
+  });
+
+  it("rejects a subject containing a carriage return + line feed instead of shifting where the body starts", async () => {
+    const mailer = createLocalMailer(root);
+    await expect(
+      mailer.send({ to: "user@example.com", subject: "Hi\r\n\r\nInjected body", body: "Body" }),
+    ).rejects.toThrow(/"subject"/);
+    expect(readdirSync(root)).toHaveLength(0);
+  });
 });

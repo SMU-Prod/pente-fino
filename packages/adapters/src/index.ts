@@ -26,6 +26,7 @@ const UNIMPLEMENTED_REAL_ADAPTER_ENV: Record<string, string> = {
   R2_ACCESS_KEY_ID: "storage (R2)",
   TRIGGER_SECRET_KEY: "queue (Trigger.dev)",
   AI_GATEWAY_API_KEY: "ai (AI Gateway)",
+  RESEND_API_KEY: "mailer (Resend)",
 };
 
 /**
