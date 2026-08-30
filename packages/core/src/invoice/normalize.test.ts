@@ -83,4 +83,23 @@ describe("normalizeDescription", () => {
       expect(normalizeDescription(once)).toBe(once);
     }
   });
+
+  it("matches a hyphen-joined recurring line across cycles even when the cycle is glued to the word", () => {
+    expect(normalizeDescription("Mensalidade-01/2026")).toBe(normalizeDescription("Mensalidade-02/2026"));
+  });
+
+  it("matches another hyphen-joined recurring line across cycles", () => {
+    expect(normalizeDescription("Parcela-07/2026")).toBe(normalizeDescription("Parcela-08/2026"));
+  });
+
+  it("does not mistake a three-digit fraction for a date", () => {
+    expect(normalizeDescription("Plano 4.55G")).toContain("455G");
+  });
+
+  it("is idempotent for hyphen-joined cycle references", () => {
+    for (const input of ["Mensalidade-01/2026", "Mensalidade-02/2026", "Parcela-07/2026", "Parcela-08/2026", "Plano 4.55G"]) {
+      const once = normalizeDescription(input);
+      expect(normalizeDescription(once)).toBe(once);
+    }
+  });
 });
