@@ -3,10 +3,11 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { newId, type InvoiceCanonical } from "@pentefino/core";
-import { anonymousSessions, invoices, issuers } from "@pentefino/db";
-import { createTestDb, type TestDb } from "@pentefino/db/testing";
+import { createTestDb, schema, type TestDb } from "@pentefino/db/testing";
 import { signSession } from "../../lib/session.js";
 import { createCookieStore, jarFor, type MockCookieStore } from "../helpers/cookies.js";
+
+const { anonymousSessions, invoices, issuers } = schema;
 
 vi.mock("next/headers", () => ({ cookies: vi.fn() }));
 

@@ -3,11 +3,12 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { eq } from "drizzle-orm";
-import { anonymousSessions, events, invoices } from "@pentefino/db";
-import { createTestDb, type TestDb } from "@pentefino/db/testing";
+import { createTestDb, schema, type TestDb } from "@pentefino/db/testing";
 import { signSession } from "../../lib/session.js";
 import { createCookieStore, jarFor, type MockCookieStore } from "../helpers/cookies.js";
 import { buildTestContainer } from "../helpers/container.js";
+
+const { anonymousSessions, events, invoices } = schema;
 
 vi.mock("next/headers", () => ({ cookies: vi.fn() }));
 vi.mock("../../lib/container.js", () => ({ container: vi.fn() }));

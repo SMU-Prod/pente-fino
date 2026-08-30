@@ -4,7 +4,10 @@ import {
 } from "@pentefino/core";
 import type { AiProvider, Storage } from "@pentefino/core/ports";
 import type { EventType } from "@pentefino/core";
-import { aiCalls, events, invoiceItems, invoices, type Database } from "@pentefino/db";
+// eslint-disable-next-line pentefino/require-with-user -- system job with no user session; writes go through the caller-injected `Database` (deps.db), not a client this module creates itself
+import { schema, type Database } from "@pentefino/db";
+
+const { aiCalls, events, invoiceItems, invoices } = schema;
 
 export type IngestDeps = {
   db: Database;

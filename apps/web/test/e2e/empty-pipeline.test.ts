@@ -7,11 +7,13 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { newId } from "@pentefino/core";
 import { createFixtureAiProvider, createInProcessQueue, createLocalStorage } from "@pentefino/adapters";
-import { createTestDb, type TestDb } from "@pentefino/db/testing";
-import { ensureAnonymousSession, events, invoiceItems, withUser } from "@pentefino/db";
+import { createTestDb, schema, type TestDb } from "@pentefino/db/testing";
+import { ensureAnonymousSession, withUser } from "@pentefino/db";
 import { createIngestTask } from "@pentefino/jobs";
 import { createCookieStore, jarFor, type MockCookieStore } from "../helpers/cookies.js";
 import { buildTestContainer } from "../helpers/container.js";
+
+const { events, invoiceItems } = schema;
 
 /**
  * Task 15 — the E0 acceptance criterion (§18): a fixture invoice crosses the

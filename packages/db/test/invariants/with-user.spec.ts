@@ -201,4 +201,142 @@ describe("INV-008 · no query outside packages/db reaches the raw client", () =>
       ],
     });
   });
+
+  // --- Blocker C1 / Bypass 1 -------------------------------------------
+  // A namespace import of the package entry (`import * as pfdb from
+  // "@pentefino/db"`) never produces an `ImportSpecifier` or
+  // `ExportSpecifier`, so the named-export check skipped it entirely: the
+  // whole module — `getUnscopedDb`, `schema`, everything — came in bound to
+  // one name.
+  it("reports a namespace import of the package entry", () => {
+    tester.run("require-with-user", requireWithUser, {
+      valid: [
+        { code: `import * as pfdb from "@pentefino/db";`, filename: "/repo/packages/db/src/some-internal-file.ts" },
+        { code: `import { withUser } from "@pentefino/db";`, filename: "/repo/apps/web/lib/invoices.ts" },
+      ],
+      invalid: [
+        {
+          // The exact reproduction from the audit.
+          code: `import * as pfdb from "@pentefino/db";\npfdb.getUnscopedDb();`,
+          filename: "/repo/apps/web/lib/invoices.ts",
+          errors: [{ messageId: "forbiddenNamespace" }],
+        },
+        {
+          code: `import * as pfdb from "@pentefino/db";`,
+          filename: "C:\\repo\\apps\\web\\lib\\invoices.ts",
+          errors: [{ messageId: "forbiddenNamespace" }],
+        },
+      ],
+    });
+  });
+
+  // --- Blocker C1 / Bypass 2 -------------------------------------------
+  // `packages/db/src/index.ts` used to re-export every table as a named
+  // export of the package entry (`export * from "./schema.js"`), and the
+  // rule only ever blocked the fixed names `getUnscopedDb` and `schema` —
+  // so `import { invoices, events } from "@pentefino/db"` sailed through
+  // both the package (it really was exported) and the rule (neither name
+  // was on its list). The fix is two-layered: `index.ts` no longer
+  // re-exports the tables at all (only the `schema` namespace object does,
+  // and that name is already blocked), and the rule itself switched from a
+  // blacklist to an allowlist, so a table name is rejected on its own
+  // merits rather than by the package happening not to export it. This
+  // keeps the rule correct even if a future change re-introduces the
+  // re-export, and it is what lets this exact bypass be expressed as a
+  // RuleTester case at all — the rule has no module resolution and cannot
+  // otherwise know what `@pentefino/db` does or does not export.
+  it("reports a named import of a table straight off the package entry", () => {
+    tester.run("require-with-user", requireWithUser, {
+      valid: [
+        { code: `import { withUser } from "@pentefino/db";`, filename: "/repo/apps/web/lib/invoices.ts" },
+        {
+          code: `import { Database, Session, ScopedDb } from "@pentefino/db";`,
+          filename: "/repo/apps/web/lib/invoices.ts",
+        },
+        {
+          // The exemption for files inside packages/db applies here too.
+          code: `import { invoices, events } from "@pentefino/db";`,
+          filename: "C:\\repo\\packages\\db\\src\\some-internal-file.ts",
+        },
+      ],
+      invalid: [
+        {
+          // The exact reproduction from the audit.
+          code: `import { invoices, events } from "@pentefino/db";`,
+          filename: "/repo/apps/web/lib/invoices.ts",
+          errors: [{ messageId: "forbiddenExport" }, { messageId: "forbiddenExport" }],
+        },
+        {
+          code: `import { invoices } from "@pentefino/db";`,
+          filename: "C:\\repo\\apps\\web\\lib\\invoices.ts",
+          errors: [{ messageId: "forbiddenExport" }],
+        },
+        {
+          code: `export { invoices } from "@pentefino/db";`,
+          filename: "/repo/apps/web/lib/reexport.ts",
+          errors: [{ messageId: "forbiddenExport" }],
+        },
+      ],
+    });
+  });
+
+  // --- Blocker C1 / Bypass 3 -------------------------------------------
+  // `@pentefino/db/testing` (`createTestDb`) hands back a live, unscoped
+  // PGlite database. It is in neither the forbidden-module list nor the
+  // package-entry allowlist check, because it is not the package entry at
+  // all — it is a subpath, and subpaths were never inspected by any check.
+  // A real test file legitimately needs it (there is no other way to stand
+  // up the in-memory test database); production code never does. The
+  // exemption is deliberately keyed on *both* a `test`/`tests` directory
+  // segment *and* a `.test.`/`.spec.` filename — see `isTestFile`'s own
+  // comment — specifically so a production file cannot spoof its way past
+  // the gate merely by being named to look like a test.
+  it("reports an import of a @pentefino/db subpath from outside a test file", () => {
+    tester.run("require-with-user", requireWithUser, {
+      valid: [
+        {
+          code: `import { createTestDb } from "@pentefino/db/testing";`,
+          filename: "/repo/apps/web/test/routes/invoices-report.test.ts",
+        },
+        {
+          code: `import { createTestDb } from "@pentefino/db/testing";`,
+          filename: "C:\\repo\\apps\\jobs\\test\\ingest.test.ts",
+        },
+        {
+          code: `import { createTestDb } from "@pentefino/db/testing";`,
+          filename: "/repo/apps/web/test/routes/invoices-report.spec.ts",
+        },
+        // The exemption for files inside packages/db applies here too.
+        { code: `import { createTestDb } from "@pentefino/db/testing";`, filename: "/repo/packages/db/src/x.ts" },
+      ],
+      invalid: [
+        {
+          // The exact reproduction from the audit.
+          code: `import { createTestDb } from "@pentefino/db/testing";`,
+          filename: "/repo/apps/web/lib/invoices.ts",
+          errors: [{ messageId: "forbiddenSubpath" }],
+        },
+        {
+          // Named like a test, but not under a test/ directory — a
+          // production file cannot buy its way past the gate by renaming
+          // itself.
+          code: `import { createTestDb } from "@pentefino/db/testing";`,
+          filename: "/repo/apps/web/lib/invoices.test.ts",
+          errors: [{ messageId: "forbiddenSubpath" }],
+        },
+        {
+          // Under a test/ directory, but not itself a test file — a shared
+          // helper does not inherit the exemption just from its location.
+          code: `import { createTestDb } from "@pentefino/db/testing";`,
+          filename: "/repo/apps/web/test/helpers/leaky.ts",
+          errors: [{ messageId: "forbiddenSubpath" }],
+        },
+        {
+          code: `import { createTestDb } from "@pentefino/db/testing";`,
+          filename: "C:\\repo\\apps\\web\\lib\\invoices.ts",
+          errors: [{ messageId: "forbiddenSubpath" }],
+        },
+      ],
+    });
+  });
 });

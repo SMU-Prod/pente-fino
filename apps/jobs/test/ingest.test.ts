@@ -6,9 +6,10 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { newId, type InvoiceCanonical } from "@pentefino/core";
 import { createFixtureAiProvider, createLocalStorage } from "@pentefino/adapters";
-import { createTestDb, type TestDb } from "@pentefino/db/testing";
-import { events, invoiceItems, invoices, issuers } from "@pentefino/db";
+import { createTestDb, schema, type TestDb } from "@pentefino/db/testing";
 import { createIngestTask } from "../src/tasks/ingest.js";
+
+const { events, invoiceItems, invoices, issuers } = schema;
 
 const canonical = {
   issuer: { name: "Claro Móvel", cnpj: "40432544000147", category: "telecom" },

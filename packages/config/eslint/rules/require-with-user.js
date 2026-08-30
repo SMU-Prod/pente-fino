@@ -1,28 +1,43 @@
 /**
  * INV-008 — no module outside @pentefino/db may reach the raw database
- * client or the raw table definitions. User data is read through
- * withUser(), which carries the ownership filter.
+ * client, the raw table definitions, or the raw test-database driver. User
+ * data is read through withUser(), which carries the ownership filter.
  *
- * Two independent escape hatches are checked, both scoped to files outside
- * the real `packages/db` workspace package:
+ * Four independent checks run, all scoped to files outside the real
+ * `packages/db` workspace package:
  *
- *   1. A named import of `getUnscopedDb` or `schema` from this package's own
- *      public entry point, `@pentefino/db` (static import or re-export).
- *      Those two exports hand out the raw client and the raw table
- *      definitions respectively; anything that needs them belongs inside
- *      `packages/db`.
- *   2. Any reach into a forbidden raw driver module — `postgres`,
+ *   1. A named import of anything from this package's own public entry
+ *      point, `@pentefino/db`, other than the small allowlist of names that
+ *      do not hand out raw data access (`withUser`, `ensureAnonymousSession`,
+ *      and the `Database`/`Session`/`ScopedDb` types) — static import or
+ *      re-export. This is an allowlist, not a blacklist of `getUnscopedDb`
+ *      and `schema` by name, on purpose: `schema` is a namespace object
+ *      holding all twenty table definitions, and a fixed blacklist of two
+ *      names does nothing to stop a *table* (`invoices`, `events`, ...) from
+ *      being re-exported and imported directly by name, today or after the
+ *      next migration adds table twenty-one.
+ *   2. A namespace import of the same entry point (`import * as ns from
+ *      "@pentefino/db"`) — that single binding reaches every export at
+ *      once, including whichever ones check 1 would otherwise catch
+ *      one-by-one, so it is rejected outright rather than inspected member
+ *      by member.
+ *   3. Any reach into a forbidden raw driver module — `postgres`,
  *      `drizzle-orm/postgres-js`, `drizzle-orm/pglite`, or
  *      `@electric-sql/pglite` — or any subpath beneath one, via static
  *      `import`, dynamic `import()`, `require()`, or a re-export
  *      (`export { x } from "..."`, `export * from "..."`).
+ *   4. Any import of a subpath of `@pentefino/db` itself (e.g.
+ *      `@pentefino/db/testing`, which hands back a live, unscoped PGlite
+ *      database for tests) — except from a file that is itself a test file
+ *      (see `isTestFile` below). Production code has no legitimate reason to
+ *      reach a test-only subpath; a test file does.
  *
  * A legitimate unscoped caller (a background job with no user session, say)
- * can still get past the gate, but only visibly: it silences a single
- * occurrence with `// eslint-disable-next-line pentefino/require-with-user`
- * and a reason on the same line. There is no path allowlist here on
- * purpose — an allowlist hides the exception from review and from grep; a
- * disable comment does not.
+ * can still get past checks 1, 2 and 3, but only visibly: it silences a
+ * single occurrence with `// eslint-disable-next-line
+ * pentefino/require-with-user` and a reason on the same line. There is no
+ * path allowlist here on purpose — an allowlist hides the exception from
+ * review and from grep; a disable comment does not.
  */
 
 const FORBIDDEN_MODULES = [
@@ -32,9 +47,35 @@ const FORBIDDEN_MODULES = [
   "postgres",
 ];
 
-const RAW_PACKAGE_EXPORTS = new Set(["getUnscopedDb", "schema"]);
+// Names a file outside packages/db may import from the package entry point
+// without tripping the gate. Everything else — `getUnscopedDb`, `schema`,
+// and every individual table it contains — hands out raw, unscoped data
+// access and must go through `withUser`, or (for a real system-scoped
+// caller) an explicit, visible disable comment.
+const ALLOWED_PACKAGE_EXPORTS = new Set([
+  "withUser",
+  "ensureAnonymousSession",
+  "Database",
+  "Session",
+  "ScopedDb",
+]);
 
 const PACKAGE_ENTRY = "@pentefino/db";
+const PACKAGE_SUBPATH_PREFIX = `${PACKAGE_ENTRY}/`;
+
+// A file counts as a test file only when BOTH its directory and its name say
+// so: it must live under a `test/` (or `tests/`) segment *and* carry a
+// `.test.`/`.spec.` suffix. This mirrors every vitest.config.ts in this repo
+// (`test/**/*.test.ts`, `test/**/*.spec.ts` — see packages/*/vitest.config.ts
+// and apps/*/vitest.config.ts), so it recognizes exactly the files the test
+// runner itself would collect. Either signal alone is spoofable: a bare
+// directory check would exempt any non-test file someone drops next to real
+// tests (e.g. a shared helper), and a bare filename check would exempt a
+// production file merely renamed to end in `.test.ts` without living
+// anywhere near a real test suite. Requiring both closes that gap without
+// needing a path allowlist.
+const TEST_DIR_SEGMENT = /^tests?$/i;
+const TEST_FILE_NAME = /\.(test|spec)\.[cm]?[jt]sx?$/i;
 
 function isForbiddenModule(moduleName) {
   return FORBIDDEN_MODULES.some(
@@ -59,6 +100,14 @@ function isInsideDbPackage(filename) {
   return !segments.slice(0, dbIndex).some((segment) => segment === "apps" || segment === "packages");
 }
 
+/** See the `TEST_DIR_SEGMENT`/`TEST_FILE_NAME` comment above for the "why". */
+function isTestFile(filename) {
+  const segments = filename.replace(/\\/g, "/").split("/").filter(Boolean);
+  const base = segments[segments.length - 1];
+  if (!base || !TEST_FILE_NAME.test(base)) return false;
+  return segments.slice(0, -1).some((segment) => TEST_DIR_SEGMENT.test(segment));
+}
+
 function nameOf(node) {
   if (!node) return undefined;
   return node.type === "Identifier" ? node.name : node.value;
@@ -73,29 +122,44 @@ export const requireWithUser = {
       forbidden: "Import withUser from @pentefino/db instead of the raw client (INV-008).",
       forbiddenExport:
         "Import withUser from @pentefino/db instead of {{name}} (INV-008); {{name}} is only for use inside packages/db.",
+      forbiddenNamespace:
+        "Import withUser from @pentefino/db instead of a namespace import (INV-008); `import * as ... from \"@pentefino/db\"` reaches every export at once, including the raw client and schema.",
+      forbiddenSubpath:
+        "Importing {{name}} from outside packages/db is not allowed (INV-008); this subpath hands out unscoped data access and only test files may reach it directly.",
     },
     schema: [],
   },
   create(context) {
     const filename = context.filename ?? context.getFilename();
     const insideDbPackage = isInsideDbPackage(filename);
+    const isTest = isTestFile(filename);
 
     function checkModuleSource(node, moduleName) {
       if (insideDbPackage) return;
-      if (typeof moduleName === "string" && isForbiddenModule(moduleName)) {
+      if (typeof moduleName !== "string") return;
+      if (isForbiddenModule(moduleName)) {
         context.report({ node, messageId: "forbidden" });
+        return;
+      }
+      if (moduleName.startsWith(PACKAGE_SUBPATH_PREFIX) && !isTest) {
+        context.report({ node, messageId: "forbiddenSubpath", data: { name: moduleName } });
       }
     }
 
     function checkNamedSpecifiers(specifiers, moduleName) {
       if (insideDbPackage || moduleName !== PACKAGE_ENTRY || !specifiers) return;
       for (const specifier of specifiers) {
+        if (specifier.type === "ImportNamespaceSpecifier") {
+          context.report({ node: specifier, messageId: "forbiddenNamespace" });
+          continue;
+        }
+
         let sourceName;
         if (specifier.type === "ImportSpecifier") sourceName = nameOf(specifier.imported);
         else if (specifier.type === "ExportSpecifier") sourceName = nameOf(specifier.local);
         else continue;
 
-        if (sourceName && RAW_PACKAGE_EXPORTS.has(sourceName)) {
+        if (sourceName && !ALLOWED_PACKAGE_EXPORTS.has(sourceName)) {
           context.report({ node: specifier, messageId: "forbiddenExport", data: { name: sourceName } });
         }
       }

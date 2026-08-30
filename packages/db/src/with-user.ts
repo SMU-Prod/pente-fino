@@ -37,16 +37,31 @@ type NewInvoice = {
 /**
  * The single door to user data (INV-008). Every read and write here carries
  * the ownership filter, and the eslint rule `require-with-user` stops any
- * other module outside `packages/db` from reaching around it: it forbids
- * importing `getUnscopedDb` or `schema` from `@pentefino/db`, and it forbids
- * reaching a raw driver module (`postgres`, `drizzle-orm/postgres-js`,
- * `drizzle-orm/pglite`, `@electric-sql/pglite`, or any subpath of one) via
- * static import, dynamic `import()`, `require()`, or re-export. A
- * legitimate unscoped caller — a background job with no user session, say —
- * can still get past the gate, but only visibly: it carries an explicit
- * `// eslint-disable-next-line pentefino/require-with-user` with a reason on
- * the same line, so the exception shows up in review and in grep instead of
- * hiding in a rule allowlist.
+ * other module outside `packages/db` from reaching around it, in four ways:
+ *
+ *   - Only a fixed allowlist of names may be imported from this package's
+ *     entry point, `@pentefino/db`: `withUser`, `ensureAnonymousSession`,
+ *     and the `Database`/`Session`/`ScopedDb` types. Every other name —
+ *     `getUnscopedDb`, the `schema` namespace, and every individual table
+ *     `schema` holds (`invoices`, `events`, ...) — is rejected, whether
+ *     imported directly or re-exported.
+ *   - A namespace import of that same entry point (`import * as ns from
+ *     "@pentefino/db"`) is rejected outright, since one such binding would
+ *     reach every name above at once.
+ *   - Reaching a raw driver module — `postgres`, `drizzle-orm/postgres-js`,
+ *     `drizzle-orm/pglite`, `@electric-sql/pglite`, or any subpath of one —
+ *     is forbidden via static import, dynamic `import()`, `require()`, or
+ *     re-export.
+ *   - Importing any subpath of `@pentefino/db` itself (`@pentefino/db/testing`,
+ *     which hands back a live, unscoped PGlite database) is forbidden from
+ *     anywhere other than a real test file.
+ *
+ * A legitimate unscoped caller — a background job with no user session, say —
+ * can still get past the first three checks, but only visibly: it carries an
+ * explicit `// eslint-disable-next-line pentefino/require-with-user` with a
+ * reason on the same line (see `apps/jobs/src/tasks/ingest.ts`), so the
+ * exception shows up in review and in grep instead of hiding in a rule
+ * allowlist.
  *
  * Each predicate below is built against the table it filters, not reused
  * across tables: `invoices` and `events` each carry their own `userId` /

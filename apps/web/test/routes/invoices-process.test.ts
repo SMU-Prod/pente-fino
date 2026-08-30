@@ -4,11 +4,12 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { eq } from "drizzle-orm";
 import { newId, type InvoiceCanonical } from "@pentefino/core";
-import { anonymousSessions, invoices, issuers } from "@pentefino/db";
-import { createTestDb, type TestDb } from "@pentefino/db/testing";
+import { createTestDb, schema, type TestDb } from "@pentefino/db/testing";
 import { signSession } from "../../lib/session.js";
 import { createCookieStore, jarFor, type MockCookieStore } from "../helpers/cookies.js";
 import { buildTestContainer } from "../helpers/container.js";
+
+const { anonymousSessions, invoices, issuers } = schema;
 
 vi.mock("next/headers", () => ({ cookies: vi.fn() }));
 vi.mock("../../lib/container.js", () => ({ container: vi.fn() }));
