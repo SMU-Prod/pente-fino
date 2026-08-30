@@ -9,5 +9,9 @@ export { normalizeDescription } from "./invoice/normalize.js";
 export { validateInvoice, type ValidationResult, type ValidationFailure } from "./invoice/validate.js";
 export { maskCanonical, maskText, containsPii } from "./invoice/mask.js";
 export { runRules, type ActiveRule, type RuleEngineInput } from "./rules/engine.js";
-export { nextStage, type StageEvent, type StageTransition } from "./cases/next-stage.js";
-export { diffInvoices, type InvoiceDiff, type PairedItem } from "./diff/index.js";
+export { TARIFF_FLAGS, type TariffFlag, type ReferenceTariff, type ReferenceFlag } from "./rules/references.js";
+export {
+  nextStage, CASE_OUTCOMES,
+  type StageEvent, type StageTransition, type CaseOutcome,
+} from "./cases/next-stage.js";
+export { pairInvoiceItems, type InvoiceDiff, type PairedItem } from "./diff/index.js";

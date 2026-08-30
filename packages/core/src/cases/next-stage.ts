@@ -2,14 +2,30 @@ import type { Category } from "../invoice/canonical.js";
 import type { Playbook, Stage } from "./playbook.js";
 
 export type StageEvent = {
-  type: "protocol_entered" | "deadline_expired" | "response_received" | "resolved" | "user_abandon";
+  type:
+    | "protocol_entered"
+    | "deadline_expired"
+    | "response_received"
+    | "resolved"
+    | "user_abandon"
+    // RF-203: the contested item comes back on invoice N+2. Reopens a
+    // closed case, with the reopening stamped into its history.
+    | "item_reappeared";
   at: Date;
 };
+
+// Sibling of `cases.stage` (§9.1's `closed{outcome:abandoned}`). Mirrors
+// the `cases.outcome` column: resolved | partial | denied | abandoned.
+export const CASE_OUTCOMES = ["resolved", "partial", "denied", "abandoned"] as const;
+export type CaseOutcome = (typeof CASE_OUTCOMES)[number];
 
 export type StageTransition = {
   stage: Stage;
   nextDeadlineAt: Date | null;
   stampDeadline: boolean;
+  // RF-186: null unless this transition closes the case, in which case it
+  // says why (e.g. `abandoned` after 60 days without user action).
+  outcome: CaseOutcome | null;
 };
 
 /**
@@ -27,6 +43,6 @@ export function nextStage(
 ): StageTransition {
   void playbook;
   throw new Error(
-    `transition not mapped: stage=${current.stage} event=${event.type} category=${current.category} (E5)`,
+    `transition not mapped: stage=${current.stage} event=${event.type} category=${current.category} hasProtocol=${current.hasProtocol} (E5)`,
   );
 }

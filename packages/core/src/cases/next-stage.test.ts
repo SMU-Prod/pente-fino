@@ -15,13 +15,26 @@ describe("nextStage", () => {
     ).toThrow(/not mapped/i);
   });
 
-  it("names E5 and includes the stage, event and category that were passed", () => {
+  it("names E5 and includes the stage, event, category and hasProtocol that were passed", () => {
     expect(() =>
       nextStage(
         { stage: "sac", category: "telecom", hasProtocol: true },
         playbook,
         { type: "deadline_expired", at: new Date("2026-08-30T00:00:00Z") },
       ),
-    ).toThrow(/stage=sac.*event=deadline_expired.*category=telecom.*E5/is);
+    ).toThrow(/stage=sac.*event=deadline_expired.*category=telecom.*hasProtocol=true.*E5/is);
+  });
+
+  it("accepts the RF-203 reopening event (item_reappeared) in its type surface", () => {
+    // §9.1 has no mapped transition yet (E5) — this only proves the event
+    // vocabulary can express "contested item came back on invoice N+2"
+    // without a type error, per RF-203.
+    expect(() =>
+      nextStage(
+        { stage: "closed", category: "energy", hasProtocol: false },
+        playbook,
+        { type: "item_reappeared", at: new Date("2026-08-30T00:00:00Z") },
+      ),
+    ).toThrow(/event=item_reappeared/);
   });
 });

@@ -1,6 +1,7 @@
 import type { InvoiceCanonical } from "../invoice/canonical.js";
 import type { Finding } from "./finding.js";
-import type { RuleSpec } from "./spec.js";
+import type { ReferenceFlag, ReferenceTariff } from "./references.js";
+import type { LegalRef, RuleSpec } from "./spec.js";
 
 export type ActiveRule = {
   slug: string;
@@ -8,6 +9,13 @@ export type ActiveRule = {
   spec: RuleSpec;
   confidenceBase: number;
   shadow: boolean;
+  // RF-129/RF-161: every finding this rule produces must carry at least one
+  // of these — the model never supplies legalBasis, only the fired rule does.
+  legalBasis: LegalRef[];
+  // RF-123: null means the generic rule for `slug`. A non-null issuerId
+  // outranks the generic rule of the same slug, resolved inside the engine
+  // rather than depending on how the caller happened to query `rules`.
+  issuerId: string | null;
 };
 
 export type RuleEngineInput = {
@@ -15,6 +23,13 @@ export type RuleEngineInput = {
   previous: InvoiceCanonical | null;
   rules: ActiveRule[];
   answers: Record<string, string>;
+  // RN-040/RN-041: ANEEL tariff and flag tables. External data the engine
+  // cannot derive from the invoices itself, so it arrives as an argument —
+  // RF-120 requires the engine to stay free of I/O.
+  references: {
+    tariffs: ReferenceTariff[];
+    flags: ReferenceFlag[];
+  };
 };
 
 /**
