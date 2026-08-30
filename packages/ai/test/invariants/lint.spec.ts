@@ -1,9 +1,23 @@
 import { describe, expect, it } from "vitest";
-import { FORBIDDEN_TERMS } from "../../src/forbidden-terms.js";
+import { CONDITIONAL_TERMS, FORBIDDEN_TERMS } from "../../src/forbidden-terms.js";
 import { lintUserFacingText } from "../../src/lint.js";
 
 describe("INV-004 · every forbidden term of §14.3 is caught", () => {
   for (const term of FORBIDDEN_TERMS) {
+    it(`rejects "${term}"`, () => {
+      expect(lintUserFacingText(`Texto com ${term} no meio.`).ok).toBe(false);
+    });
+  }
+});
+
+// Important 3 (task-6-report.md): this list-driven suite is what PRD §16.3
+// names as authoritative for §14.3, but it only ever walked FORBIDDEN_TERMS
+// — CONDITIONAL_TERMS ("indevido", "indevida", "ilegal") were never covered
+// by it. With no citation declared, each conditional term is a violation
+// just like a forbidden one; the citation exemption itself is covered by
+// the "explicit citations" tests in src/lint.test.ts.
+describe("INV-004 · every conditional term of §14.3 is a violation when no citation is declared", () => {
+  for (const term of CONDITIONAL_TERMS) {
     it(`rejects "${term}"`, () => {
       expect(lintUserFacingText(`Texto com ${term} no meio.`).ok).toBe(false);
     });

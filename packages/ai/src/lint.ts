@@ -8,6 +8,11 @@ export type LintViolation = {
 
 export type LintResult = { ok: boolean; violations: LintViolation[] };
 
+export type LintOptions = {
+  /** Character ranges that are verbatim quotation of a norm or of a third party. */
+  citations?: Array<{ start: number; end: number }>;
+};
+
 function fold(text: string): string {
   // U+0300-U+036F is the Unicode "Combining Diacritical Marks" block,
   // written as an escaped range rather than literal combining characters so
@@ -15,112 +20,34 @@ function fold(text: string): string {
   return text.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
 }
 
-const OPEN_STRAIGHT_PRECEDED_BY = /[\s([{«:;,—–-]/;
-const CLOSE_STRAIGHT_FOLLOWED_BY = /[\s.,;:!?)\]}»]/;
-
-function isWhitespace(char: string | undefined): boolean {
-  return char === undefined || /\s/.test(char);
-}
+type WordHit = { index: number; end: number };
 
 /**
- * Whether the character at `index` opens a quotation. "“" (a curly
- * left quote) is unambiguous. A straight `"` is ambiguous — it is also used
- * as an inch/foot mark, a nickname delimiter, etc. — so it only counts as
- * opening when it looks like the start of a quotation: preceded by nothing,
- * whitespace or opening punctuation, and immediately followed by a
- * non-space character (an inch mark like `15"` is preceded by a digit and
- * followed by a space, so it is correctly rejected here).
+ * Builds a whole-word matcher for `needle`. A multi-word needle (e.g. "em
+ * seu nome") is split on its literal spaces and the pieces are rejoined
+ * with `\s+`, so any run of one or more whitespace characters between the
+ * words — a line break, a tab, a non-breaking space, or more than one
+ * plain space — counts as the same gap a single ASCII space would. Each
+ * piece is escaped after the split, so a literal space is never itself
+ * escaped or folded into a character class.
  */
-function looksOpening(text: string, index: number): boolean {
-  const char = text[index];
-  if (char === "“") return true;
-  if (char !== '"') return false;
-  const prev = index > 0 ? text[index - 1] : undefined;
-  const next = text[index + 1];
-  const prevOk = prev === undefined || OPEN_STRAIGHT_PRECEDED_BY.test(prev);
-  const nextOk = next !== undefined && !isWhitespace(next);
-  return prevOk && nextOk;
-}
-
-/** Mirror of `looksOpening` for the closing side of a straight quote. */
-function looksClosing(text: string, index: number): boolean {
-  const char = text[index];
-  if (char === "”") return true;
-  if (char !== '"') return false;
-  const prev = index > 0 ? text[index - 1] : undefined;
-  const next = text[index + 1];
-  const prevOk = prev !== undefined && !isWhitespace(prev);
-  const nextOk = next === undefined || CLOSE_STRAIGHT_FOLLOWED_BY.test(next);
-  return prevOk && nextOk;
-}
-
-/**
- * Finds the index of the quote character that closes the quotation opened
- * at `start - 1`. If another quote that looks like a fresh opener is found
- * first, the original open is treated as broken (it never closes) rather
- * than pairing it with something unrelated further down the string — see
- * the "abort on fresh opener" note on `quotedRanges` for why this matters.
- */
-function findClose(text: string, start: number): number {
-  for (let index = start; index < text.length; index++) {
-    const char = text[index];
-    if (char !== '"' && char !== "“" && char !== "”") continue;
-    if (looksClosing(text, index)) return index;
-    if (looksOpening(text, index)) return -1;
-  }
-  return -1;
-}
-
-/**
- * Character ranges covered by double quotes, where a citation may live.
- *
- * This is not a plain "pair up the quote characters" regex. Two failure
- * modes were probed and are guarded against explicitly, because a
- * quoted-citation exemption that is wrong in the unsafe direction — treating
- * the system's own assertion as an allowed quotation — is the one this gate
- * exists to prevent:
- *
- * 1. A straight quote used for something other than a citation (an inch
- *    mark, a nickname) must never open a span, or a real assertive claim
- *    between it and some unrelated later quote character gets swallowed as
- *    "quoted". `looksOpening`/`looksClosing` apply an open/close shape
- *    heuristic (the same one behind automatic "smart quote" conversion) so
- *    a quote glued to the preceding character with a space after it is
- *    never treated as an opener.
- * 2. A quotation that never actually closes must not reach across the rest
- *    of the string and pair itself with an unrelated, independent
- *    quotation later on. `findClose` bails out as soon as it meets a fresh
- *    opener before a real closer, so the broken open stays broken and the
- *    fresh opener gets evaluated on its own.
- */
-function quotedRanges(text: string): Array<[number, number]> {
-  const ranges: Array<[number, number]> = [];
-  let index = 0;
-  while (index < text.length) {
-    if (looksOpening(text, index)) {
-      const close = findClose(text, index + 1);
-      if (close !== -1) {
-        ranges.push([index, close + 1]);
-        index = close + 1;
-        continue;
-      }
-    }
-    index++;
-  }
-  return ranges;
-}
-
-function inside(ranges: Array<[number, number]>, index: number): boolean {
-  return ranges.some(([start, end]) => index >= start && index < end);
-}
-
-function findWord(haystack: string, needle: string): number[] {
-  const escaped = needle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const pattern = new RegExp(`(?<![\\p{L}\\p{N}])${escaped}(?![\\p{L}\\p{N}])`, "gu");
-  const hits: number[] = [];
+function findWord(haystack: string, needle: string): WordHit[] {
+  const pattern = needle
+    .split(" ")
+    .map((word) => word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+    .join("\\s+");
+  const regex = new RegExp(`(?<![\\p{L}\\p{N}])${pattern}(?![\\p{L}\\p{N}])`, "gu");
+  const hits: WordHit[] = [];
   let match: RegExpExecArray | null;
-  while ((match = pattern.exec(haystack)) !== null) hits.push(match.index);
+  while ((match = regex.exec(haystack)) !== null) {
+    hits.push({ index: match.index, end: match.index + match[0].length });
+  }
   return hits;
+}
+
+/** Whether the half-open range [start, end) falls entirely inside at least one declared citation. */
+function isCited(citations: Array<{ start: number; end: number }>, start: number, end: number): boolean {
+  return citations.some((citation) => start >= citation.start && end <= citation.end);
 }
 
 /**
@@ -129,22 +56,37 @@ function findWord(haystack: string, needle: string): number[] {
  * with "jurídico"; indices are reported against the folded text, which has
  * the same length as the original because folding only removes combining
  * marks and lowercases.
+ *
+ * The conditional terms of PRD §14.3 ("indevido", "indevida", "ilegal") are
+ * allowed only when quoting a norm or a third party. This lint has no way
+ * to infer that attribution from the text itself — quotation marks are
+ * punctuation, not proof of who is speaking — so it does not try. The
+ * caller must say so explicitly through `options.citations`: a legal
+ * reference always comes from the rule that fired, never from the model
+ * (RF-161), and a third-party reply arrives in its own field, so the caller
+ * always knows the exact span before this function is ever called.
+ *
+ * With no `citations`, nothing is exempt: the conditional terms are
+ * violations wherever they appear, quoted or not. A conditional term is
+ * exempt only when its whole match falls inside a declared citation range.
+ * `FORBIDDEN_TERMS` are never exempt, citation or not — §14.3 grants the
+ * quotation exemption to the conditional terms alone.
  */
-export function lintUserFacingText(text: string): LintResult {
+export function lintUserFacingText(text: string, options?: LintOptions): LintResult {
   const folded = fold(text);
-  const quoted = quotedRanges(text);
+  const citations = options?.citations ?? [];
   const violations: LintViolation[] = [];
 
   for (const term of FORBIDDEN_TERMS) {
-    for (const index of findWord(folded, fold(term))) {
-      violations.push({ term: fold(term), index, reason: "forbidden" });
+    for (const hit of findWord(folded, fold(term))) {
+      violations.push({ term: fold(term), index: hit.index, reason: "forbidden" });
     }
   }
 
   for (const term of CONDITIONAL_TERMS) {
-    for (const index of findWord(folded, fold(term))) {
-      if (!inside(quoted, index)) {
-        violations.push({ term: fold(term), index, reason: "assertive" });
+    for (const hit of findWord(folded, fold(term))) {
+      if (!isCited(citations, hit.index, hit.end)) {
+        violations.push({ term: fold(term), index: hit.index, reason: "assertive" });
       }
     }
   }
