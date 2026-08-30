@@ -6,11 +6,16 @@
  * item: "Pacote 07/2026" and "Pacote 08/2026" are the same line. Digits
  * glued to letters survive, because "4G" is part of the name.
  *
- * Punctuation between two digits is removed without inserting a space, so
- * it cannot break a digit run apart from an adjacent letter: "4.5G" becomes
- * "45G" (kept, distinct from "4G"), while "07/2026" becomes "072026" (a
- * pure digit run, still dropped as cycle noise). All other punctuation is
- * replaced with a space, same as before.
+ * Punctuation between two alphanumeric characters fuses - vanishes with no
+ * replacement, rather than becoming a space - whenever at least one of the
+ * two neighbours is a digit: "4.5G" (digit, digit) becomes "45G", "4-G"
+ * (digit, letter) becomes "4G", and "10-GB" (digit, letter) becomes "10GB",
+ * each kept distinct from the plain form it could otherwise collapse into
+ * ("4G", "5G", "20-GB"). "07/2026" (digit, digit) becomes "072026", a pure
+ * digit run with no adjacent letter, so it is still dropped as cycle noise.
+ * Punctuation between two letters - e.g. the "(" in "ADICIONADO(SVA)" - is
+ * unaffected by this rule and still becomes a space, as does punctuation
+ * anywhere else.
  *
  * Known limitation: a purely numeric token is always dropped, so two lines
  * that differ only by a standalone number normalise identically - a
@@ -25,7 +30,7 @@ export function normalizeDescription(input: string): string {
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
     .toUpperCase()
-    .replace(/(?<=[0-9])[^A-Z0-9\s]+(?=[0-9])/g, "")
+    .replace(/(?<=[0-9])[^A-Z0-9\s]+(?=[A-Z0-9])|(?<=[A-Z])[^A-Z0-9\s]+(?=[0-9])/g, "")
     .replace(/[^A-Z0-9\s]/g, " ")
     .replace(/(?<![A-Z0-9])\d+(?![A-Z0-9])/g, " ")
     .replace(/\s+/g, " ")

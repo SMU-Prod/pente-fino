@@ -64,4 +64,23 @@ describe("normalizeDescription", () => {
       expect(normalizeDescription(once)).toBe(once);
     }
   });
+
+  it("tells apart tiers that differ only by a digit-punctuation-letter join", () => {
+    expect(normalizeDescription("Plano 4-G")).not.toBe(normalizeDescription("Plano 5-G"));
+  });
+
+  it("tells apart data caps that differ only by a digit-punctuation-letter join", () => {
+    expect(normalizeDescription("Internet 10-GB")).not.toBe(normalizeDescription("Internet 20-GB"));
+  });
+
+  it("still separates a letter-punctuation-letter join into two words", () => {
+    expect(normalizeDescription("PLANO-MASTER")).toBe("PLANO MASTER");
+  });
+
+  it("is idempotent for digit-punctuation-letter inputs", () => {
+    for (const input of ["Plano 4-G", "Plano 5-G", "Internet 10-GB", "Internet 20-GB"]) {
+      const once = normalizeDescription(input);
+      expect(normalizeDescription(once)).toBe(once);
+    }
+  });
 });
