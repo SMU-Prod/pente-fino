@@ -39,4 +39,29 @@ describe("normalizeDescription", () => {
     const once = normalizeDescription("Serviços de valor adicionado(SVA)");
     expect(normalizeDescription(once)).toBe(once);
   });
+
+  it("keeps a dot-joined digit glued to its letter, distinct from the plain form", () => {
+    const result = normalizeDescription("Plano 4.5G");
+    expect(result).toContain("45G");
+    expect(result).not.toBe(normalizeDescription("Plano 4G"));
+  });
+
+  it("tells apart data tiers that differ only by a comma-decimal", () => {
+    expect(normalizeDescription("Pacote de dados 20,5GB"))
+      .not.toBe(normalizeDescription("Pacote de dados 10,5GB"));
+  });
+
+  it("keeps both tokens distinguishable when a plain and a decimal digit run share a line", () => {
+    const result = normalizeDescription("Internet 4G/4.5G");
+    expect(result).toContain("4G");
+    expect(result).toContain("45G");
+    expect(result).not.toBe(normalizeDescription("Internet 4G/4G"));
+  });
+
+  it("is idempotent for digit-punctuation-digit inputs", () => {
+    for (const input of ["Plano 4.5G", "Pacote de dados 20,5GB", "Pacote de dados 10,5GB", "Internet 4G/4.5G"]) {
+      const once = normalizeDescription(input);
+      expect(normalizeDescription(once)).toBe(once);
+    }
+  });
 });
