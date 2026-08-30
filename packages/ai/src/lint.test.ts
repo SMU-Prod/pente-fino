@@ -242,3 +242,54 @@ describe("lintUserFacingText — quote characters carry no special meaning", () 
     expect(lintUserFacingText(text, { citations: [{ start, end }] }).ok).toBe(true);
   });
 });
+
+/**
+ * Matching used to be exact-word only, so any inflected form of a §14.3
+ * term — a plain plural, or the "-al"/"-il" -> "-is" alternation — walked
+ * straight through the lint. "Nossos advogados cuidam disso" is exactly
+ * the sentence INV-004 exists to stop, and the old matcher let it pass.
+ * `FORBIDDEN_TERMS`/`CONDITIONAL_TERMS` stay singular; only the matcher
+ * changed, so these pin the inflected forms without adding any new list
+ * entry.
+ */
+describe("lintUserFacingText — regular Portuguese plurals of §14.3 terms", () => {
+  it("catches the plain plural of a forbidden term ('advogados')", () => {
+    expect(lintUserFacingText("Nossos advogados cuidam disso").ok).toBe(false);
+  });
+
+  it("catches the '-er'/'-es' plural of a forbidden term ('pareceres')", () => {
+    expect(lintUserFacingText("Emitimos pareceres jurídicos").ok).toBe(false);
+  });
+
+  it("catches the plain plural of a conditional term ('indevidas')", () => {
+    expect(lintUserFacingText("Essas cobranças são indevidas").ok).toBe(false);
+  });
+
+  it("catches the '-al' -> '-is' plural of a conditional term ('ilegais')", () => {
+    expect(lintUserFacingText("Essas práticas são ilegais").ok).toBe(false);
+  });
+
+  it("does not flag a longer legitimate word that merely starts with a term", () => {
+    // "juridicamente" shares the prefix "juridica" with "jurídica" but is
+    // not that word or a regular inflection of it — the whole-word boundary
+    // must still hold once the matcher also accepts plurals.
+    expect(lintUserFacingText("Isso foi resolvido juridicamente, sem processo.").ok).toBe(true);
+  });
+
+  it("pluralizes only the final word of a multi-word term ('processo judiciais')", () => {
+    expect(lintUserFacingText("Vamos abrir um processo judiciais assim que possível").ok).toBe(false);
+  });
+
+  it("reports the singular list entry as the violation term, not the inflected spelling", () => {
+    const result = lintUserFacingText("Nossos advogados cuidam disso");
+    expect(result.violations.some((v) => v.term === "advogado")).toBe(true);
+    expect(result.violations.some((v) => v.term === "advogados")).toBe(false);
+  });
+
+  it("still exempts an inflected conditional term inside a declared citation", () => {
+    const text = 'A lei chama de "cobranças indevidas" nesse artigo';
+    const start = text.indexOf("indevidas");
+    const end = start + "indevidas".length;
+    expect(lintUserFacingText(text, { citations: [{ start, end }] }).ok).toBe(true);
+  });
+});
