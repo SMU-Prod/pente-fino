@@ -346,14 +346,11 @@ describe("ingest task", () => {
     const originalInsert = PgDatabase.prototype.insert;
     const originalUpdate = PgDatabase.prototype.update;
     let poisoned = false;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (PgDatabase.prototype as any).insert = function (this: unknown, table: unknown) {
       if (poisoned) throw new Error("simulated connection loss (poisoned)");
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const builder: any = originalInsert.call(this, table as never);
       if (table === events) {
         const originalValues = builder.values.bind(builder);
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         builder.values = (vals: any) => {
           if (vals?.type === "invoice_analyzed") {
             poisoned = true;
@@ -364,7 +361,6 @@ describe("ingest task", () => {
       }
       return builder;
     };
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (PgDatabase.prototype as any).update = new Proxy(originalUpdate, {
       apply(target, thisArg, args) {
         if (poisoned) throw new Error("simulated connection loss (poisoned)");

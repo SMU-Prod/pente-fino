@@ -9,6 +9,6 @@
     "./tokens.css": "./src/tokens.css",
     "./tailwind-preset": "./tailwind-preset.ts"
   },
-  "scripts": { "test": "vitest run", "typecheck": "tsc --noEmit" },
+  "scripts": { "test": "vitest run", "typecheck": "tsc --noEmit", "lint": "eslint ." },
   "devDependencies": { "@pentefino/config": "workspace:*", "vitest": "^2.1.8" }
 }

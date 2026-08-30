@@ -5,7 +5,7 @@
   "type": "module",
   "main": "./src/index.ts",
   "exports": { ".": "./src/index.ts" },
-  "scripts": { "test": "vitest run", "typecheck": "tsc --noEmit" },
+  "scripts": { "test": "vitest run", "typecheck": "tsc --noEmit", "lint": "eslint ." },
   "dependencies": {
     "@pentefino/adapters": "workspace:*",
     "@pentefino/core": "workspace:*",
