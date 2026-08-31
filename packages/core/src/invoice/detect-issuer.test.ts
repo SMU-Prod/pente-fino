@@ -58,4 +58,50 @@ describe("detectIssuer", () => {
     const buried = `${"linha irrelevante\n".repeat(400)}CLARO MÓVEL`;
     expect(detectIssuer(buried, candidates).issuerId).toBeNull();
   });
+
+  it("does not let two unrelated numeric fields concatenate into a false CNPJ", () => {
+    const text =
+      "Fatura de telefonia\n" +
+      "Nº do documento: 4043254\n" +
+      "Código de barras: 4000147\n" +
+      "Nenhuma operadora identificada no cabeçalho.";
+    const m = detectIssuer(text, candidates);
+    expect(m.issuerId).toBeNull();
+    expect(m.matchedOn).toBe("none");
+  });
+
+  it("still matches a properly formatted CNPJ with dots, a slash and a hyphen", () => {
+    const m = detectIssuer("CNPJ 02.558.157/0001-62 fatura", candidates);
+    expect(m.issuerId).toBe("iss_vivo");
+    expect(m.matchedOn).toBe("cnpj");
+  });
+
+  it("still matches an unformatted, contiguous fourteen-digit CNPJ", () => {
+    const m = detectIssuer("cnpj 02558157000162 fatura", candidates);
+    expect(m.issuerId).toBe("iss_vivo");
+    expect(m.matchedOn).toBe("cnpj");
+  });
+
+  it("still matches a CNPJ written with spaces between the digit groups", () => {
+    const m = detectIssuer("TIM S.A.\nCNPJ 02 421 421 0001 11\nFatura de julho/2026", candidates);
+    expect(m.issuerId).toBe("iss_tim");
+    expect(m.matchedOn).toBe("cnpj");
+  });
+
+  it("does not match a fourteen-digit CNPJ window inside a longer digit run", () => {
+    const text = "Nosso protocolo de atendimento é 404325440001470, guarde para futuras consultas.";
+    const m = detectIssuer(text, candidates);
+    expect(m.issuerId).toBeNull();
+    expect(m.matchedOn).toBe("none");
+  });
+
+  it("does not bridge a CNPJ split across a line break", () => {
+    // No alias text here on purpose: the point is to isolate the CNPJ path
+    // from the alias path, so a match could only come from bridging the
+    // newline inside "40.432.544/\n0001-47".
+    const text = "Fatura de serviços de telecomunicações\nCNPJ 40.432.544/\n0001-47\nJulho/2026";
+    const m = detectIssuer(text, candidates);
+    expect(m.issuerId).toBeNull();
+    expect(m.matchedOn).toBe("none");
+  });
 });
