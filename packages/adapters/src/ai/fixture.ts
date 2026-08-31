@@ -13,6 +13,11 @@ import type { AiProvider } from "@pentefino/core/ports";
  * fail Zod validation loudly rather than being reported as "no fixture".
  * It always reports zero cost, so the ai_calls ledger never mistakes a
  * fixture run for a paid one.
+ *
+ * `mode` and `pages` - what the classify stage decided (RF-107) - are
+ * deliberately not consulted here: a fixture stands in for whatever a real
+ * provider would have produced for this exact file, regardless of which
+ * route got it there, so lookup stays keyed on `fileKey` alone.
  */
 export function createFixtureAiProvider(fixtures: Record<string, unknown>): AiProvider {
   return {

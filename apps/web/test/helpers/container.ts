@@ -1,7 +1,8 @@
 import type { Database } from "@pentefino/db";
 import type { AiProvider } from "@pentefino/core/ports";
 import {
-  createFixtureAiProvider, createInProcessQueue, createLocalMailer, createLocalStorage, type TaskHandler,
+  createFixtureAiProvider, createInProcessQueue, createLocalMailer, createLocalStorage, createUnpdfReader,
+  type TaskHandler,
 } from "@pentefino/adapters";
 import { createIngestTask } from "@pentefino/jobs";
 
@@ -32,6 +33,6 @@ export function buildTestContainer(options: {
   const ai = aiOverride ?? createFixtureAiProvider(fixtures);
   const queue = createInProcessQueue(handlers);
   const mailer = createLocalMailer(mailRoot);
-  handlers.ingest = createIngestTask({ db, storage, ai });
+  handlers.ingest = createIngestTask({ db, storage, ai, reader: createUnpdfReader() });
   return { db, storage, queue, ai, mailer };
 }

@@ -6,7 +6,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { newId } from "@pentefino/core";
-import { createFixtureAiProvider, createInProcessQueue, createLocalStorage } from "@pentefino/adapters";
+import {
+  createFixtureAiProvider, createInProcessQueue, createLocalStorage, createUnpdfReader,
+} from "@pentefino/adapters";
 import { createTestDb, schema, type TestDb } from "@pentefino/db/testing";
 import { ensureAnonymousSession, withUser } from "@pentefino/db";
 import { createIngestTask } from "@pentefino/jobs";
@@ -51,15 +53,26 @@ const FIXTURE_PATH = fileURLToPath(
 );
 const fixture = JSON.parse(readFileSync(FIXTURE_PATH, "utf8"));
 
-// Stand-in upload bytes ("%PDF"). `createLocalStorage`'s `signUpload()`
-// now scopes the fileKey by owner (`uploads/<owner>/<hash>.<ext>`, finding 1
-// - see packages/adapters/src/storage/local.ts), and for a brand-new visitor
-// the owner is a session id the sign route mints itself, so the exact key
-// can no longer be computed ahead of time. The AI fixture is registered
-// against `fixtures`, a plain object the container closes over by reference
-// (see createFixtureAiProvider), once the real fileKey comes back from the
-// sign response instead.
-const FILE_BYTES = new Uint8Array([37, 80, 68, 70]);
+// A real, parseable PDF (Task 6): the ingest task's classify stage now
+// actually sniffs and reads what is in storage, so a 4-byte "%PDF" stand-in
+// no longer survives the pipeline. This is the same hand-built, committed
+// fixture the unpdf reader's own tests use (packages/adapters/src/reader/
+// unpdf.test.ts) - real text naming "Claro Móvel" and its CNPJ, which is
+// also why `report.issuer` below now resolves to the real "claro-movel"
+// seeded issuer instead of null.
+//
+// `createLocalStorage`'s `signUpload()` scopes the fileKey by owner
+// (`uploads/<owner>/<hash>.<ext>`, finding 1 - see
+// packages/adapters/src/storage/local.ts), and for a brand-new visitor the
+// owner is a session id the sign route mints itself, so the exact key can no
+// longer be computed ahead of time. The AI fixture is registered against
+// `fixtures`, a plain object the container closes over by reference (see
+// createFixtureAiProvider), once the real fileKey comes back from the sign
+// response instead. `FILE_HASH` is derived from `FILE_BYTES`, so it always
+// matches whatever fixture bytes this constant holds.
+const FILE_BYTES = new Uint8Array(readFileSync(
+  fileURLToPath(new URL("../../../../fixtures/synthetic/pdfs/text-2page.pdf", import.meta.url)),
+));
 const FILE_HASH = createHash("sha256").update(FILE_BYTES).digest("hex");
 
 // RF-140: anonymous sessions live for 30 days. `invoices.session_id` carries
@@ -158,9 +171,13 @@ describe("E0 acceptance · a fixture invoice crosses the empty pipeline", () => 
     // report route's own suspectCents/doubledCents reduction over `findings`
     // (PRD §8.2) comes out to exactly zero, not merely "the list is empty".
     expect(report.totals).toEqual({ suspectCents: 0, doubledCents: 0 });
-    // Issuer detection (RF-105/RF-106) is not implemented at E0; the sign
-    // route never assigns an issuerId, so the report must say so plainly.
-    expect(report.issuer).toBeNull();
+    // Issuer detection (RF-105) is real now (Task 6): the classify stage
+    // inside the ingest task reads `FILE_BYTES`' own text - "Claro Móvel"
+    // and its CNPJ - straight off the file, before any AI call, and sets
+    // `invoices.issuerId` from that detection. Nothing about the sign route
+    // or the caller assigns it; the report simply reflects what the
+    // heuristic found for this fixture's PDF.
+    expect(report.issuer).toMatchObject({ slug: "claro-movel", displayName: "Claro Móvel" });
 
     // 5 · item rows are inspected, not merely counted: description,
     // normalised description, amount, section and line number for each of
@@ -230,7 +247,8 @@ describe("E0 acceptance · a fixture invoice crosses the empty pipeline", () => 
       contentHash: FILE_HASH, source: "pdf_text", fileKey: signed.fileKey,
     });
     const ingest = createIngestTask({
-      db: ctx.db, storage, ai: createFixtureAiProvider({ [signed.fileKey]: fixture }),
+      db: ctx.db, storage, reader: createUnpdfReader(),
+      ai: createFixtureAiProvider({ [signed.fileKey]: fixture }),
     });
     const queue = createInProcessQueue({ ingest });
 
@@ -278,7 +296,8 @@ describe("E0 acceptance · a fixture invoice crosses the empty pipeline", () => 
       contentHash: FILE_HASH, source: "pdf_text", fileKey: signed.fileKey,
     });
     const ingest = createIngestTask({
-      db: ctx.db, storage, ai: createFixtureAiProvider({ [signed.fileKey]: fixture }),
+      db: ctx.db, storage, reader: createUnpdfReader(),
+      ai: createFixtureAiProvider({ [signed.fileKey]: fixture }),
     });
 
     await ingest({ invoiceId });

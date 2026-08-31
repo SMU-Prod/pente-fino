@@ -1,19 +1,29 @@
 import { and, eq, notInArray, sql } from "drizzle-orm";
 import { createHash } from "node:crypto";
 import {
-  maskCanonical, maskText, newId, normalizeDescription, runRules, validateInvoice,
+  detectIssuer, extractionQuality, MAX_PAGES, maskCanonical, maskText, newId,
+  normalizeDescription, runRules, sniffMimeType, validateInvoice,
 } from "@pentefino/core";
-import type { AiProvider, Storage } from "@pentefino/core/ports";
+import type { AiProvider, DocumentReader, ReadDocument, Storage } from "@pentefino/core/ports";
 import type { EventType } from "@pentefino/core";
 // eslint-disable-next-line pentefino/require-with-user -- system job with no user session; writes go through the caller-injected `Database` (deps.db), not a client this module creates itself
 import { schema, type Database } from "@pentefino/db";
 
-const { aiCalls, events, invoiceItems, invoices } = schema;
+const { aiCalls, events, invoiceItems, invoices, issuers } = schema;
 
 export type IngestDeps = {
   db: Database;
   storage: Storage;
-  ai: AiProvider;
+  reader: DocumentReader;
+  /**
+   * Absent, not merely a provider that fails, means "no AI provider is
+   * configured at all" - see the doc comment below for what that does to
+   * the pipeline. A fixture provider that throws for an unregistered file
+   * key is a different situation entirely: that provider IS configured, it
+   * just does not recognise this particular file, and that stays a genuine
+   * `failed`.
+   */
+  ai?: AiProvider;
 };
 
 const EXTRACT_PROMPT_VERSION = 1;
@@ -24,7 +34,7 @@ const EXTRACT_PROMPT_VERSION = 1;
 // into a second, unmasked copy of the invoice.
 const MAX_FAILURE_MESSAGE_LENGTH = 500;
 
-type Stage = "extract" | "validate" | "persist";
+type Stage = "classify" | "extract" | "validate" | "persist";
 
 /**
  * Pre-E1 fix, finding 4: every error this task throws is now tagged with a
@@ -80,26 +90,53 @@ function computeItemKey(
 }
 
 /**
- * extract → validate → mask → rules (PRD §9.2).
+ * classify → extract → validate → mask → rules (PRD §9.2).
  *
- * §9.2's own diagram opens with a `classify` step - issuer detection,
- * RF-105 / RF-106 - that this task does not perform. At E0 there is only a
- * fixture extractor and no heuristic that inspects the file for a CNPJ or a
- * header keyword; `issuerId` on the `invoices` row always arrives from
- * whatever created it before this task ever runs, and this task never reads
- * or writes it. Issuer detection is real work that belongs to the real
- * extractor arriving in E1 - narrating a step that does not exist here would
- * make this comment the thing that is wrong, not the code.
+ * `classify` is real now, and it runs entirely ahead of any AI call:
  *
- * At E0 there are no active rules, so a valid invoice lands on `analyzed`
- * with an empty finding list. The path is whole; the judgement is not there
- * yet.
+ *   1. read the stored bytes (the missing-object failure below already
+ *      covered an absent file; this is what actually fetches it);
+ *   2. `sniffMimeType` the real bytes, never the caller's declared type
+ *      (RF-104) - a file that is not one of the four accepted types is
+ *      rejected before anything tries to parse it;
+ *   3. for a PDF, `reader.read` it; a page count over RF-104's limit of
+ *      twelve goes to `needs_review` with the count in its event, and no AI
+ *      call is ever made for it;
+ *   4. `extractionQuality` scores what actually came out of the file and
+ *      picks RF-107's route ("text" below the 0.6 threshold means "vision"
+ *      instead); the score is persisted to `invoices.extractionQuality`
+ *      immediately, so it survives even if a later step stops the pipeline;
+ *   5. `detectIssuer` reads the same text against the `issuers` table,
+ *      before the model ever sees anything (RF-105). An issuer the
+ *      heuristic cannot place still gets a report, under generic rules,
+ *      through a fresh `issuers` row with `status: "unknown"` (RF-106) -
+ *      never a guess, which would silently outrank those generic rules in
+ *      E2 (RF-123);
+ *   6. only then is the provider called, with the route the score picked
+ *      and - for text - the pages the reader already produced, so the model
+ *      transcribes what was actually extracted instead of re-reading the
+ *      file itself.
+ *
+ * With no AI provider configured at all (`deps.ai` absent, not merely a
+ * provider that fails on this one file - see the note on `IngestDeps`), the
+ * pipeline stops right there, at `needs_review`, with a message a person can
+ * act on. It never falls back to reconstructing invoice structure from the
+ * text with regex: A1 says the model transcribes and the engine judges, and
+ * inventing structure here would make this step exactly what A1 exists to
+ * prevent.
+ *
+ * At E0 there were no active rules, so a valid invoice lands on `analyzed`
+ * with an empty finding list. That is still true today - rules arrive in
+ * E2 - so the path is whole; the judgement is not there yet.
  *
  * Ordering is load-bearing, not incidental (INV-007): validation runs
  * against the *raw* extraction, before masking, so a rejected invoice never
  * has a masked copy computed for it; masking then runs before anything is
  * written, so nothing ever reaches `invoices.canonical` or `invoice_items`
- * with PII still in it.
+ * with PII still in it. The classify stage's own new field - the quality
+ * score - is no exception: it is a number derived from unmasked text, but it
+ * is not itself PII, and INV-007 applies to it exactly as it does to every
+ * other field this task persists.
  *
  * A single try/catch wraps everything from the first status flip onward.
  * §9.2 draws a third terminal branch besides `analyzed` and `needs_review`:
@@ -110,12 +147,18 @@ function computeItemKey(
  * queue today, a durable workflow's retry policy later) sees the failure
  * instead of a silent no-op.
  *
- * Two failure surfaces are checked deliberately, ahead of touching the AI
+ * Four failure surfaces are checked deliberately, ahead of touching the AI
  * provider, rather than left to surface as an opaque extraction error:
  *   - the invoice row does not exist → thrown immediately, nothing to mark;
  *   - the file the invoice points at is missing from storage (an upload
- *     that was signed but never completed) → failed, without ever asking
- *     the AI provider about a file that isn't there.
+ *     that was signed but never completed) → failed;
+ *   - the file's real bytes are not one of the four accepted types
+ *     (RF-104) → failed, whatever the caller declared;
+ *   - a PDF's page count is over RF-104's limit → needs_review, not failed:
+ *     the file is real and reachable, it is simply past what this pipeline
+ *     is willing to send to a model.
+ * None of these four ever reaches the AI provider - that is the whole point
+ * of checking them first.
  *
  * Idempotency (A4) has one hard guarantee and one accepted limitation:
  *   - an invoice already `analyzed` is a full no-op (a completed step has no
@@ -135,7 +178,7 @@ function computeItemKey(
  *     grow - taking only that row's own findings with it.
  */
 export function createIngestTask(deps: IngestDeps) {
-  const { db, storage, ai } = deps;
+  const { db, storage, reader, ai } = deps;
 
   return async function ingest(payload: Record<string, unknown>): Promise<void> {
     const invoiceId = String(payload.invoiceId);
@@ -162,20 +205,108 @@ export function createIngestTask(deps: IngestDeps) {
     }
     const record = (type: EventType, extra: Record<string, unknown> = {}) => recordVia(db, type, extra);
 
-    let stage: Stage = "extract";
+    let stage: Stage = "classify";
     try {
       await db.update(invoices).set({ status: "extracting" }).where(eq(invoices.id, invoiceId));
 
       if (!invoice.fileKey) {
         throw new Error(`invoice ${invoiceId} has no fileKey to extract from`);
       }
-      const fileExists = await storage.exists(invoice.fileKey);
-      if (!fileExists) {
+      const bytes = await storage.get(invoice.fileKey);
+      if (!bytes) {
         throw new Error(`storage object missing for invoice ${invoiceId}: ${invoice.fileKey}`);
       }
 
+      const sniffed = sniffMimeType(bytes);
+      if (!sniffed) {
+        throw new Error(
+          `file for invoice ${invoiceId} does not sniff as an accepted type (RF-104): ${invoice.fileKey}`,
+        );
+      }
+
+      // RF-104's page limit and the text/no-text distinction unpdf reports
+      // are both PDF concepts. An accepted image (RF-103's photo path) has
+      // neither a page tree nor a text layer to speak of, so it is treated
+      // as a single, textless "page" and always routed to vision below -
+      // there is nothing here for a text reader to find.
+      const doc: ReadDocument = sniffed === "application/pdf"
+        ? await reader.read(bytes)
+        : { pages: [], pageCount: 1, hasTextLayer: false };
+
+      if (doc.pageCount > MAX_PAGES) {
+        await db.transaction(async (tx) => {
+          await tx.update(invoices).set({ status: "needs_review" }).where(eq(invoices.id, invoiceId));
+          await recordVia(tx, "invoice_needs_review", {
+            reason: "page_limit_exceeded", pageCount: doc.pageCount, maxPages: MAX_PAGES,
+          });
+        });
+        return;
+      }
+
+      const quality = extractionQuality(doc);
+      await db.update(invoices).set({ extractionQuality: quality.score }).where(eq(invoices.id, invoiceId));
+
+      // RF-105/RF-106: detected straight off the text unpdf already read,
+      // before a single AI call. Reading `issuers` directly, rather than
+      // through `withUser`, is the same system-scoped access every other
+      // query in this job already uses (see the eslint-disable at the top
+      // of this file) - there is no session here to scope to.
+      const issuerRows = await db.select({
+        id: issuers.id, slug: issuers.slug, displayName: issuers.displayName,
+        cnpj: issuers.cnpj, aliases: issuers.aliases,
+      }).from(issuers);
+      const candidates = issuerRows.map((row) => ({ ...row, aliases: row.aliases ?? [] }));
+      const issuerMatch = detectIssuer(doc.pages.join("\n"), candidates);
+
+      let issuerId: string;
+      if (issuerMatch.issuerId) {
+        issuerId = issuerMatch.issuerId;
+      } else {
+        // RF-106: nothing about a failed detection - no CNPJ, no alias -
+        // identifies WHICH issuer this is, so a fresh `unknown` row is what
+        // the invoice gets instead of a guess. One row per unmatched
+        // invoice, deliberately: nothing here distinguishes two unrelated
+        // unknown issuers from each other, so merging them into one shared
+        // row would itself be an invented identity.
+        issuerId = newId("iss");
+        await db.insert(issuers).values({
+          id: issuerId,
+          slug: `unknown-${issuerId}`,
+          category: "telecom",
+          displayName: "Emissor não identificado",
+          cnpj: null,
+          aliases: [],
+          sections: [],
+          playbook: null,
+          status: "unknown",
+        });
+      }
+      await db.update(invoices).set({ issuerId }).where(eq(invoices.id, invoiceId));
+
+      if (!ai) {
+        // A1: the model transcribes, the engine judges. With no provider to
+        // do that transcription, the honest stop is here - right after the
+        // text and its quality score exist, right before anything would
+        // otherwise have to invent structure (regex over the text, say) to
+        // fake what only a real model call does.
+        await db.transaction(async (tx) => {
+          await tx.update(invoices).set({ status: "needs_review" }).where(eq(invoices.id, invoiceId));
+          await recordVia(tx, "invoice_needs_review", {
+            reason: "ai_not_configured",
+            message:
+              "No AI provider is configured; extraction stopped after reading the file's text " +
+              "and cannot proceed to structured invoice data without a model.",
+          });
+        });
+        return;
+      }
+
+      stage = "extract";
       const { canonical, usage } = await ai.extractInvoice({
-        fileKey: invoice.fileKey, promptVersion: EXTRACT_PROMPT_VERSION,
+        fileKey: invoice.fileKey,
+        promptVersion: EXTRACT_PROMPT_VERSION,
+        mode: quality.route,
+        ...(quality.route === "text" ? { pages: doc.pages } : {}),
       });
 
       await db.insert(aiCalls).values({
@@ -307,7 +438,6 @@ export function createIngestTask(deps: IngestDeps) {
           periodEnd: masked.period.end,
           dueDate: masked.dueDate,
           totalCents: masked.totalCents,
-          extractionQuality: masked.extraction.confidence,
         }).where(eq(invoices.id, invoiceId));
 
         await recordVia(tx, "invoice_analyzed");
