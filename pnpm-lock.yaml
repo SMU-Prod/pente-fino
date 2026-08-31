@@ -8,9 +8,15 @@ importers:
 
   .:
     devDependencies:
+      '@pentefino/adapters':
+        specifier: workspace:*
+        version: link:packages/adapters
       '@pentefino/config':
         specifier: workspace:*
         version: link:packages/config
+      '@pentefino/core':
+        specifier: workspace:*
+        version: link:packages/core
       '@typescript-eslint/parser':
         specifier: ^8.68.0
         version: 8.68.0(eslint@9.39.5)(typescript@5.9.3)

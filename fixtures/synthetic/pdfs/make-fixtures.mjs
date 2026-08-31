@@ -201,10 +201,38 @@ const textThirteenPage = buildTextPdf(
   ]),
 );
 
+// Built for scripts/golden-anonymize.test.mjs (see fixtures/golden/README.md
+// on the anonymisation script). Every value below is invented for this
+// fixture, not lifted from a real invoice or a real person:
+//   - "111.444.777-35" is a widely-used check-digit-valid fake CPF (the
+//     Brazilian equivalent of 555-01-2345), chosen because
+//     packages/core's CPF detector validates the check digit and a random
+//     11-digit string almost never passes it.
+//   - "Fulano de Tal" is Portuguese for "John Doe".
+//   - the CNPJ is the same one text-2page.pdf already uses for "Claro
+//     Móvel" - reused here deliberately, because the anonymisation script
+//     must NOT mask it (see the script's header comment on why CNPJ
+//     survives), and reusing a CNPJ this repo's tests already treat as
+//     "the issuer" makes that assertion meaningful rather than arbitrary.
+const textPiiSample = buildTextPdf([
+  [
+    "Claro Móvel",
+    "CNPJ 40.432.544/0001-47",
+    "Nome: Fulano de Tal",
+    "CPF: 111.444.777-35",
+    "Endereço: Rua das Palmeiras, 123 - Bairro Centro",
+    "Linha: (11) 98765-4321",
+    "Total a pagar R$ 199,90",
+    "Vencimento 10/09/2026",
+  ],
+  ["Página 2 de 2", "Detalhamento de consumo"],
+]);
+
 const fixtures = {
   "text-2page.pdf": textTwoPage,
   "scan-1page.pdf": scanOnePage,
   "text-13page.pdf": textThirteenPage,
+  "text-pii-sample.pdf": textPiiSample,
 };
 
 for (const [name, bytes] of Object.entries(fixtures)) {
