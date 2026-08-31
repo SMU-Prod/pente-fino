@@ -44,7 +44,20 @@ import type { InvoiceCanonical, InvoiceItem } from "./canonical.js";
  */
 const DOCUMENT_SEPARATOR = String.raw`[.\-/ ]?`;
 const CPF_SOURCE = String.raw`\b(?:\d${DOCUMENT_SEPARATOR}){10}\d\b`;
-const CNPJ_SOURCE = String.raw`\b(?:\d${DOCUMENT_SEPARATOR}){13}\d\b`;
+
+/**
+ * The shape of a CNPJ, as a pattern source so a caller can build its own
+ * RegExp with whatever flags it needs.
+ *
+ * Exported because more than one place has to recognise this shape, and a
+ * second hand-written copy is a defect waiting to happen: this repository
+ * has already had one detector disagree with its own redactor. Shape only —
+ * it says nothing about whether the digits are a valid CNPJ. For that, and
+ * for deciding whether something is PII at all, use `containsPii`, which
+ * checks the mod-11 check digits.
+ */
+export const CNPJ_SHAPE_SOURCE = String.raw`\b(?:\d${DOCUMENT_SEPARATOR}){13}\d\b`;
+const CNPJ_SOURCE = CNPJ_SHAPE_SOURCE;
 
 // FEBRABAN bank-slip ("boleto bancário") digitable line: fields of
 // 5+5 / 5+6 / 5+6 / 1 / 14 digits — the most common linha digitável in

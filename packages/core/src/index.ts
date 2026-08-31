@@ -7,7 +7,7 @@ export { STAGES, type Stage, type Playbook } from "./cases/playbook.js";
 export { ContestDocument } from "./documents/contest.js";
 export { normalizeDescription } from "./invoice/normalize.js";
 export { validateInvoice, type ValidationResult, type ValidationFailure } from "./invoice/validate.js";
-export { maskCanonical, maskText, containsPii } from "./invoice/mask.js";
+export { maskCanonical, maskText, containsPii, CNPJ_SHAPE_SOURCE } from "./invoice/mask.js";
 export { runRules, type ActiveRule, type RuleEngineInput } from "./rules/engine.js";
 export { TARIFF_FLAGS, type TariffFlag, type ReferenceTariff, type ReferenceFlag } from "./rules/references.js";
 export {

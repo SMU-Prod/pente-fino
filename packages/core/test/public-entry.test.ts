@@ -35,6 +35,7 @@ describe("the public entry point", () => {
       "extractionQuality",
       "VISION_THRESHOLD",
       "detectIssuer",
+      "CNPJ_SHAPE_SOURCE",
       "sniffMimeType",
       "MAX_PAGES",
     ];

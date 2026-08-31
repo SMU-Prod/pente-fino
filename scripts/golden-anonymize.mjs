@@ -103,7 +103,7 @@ import { deflateSync, inflateSync } from "node:zlib";
 // here and would NOT be safe for `packages/core/src/index.ts` (whose
 // exports pull in files with *runtime*, not just type-only, relative
 // imports).
-import { maskText, containsPii } from "../packages/core/src/invoice/mask.ts";
+import { maskText, containsPii, CNPJ_SHAPE_SOURCE } from "../packages/core/src/invoice/mask.ts";
 import { createUnpdfReader } from "../packages/adapters/src/reader/unpdf.ts";
 
 export class UnsupportedPdfError extends Error {
@@ -605,7 +605,10 @@ function maskLabeledName(line, report) {
 // check-digit-valid 14-digit run that was actually something else), and
 // under-protecting a non-CNPJ number is the safe direction here — it
 // would simply take the normal CPF/other rules afterwards instead.
-const CNPJ_SHAPE = /\b(?:\d[.\-/ ]?){13}\d\b/g;
+// Imported rather than re-typed: a second hand-written copy of this shape
+// is exactly how a detector and its redactor drift apart, which this
+// repository has already had happen once.
+const CNPJ_SHAPE = new RegExp(CNPJ_SHAPE_SOURCE, "g");
 
 function protectCnpjSpans(line, preserved) {
   const spans = [];
