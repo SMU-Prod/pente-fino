@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { eq } from "drizzle-orm";
 import { newId, type InvoiceCanonical } from "@pentefino/core";
 import { createTestDb, schema, type TestDb } from "@pentefino/db/testing";
@@ -37,10 +38,20 @@ const sessionA = "ses_owner00000000000000";
 const sessionB = "ses_other00000000000000";
 let invoiceId: string;
 
+// A real, parseable PDF, not placeholder bytes: the ingest task's classify
+// stage (Task 6) now actually sniffs and reads what is in storage. This
+// route's own tests care about the HTTP/ownership mechanics, not extraction
+// content, so a textless scan (no issuer identity implied) is the neutral
+// choice - reused from the same committed fixtures the unpdf reader's own
+// tests use (packages/adapters/src/reader/unpdf.test.ts).
+const SCAN_PDF = new Uint8Array(readFileSync(
+  fileURLToPath(new URL("../../../../fixtures/synthetic/pdfs/scan-1page.pdf", import.meta.url)),
+));
+
 function seedStorageObject(key: string) {
   const target = join(storageRoot, key);
   mkdirSync(dirname(target), { recursive: true });
-  writeFileSync(target, "fake pdf bytes");
+  writeFileSync(target, SCAN_PDF);
 }
 
 beforeEach(async () => {

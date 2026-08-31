@@ -39,7 +39,7 @@ describe("buildAdapters", () => {
       extraction: { confidence: 0.95, warnings: [] },
     };
     const adapters = buildAdapters({ LOCAL_DATA_ROOT: root }, {}, { "uploads/abc.pdf": canonical });
-    const result = await adapters.ai.extractInvoice({ fileKey: "uploads/abc.pdf", promptVersion: 1 });
+    const result = await adapters.ai.extractInvoice({ fileKey: "uploads/abc.pdf", promptVersion: 1, mode: "text" });
     expect(result.canonical.issuer.name).toBe("Claro Móvel");
   });
 

@@ -1,15 +1,33 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import { PgDatabase } from "drizzle-orm/pg-core";
 import { dirname, join } from "node:path";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { newId, type InvoiceCanonical } from "@pentefino/core";
-import { createFixtureAiProvider, createLocalStorage } from "@pentefino/adapters";
+import { fileURLToPath } from "node:url";
+import { extractionQuality, newId, type InvoiceCanonical } from "@pentefino/core";
+import { createFixtureAiProvider, createLocalStorage, createUnpdfReader } from "@pentefino/adapters";
 import { createTestDb, schema, type TestDb } from "@pentefino/db/testing";
 import { createIngestTask } from "../src/tasks/ingest.js";
 
 const { events, invoiceItems, invoices, issuers } = schema;
+
+// The same hand-built, committed fixtures the unpdf reader's own tests use
+// (packages/adapters/src/reader/unpdf.test.ts) - real, parseable PDFs, not
+// placeholder bytes, now that the classify stage actually sniffs and reads
+// what is in storage instead of trusting the caller.
+function pdfFixture(name: string): Uint8Array {
+  const path = fileURLToPath(new URL(`../../../fixtures/synthetic/pdfs/${name}`, import.meta.url));
+  return new Uint8Array(readFileSync(path));
+}
+
+// "Claro Móvel", CNPJ 40.432.544/0001-47, "Total a pagar R$ 129,90",
+// "Vencimento 10/08/2026" on page 1 - a real text layer that both scores
+// above RF-107's threshold and identifies the seeded "claro-movel" issuer
+// by alias, matching the CNPJ this file's own `canonical` fixture also uses.
+const TEXT_TWO_PAGE_PDF = pdfFixture("text-2page.pdf");
+const SCAN_ONE_PAGE_PDF = pdfFixture("scan-1page.pdf");
+const TEXT_THIRTEEN_PAGE_PDF = pdfFixture("text-13page.pdf");
 
 const canonical = {
   issuer: { name: "Claro Móvel", cnpj: "40432544000147", category: "telecom" },
@@ -26,6 +44,14 @@ const canonical = {
   extraction: { confidence: 0.95, warnings: [] },
 } as InvoiceCanonical;
 
+// A zero-cost usage record for ai fixtures below that capture their input
+// instead of going through createFixtureAiProvider - shaped exactly like
+// the one createFixtureAiProvider itself reports, so a captured-call test
+// is not accidentally exercising a different AiUsage shape.
+const ZERO_USAGE = {
+  tokensIn: 0, tokensOut: 0, costUsd: 0, latencyMs: 0, model: "test", provider: "test",
+};
+
 let ctx: TestDb;
 let root: string;
 let issuerId: string;
@@ -39,7 +65,7 @@ const fileKey = "uploads/abc.pdf";
 // invoice's `contentHash`, and the fixture invoices below use a placeholder
 // hash ("abc") that is not the real digest of anything. Only the resulting
 // file's presence on disk is under test here, not the upload contract.
-function seedStorageObject(key: string, body = "fake pdf bytes") {
+function seedStorageObject(key: string, body: string | Uint8Array = TEXT_TWO_PAGE_PDF) {
   const target = join(root, key);
   mkdirSync(dirname(target), { recursive: true });
   writeFileSync(target, body);
@@ -71,6 +97,7 @@ function task() {
   return createIngestTask({
     db: ctx.db,
     storage: createLocalStorage({ root, secret: "s" }),
+    reader: createUnpdfReader(),
     ai: createFixtureAiProvider({ [fileKey]: canonical }),
   });
 }
@@ -132,6 +159,7 @@ describe("ingest task", () => {
     const failing = createIngestTask({
       db: ctx.db,
       storage: createLocalStorage({ root, secret: "s" }),
+      reader: createUnpdfReader(),
       ai: createFixtureAiProvider({ [fileKey]: broken }),
     });
     await failing({ invoiceId });
@@ -144,6 +172,7 @@ describe("ingest task", () => {
     const failing = createIngestTask({
       db: ctx.db,
       storage: createLocalStorage({ root, secret: "s" }),
+      reader: createUnpdfReader(),
       ai: createFixtureAiProvider({ [fileKey]: broken }),
     });
     await failing({ invoiceId });
@@ -205,6 +234,7 @@ describe("ingest task", () => {
     const failing = createIngestTask({
       db: ctx.db,
       storage: createLocalStorage({ root, secret: "s" }),
+      reader: createUnpdfReader(),
       ai: { async extractInvoice() { throw new Error("model gpt-9-mini not found"); } },
     });
     await expect(failing({ invoiceId })).rejects.toMatchObject({ reason: "extraction_failed" });
@@ -214,6 +244,7 @@ describe("ingest task", () => {
     const failing = createIngestTask({
       db: ctx.db,
       storage: createLocalStorage({ root, secret: "s" }),
+      reader: createUnpdfReader(),
       ai: createFixtureAiProvider({}), // no fixture registered for fileKey
     });
 
@@ -229,6 +260,7 @@ describe("ingest task", () => {
     const failing = createIngestTask({
       db: ctx.db,
       storage: createLocalStorage({ root, secret: "s" }),
+      reader: createUnpdfReader(),
       ai: createFixtureAiProvider({}),
     });
     await expect(failing({ invoiceId })).rejects.toThrow();
@@ -247,6 +279,7 @@ describe("ingest task", () => {
     const failing = createIngestTask({
       db: ctx.db,
       storage: createLocalStorage({ root, secret: "s" }),
+      reader: createUnpdfReader(),
       ai: { async extractInvoice() { called = true; throw new Error("must not be called"); } },
     });
 
@@ -282,6 +315,7 @@ describe("ingest task", () => {
     const rerun = createIngestTask({
       db: ctx.db,
       storage: createLocalStorage({ root, secret: "s" }),
+      reader: createUnpdfReader(),
       ai: createFixtureAiProvider({ [fileKey]: shrunk }),
     });
     await rerun({ invoiceId });
@@ -304,6 +338,7 @@ describe("ingest task", () => {
     const first = createIngestTask({
       db: ctx.db,
       storage: createLocalStorage({ root, secret: "s" }),
+      reader: createUnpdfReader(),
       ai: createFixtureAiProvider({ [fileKey]: shrunk }),
     });
     await first({ invoiceId });
@@ -347,6 +382,7 @@ describe("ingest task", () => {
     const rerun = createIngestTask({
       db: ctx.db,
       storage: createLocalStorage({ root, secret: "s" }),
+      reader: createUnpdfReader(),
       ai: createFixtureAiProvider({ [fileKey]: withMeta }),
     });
     await rerun({ invoiceId });
@@ -378,6 +414,7 @@ describe("ingest task", () => {
     const rerun = createIngestTask({
       db: ctx.db,
       storage: createLocalStorage({ root, secret: "s" }),
+      reader: createUnpdfReader(),
       ai: createFixtureAiProvider({ [fileKey]: renamed }),
     });
     await rerun({ invoiceId });
@@ -424,6 +461,7 @@ describe("ingest task", () => {
     const rerun = createIngestTask({
       db: ctx.db,
       storage: createLocalStorage({ root, secret: "s" }),
+      reader: createUnpdfReader(),
       ai: createFixtureAiProvider({ [fileKey]: shifted }),
     });
     await rerun({ invoiceId });
@@ -451,6 +489,7 @@ describe("ingest task", () => {
     const withDuplicates = createIngestTask({
       db: ctx.db,
       storage: createLocalStorage({ root, secret: "s" }),
+      reader: createUnpdfReader(),
       ai: createFixtureAiProvider({ [fileKey]: duplicateLines }),
     });
     await withDuplicates({ invoiceId });
@@ -522,6 +561,7 @@ describe("ingest task", () => {
     const failing = createIngestTask({
       db: ctx.db,
       storage: createLocalStorage({ root, secret: "s" }),
+      reader: createUnpdfReader(),
       ai: {
         async extractInvoice() {
           throw new Error(`malformed completion near CPF 123.456.789-09 ${longTail}`);
@@ -554,11 +594,205 @@ describe("ingest task", () => {
     const withMetaTask = createIngestTask({
       db: ctx.db,
       storage: createLocalStorage({ root, secret: "s" }),
+      reader: createUnpdfReader(),
       ai: createFixtureAiProvider({ [fileKey]: withMeta }),
     });
     await withMetaTask({ invoiceId });
 
     const items = await ctx.db.select().from(invoiceItems).where(eq(invoiceItems.invoiceId, invoiceId));
     expect(items[0]?.meta).toEqual({ linha: "11987654321" });
+  });
+
+  // --- Task 6: the classify stage. Reads the real stored bytes, sniffs
+  // their actual type, reads the PDF, scores the extraction, detects the
+  // issuer and picks RF-107's route - all before a single AI call.
+
+  it("detects the issuer from the PDF's own text and overrides whatever issuerId the caller supplied (RF-105)", async () => {
+    const [vivo] = await ctx.db.select().from(issuers).where(eq(issuers.slug, "vivo-movel"));
+    const otherInvoiceId = newId("inv");
+    await ctx.db.insert(invoices).values({
+      id: otherInvoiceId, issuerId: vivo!.id, contentHash: "vivo-test", source: "pdf_text",
+      status: "queued", fileKey,
+    });
+
+    await task()({ invoiceId: otherInvoiceId });
+
+    const [claro] = await ctx.db.select().from(issuers).where(eq(issuers.slug, "claro-movel"));
+    const [row] = await ctx.db.select().from(invoices).where(eq(invoices.id, otherInvoiceId));
+    expect(row?.issuerId).toBe(claro!.id);
+  });
+
+  it("creates an issuers row with status unknown when the text does not identify any seeded issuer, and the pipeline continues (RF-106)", async () => {
+    const scanKey = "uploads/scan.pdf";
+    seedStorageObject(scanKey, SCAN_ONE_PAGE_PDF);
+    const scanInvoiceId = newId("inv");
+    await ctx.db.insert(invoices).values({
+      id: scanInvoiceId, issuerId, contentHash: "scan-test", source: "pdf_text",
+      status: "queued", fileKey: scanKey,
+    });
+    const scanTask = createIngestTask({
+      db: ctx.db,
+      storage: createLocalStorage({ root, secret: "s" }),
+      reader: createUnpdfReader(),
+      ai: createFixtureAiProvider({ [scanKey]: canonical }),
+    });
+
+    await scanTask({ invoiceId: scanInvoiceId });
+
+    const [row] = await ctx.db.select().from(invoices).where(eq(invoices.id, scanInvoiceId));
+    expect(row?.issuerId).not.toBeNull();
+    expect(row?.issuerId).not.toBe(issuerId);
+    const [newIssuer] = await ctx.db.select().from(issuers).where(eq(issuers.id, row!.issuerId!));
+    expect(newIssuer?.status).toBe("unknown");
+    // RF-106: the flow continues to a real report, not stuck or errored.
+    expect(row?.status).toBe("analyzed");
+  });
+
+  it("sends a PDF over RF-104's page limit to needs_review with the page count, without ever calling the AI provider", async () => {
+    const bigKey = "uploads/big.pdf";
+    seedStorageObject(bigKey, TEXT_THIRTEEN_PAGE_PDF);
+    const bigInvoiceId = newId("inv");
+    await ctx.db.insert(invoices).values({
+      id: bigInvoiceId, issuerId, contentHash: "big-test", source: "pdf_text",
+      status: "queued", fileKey: bigKey,
+    });
+    const extractInvoice = vi.fn(async () => {
+      throw new Error("must not be called: over the page limit");
+    });
+    const bigTask = createIngestTask({
+      db: ctx.db,
+      storage: createLocalStorage({ root, secret: "s" }),
+      reader: createUnpdfReader(),
+      ai: { extractInvoice },
+    });
+
+    await bigTask({ invoiceId: bigInvoiceId });
+
+    expect(extractInvoice).not.toHaveBeenCalled();
+    const [row] = await ctx.db.select().from(invoices).where(eq(invoices.id, bigInvoiceId));
+    expect(row?.status).toBe("needs_review");
+    const rows = await ctx.db.select().from(events).where(eq(events.invoiceId, bigInvoiceId));
+    const event = rows.find((r) => r.type === "invoice_needs_review");
+    expect(event).toBeDefined();
+    expect((event?.payload as { pageCount?: number } | undefined)?.pageCount).toBe(13);
+  });
+
+  it("rejects a file whose bytes are not one of the four accepted types, before the reader ever runs (RF-104)", async () => {
+    const badKey = "uploads/bad.docx";
+    // A ZIP local-file-header signature - what a renamed .docx actually
+    // starts with - matches none of the four accepted magic-byte signatures.
+    seedStorageObject(badKey, Buffer.from([0x50, 0x4b, 0x03, 0x04, 0x00, 0x00]));
+    const badInvoiceId = newId("inv");
+    await ctx.db.insert(invoices).values({
+      id: badInvoiceId, issuerId, contentHash: "bad-test", source: "pdf_text",
+      status: "queued", fileKey: badKey,
+    });
+    const read = vi.fn();
+    const extractInvoice = vi.fn(async () => {
+      throw new Error("must not be called: unsupported file type");
+    });
+    const badTask = createIngestTask({
+      db: ctx.db,
+      storage: createLocalStorage({ root, secret: "s" }),
+      reader: { read },
+      ai: { extractInvoice },
+    });
+
+    await expect(badTask({ invoiceId: badInvoiceId })).rejects.toThrow();
+
+    // Neither the reader nor the AI provider is ever reached - the type gate
+    // runs before both.
+    expect(read).not.toHaveBeenCalled();
+    expect(extractInvoice).not.toHaveBeenCalled();
+    const [row] = await ctx.db.select().from(invoices).where(eq(invoices.id, badInvoiceId));
+    expect(row?.status).toBe("failed");
+  });
+
+  it("routes a scan with no text layer to mode: vision", async () => {
+    const scanKey = "uploads/scan-vision.pdf";
+    seedStorageObject(scanKey, SCAN_ONE_PAGE_PDF);
+    const scanInvoiceId = newId("inv");
+    await ctx.db.insert(invoices).values({
+      id: scanInvoiceId, issuerId, contentHash: "scan-vision-test", source: "pdf_text",
+      status: "queued", fileKey: scanKey,
+    });
+    let captured: { mode?: string; pages?: string[] | undefined } = {};
+    const scanTask = createIngestTask({
+      db: ctx.db,
+      storage: createLocalStorage({ root, secret: "s" }),
+      reader: createUnpdfReader(),
+      ai: {
+        async extractInvoice(input) {
+          captured = { mode: input.mode, pages: input.pages };
+          return { canonical, usage: ZERO_USAGE };
+        },
+      },
+    });
+
+    await scanTask({ invoiceId: scanInvoiceId });
+
+    expect(captured.mode).toBe("vision");
+    expect(captured.pages).toBeUndefined();
+  });
+
+  it("routes a native PDF with a text layer to mode: text, passing the reader's own pages to the provider", async () => {
+    let captured: { mode?: string; pages?: string[] | undefined } = {};
+    const textTask = createIngestTask({
+      db: ctx.db,
+      storage: createLocalStorage({ root, secret: "s" }),
+      reader: createUnpdfReader(),
+      ai: {
+        async extractInvoice(input) {
+          captured = { mode: input.mode, pages: input.pages };
+          return { canonical, usage: ZERO_USAGE };
+        },
+      },
+    });
+
+    await textTask({ invoiceId });
+
+    expect(captured.mode).toBe("text");
+    expect(captured.pages).toHaveLength(2);
+    expect(captured.pages?.[0]).toContain("Claro");
+  });
+
+  it("persists invoices.extractionQuality matching the score extractionQuality() computes for this file", async () => {
+    // A copy, not the shared TEXT_TWO_PAGE_PDF constant itself: unpdf's
+    // getDocumentProxy posts its input to a worker as a transferable, which
+    // detaches the underlying buffer (see the doc comment on
+    // createUnpdfReader) - reading the module-level fixture directly here
+    // would leave it empty for every later test in this file that still
+    // needs to seed storage with it.
+    const doc = await createUnpdfReader().read(new Uint8Array(TEXT_TWO_PAGE_PDF));
+    const expectedScore = extractionQuality(doc).score;
+
+    await task()({ invoiceId });
+
+    const [row] = await ctx.db.select().from(invoices).where(eq(invoices.id, invoiceId));
+    expect(row?.extractionQuality).toBe(expectedScore);
+  });
+
+  it("stops at needs_review with an honest message when no AI provider is configured, without inventing invoice structure", async () => {
+    const noAiTask = createIngestTask({
+      db: ctx.db,
+      storage: createLocalStorage({ root, secret: "s" }),
+      reader: createUnpdfReader(),
+      // `ai` intentionally omitted: this is "no provider configured", a
+      // different situation from a configured provider that fails.
+    });
+
+    await noAiTask({ invoiceId });
+
+    const [row] = await ctx.db.select().from(invoices).where(eq(invoices.id, invoiceId));
+    expect(row?.status).toBe("needs_review");
+    // A1: no regex-reconstructed structure ever reaches the invoice.
+    expect(row?.canonical).toBeNull();
+    const items = await ctx.db.select().from(invoiceItems).where(eq(invoiceItems.invoiceId, invoiceId));
+    expect(items).toHaveLength(0);
+
+    const rows = await ctx.db.select().from(events).where(eq(events.invoiceId, invoiceId));
+    const event = rows.find((r) => r.type === "invoice_needs_review");
+    const payload = event?.payload as { message?: string } | undefined;
+    expect(payload?.message).toBeTruthy();
   });
 });
