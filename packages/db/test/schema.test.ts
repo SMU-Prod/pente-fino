@@ -127,9 +127,12 @@ describe("schema", () => {
   });
 
   it("accepts 'validating', the status §9.2 requires", async () => {
+    // Slug is the issuer's own id, not a fixed real-world slug: seedIssuers
+    // (run by createTestDb) already owns "claro-movel", and this test only
+    // needs *an* issuer row to satisfy invoices.issuer_id's FK.
     const issuerId = newId("iss");
     await ctx.db.insert(issuers).values({
-      id: issuerId, slug: "claro-movel", category: "telecom", displayName: "Claro Móvel",
+      id: issuerId, slug: issuerId, category: "telecom", displayName: "Claro Móvel",
     });
     const invoiceId = newId("inv");
     await expect(

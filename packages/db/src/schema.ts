@@ -69,6 +69,10 @@ export const issuers = pgTable("issuers", {
   displayName: text("display_name").notNull(),
   cnpj: text("cnpj"),
   aliases: jsonb("aliases").$type<string[]>().default([]), // para detecção
+  // The section names this issuer files its add-on charges under (PRD
+  // §20.1). E2's pattern rules anchor on these to scope a rule to the
+  // right part of the invoice instead of matching anywhere in it.
+  sections: jsonb("sections").$type<string[]>().default([]),
   playbook: jsonb("playbook").$type<Playbook>(), // §7.4
   status: text("status").notNull().default("active"), // active|unknown|paused
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),

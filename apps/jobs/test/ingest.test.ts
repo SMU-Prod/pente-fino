@@ -50,10 +50,11 @@ beforeEach(async () => {
   root = mkdtempSync(join(tmpdir(), "pf-job-"));
   seedStorageObject(fileKey);
 
-  issuerId = newId("iss");
-  await ctx.db.insert(issuers).values({
-    id: issuerId, slug: "claro-movel", category: "telecom", displayName: "Claro Móvel",
-  });
+  // seedIssuers (run by createTestDb) already owns the real "claro-movel"
+  // slug; inserting a second row under that slug would trip
+  // issuers_slug_unique. Reuse the seeded row instead of shadowing it.
+  const [seededClaro] = await ctx.db.select().from(issuers).where(eq(issuers.slug, "claro-movel"));
+  issuerId = seededClaro!.id;
   invoiceId = newId("inv");
   await ctx.db.insert(invoices).values({
     id: invoiceId, issuerId, contentHash: "abc", source: "pdf_text",
