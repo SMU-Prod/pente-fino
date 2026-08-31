@@ -13,28 +13,35 @@ const MAX_BYTES = 15 * 1024 * 1024;
 // RF-104 sets two limits and a type-validation rule, and this route can only
 // fully close one of the three. The size check below (MAX_BYTES) is exact
 // and authoritative - the client declares `sizeBytes` and that is a real
-// number regardless of what the file turns out to contain. The other two are
-// not, and both are recorded here rather than left to be rediscovered apart:
+// number regardless of what the file turns out to contain. The other two
+// are not, and both now live elsewhere, where the information this route
+// lacks actually exists:
 //
-//   - type validation must use the *actual* file's magic bytes, never a
+//   - type validation uses the *actual* file's magic bytes
+//     (`sniffMimeType`, `packages/core/src/invoice/file-gate.ts`), never a
 //     client-declared MIME type or a filename extension. This route runs
 //     before any bytes exist - it only signs an upload URL from metadata the
 //     client asserts about a file it has not sent yet - so the `ACCEPTED`
-//     check below is a best-effort, spoofable early rejection for UX only
+//     check below stays a best-effort, spoofable early rejection for UX only
 //     (fail fast on an obviously wrong declared type). The authoritative
-//     check has to run once real bytes are available: either inside the
-//     storage adapter's `put()` (`packages/adapters/src/storage/local.ts`,
-//     Task 11) before it writes the object, or as a first step of the
-//     ingest task (`apps/jobs/src/tasks/ingest.ts`, Task 13) before the AI
-//     provider ever sees the file.
-//   - the 12-page limit has no equivalent check here at all: a page count
-//     cannot be derived from a declared MIME type and byte size, so there is
-//     nothing this route could even attempt. It belongs where the file is
-//     actually parsed - the real extractor arriving in E1 - which is also
-//     where whichever magic-byte check above lands should live, if that
-//     turns out to be the same place.
+//     check runs once real bytes are available, inside the storage
+//     adapter's `put()` (`packages/adapters/src/storage/local.ts`): it
+//     rejects a body that does not sniff as one of the four accepted types,
+//     and separately rejects one whose sniffed type contradicts the
+//     mimeType this route asked `signUpload` to sign for.
+//   - the 12-page limit (`MAX_PAGES`, same file) cannot be checked here
+//     either: a page count cannot be derived from a declared MIME type and
+//     byte size, so there is nothing this route could even attempt. It is
+//     not enforced anywhere yet - it belongs in the ingest task's `classify`
+//     step (`apps/jobs/src/tasks/ingest.ts`, not yet written; see that
+//     file's own doc comment), immediately after the document reader parses
+//     the file and before the AI provider ever sees it: a count over the
+//     limit should route the invoice to `needs_review` with an event
+//     recording the page count, since the file itself is otherwise
+//     legitimate - not fail this route, which cannot know the count yet.
 //
-// RF-104 is not fully closed until both of those exist somewhere.
+// RF-104 is closed for size and type. The page limit remains open until the
+// ingest task's classify step exists.
 const ACCEPTED = ["application/pdf", "image/jpeg", "image/png", "image/heic"];
 
 const Body = z.object({
