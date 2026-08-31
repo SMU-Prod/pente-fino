@@ -14,10 +14,12 @@ import type { AiProvider } from "@pentefino/core/ports";
  * It always reports zero cost, so the ai_calls ledger never mistakes a
  * fixture run for a paid one.
  *
- * `mode` and `pages` - what the classify stage decided (RF-107) - are
+ * `mode`, `pages`, `file` and `promptBody` - what the classify stage decided
+ * (RF-107) and what the caller resolved from the `prompts` table (A5) - are
  * deliberately not consulted here: a fixture stands in for whatever a real
  * provider would have produced for this exact file, regardless of which
- * route got it there, so lookup stays keyed on `fileKey` alone.
+ * route got it there or which prompt version asked, so lookup stays keyed
+ * on `fileKey` alone.
  */
 export function createFixtureAiProvider(fixtures: Record<string, unknown>): AiProvider {
   return {

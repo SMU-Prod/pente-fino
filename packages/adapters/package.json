@@ -13,7 +13,9 @@
     "lint": "eslint ."
   },
   "dependencies": {
+    "@pentefino/ai": "workspace:*",
     "@pentefino/core": "workspace:*",
+    "ai": "^7.0.85",
     "unpdf": "^0.12.1"
   },
   "devDependencies": {
