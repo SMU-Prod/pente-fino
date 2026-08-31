@@ -39,7 +39,9 @@ describe("buildAdapters", () => {
       extraction: { confidence: 0.95, warnings: [] },
     };
     const adapters = buildAdapters({ LOCAL_DATA_ROOT: root }, {}, { "uploads/abc.pdf": canonical });
-    const result = await adapters.ai.extractInvoice({ fileKey: "uploads/abc.pdf", promptVersion: 1, mode: "text" });
+    const result = await adapters.ai.extractInvoice({
+      fileKey: "uploads/abc.pdf", promptVersion: 1, promptBody: "extract everything verbatim", mode: "text",
+    });
     expect(result.canonical.issuer.name).toBe("Claro Móvel");
   });
 
@@ -51,8 +53,13 @@ describe("buildAdapters", () => {
     expect(() => buildAdapters({ LOCAL_DATA_ROOT: root, TRIGGER_SECRET_KEY: "x" })).toThrow(/TRIGGER_SECRET_KEY/);
   });
 
-  it("throws naming AI_GATEWAY_API_KEY when a real ai credential is present but unimplemented", () => {
-    expect(() => buildAdapters({ LOCAL_DATA_ROOT: root, AI_GATEWAY_API_KEY: "x" })).toThrow(/AI_GATEWAY_API_KEY/);
+  // E1, Task 7: the real AI Gateway provider now exists, so setting
+  // AI_GATEWAY_API_KEY must wire it in rather than throw - this replaces
+  // the E0-era test that asserted the opposite, back when no real ai
+  // adapter existed yet.
+  it("wires the real gateway ai provider when AI_GATEWAY_API_KEY is set, instead of throwing", () => {
+    const adapters = buildAdapters({ LOCAL_DATA_ROOT: root, AI_GATEWAY_API_KEY: "x" });
+    expect(adapters.ai).toBeDefined();
   });
 
   it("throws naming RESEND_API_KEY when a real mailer credential is present but unimplemented", () => {

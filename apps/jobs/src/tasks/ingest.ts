@@ -9,7 +9,7 @@ import type { EventType } from "@pentefino/core";
 // eslint-disable-next-line pentefino/require-with-user -- system job with no user session; writes go through the caller-injected `Database` (deps.db), not a client this module creates itself
 import { schema, type Database } from "@pentefino/db";
 
-const { aiCalls, events, invoiceItems, invoices, issuers } = schema;
+const { aiCalls, events, invoiceItems, invoices, issuers, prompts } = schema;
 
 export type IngestDeps = {
   db: Database;
@@ -26,7 +26,7 @@ export type IngestDeps = {
   ai?: AiProvider;
 };
 
-const EXTRACT_PROMPT_VERSION = 1;
+const EXTRACT_PROMPT_SLUG = "extract";
 
 // Caps how much of a thrown error's message ends up in `invoice_failed`.
 // Long enough to keep a useful diagnostic, short enough that a provider
@@ -112,10 +112,16 @@ function computeItemKey(
  *      through a fresh `issuers` row with `status: "unknown"` (RF-106) -
  *      never a guess, which would silently outrank those generic rules in
  *      E2 (RF-123);
- *   6. only then is the provider called, with the route the score picked
- *      and - for text - the pages the reader already produced, so the model
+ *   6. only then is the provider called, with the route the score picked;
+ *      for text, the pages the reader already produced, so the model
  *      transcribes what was actually extracted instead of re-reading the
- *      file itself.
+ *      file itself; for vision, the file's own bytes (RF-107's other
+ *      route, where there is no usable text to hand over instead) - plus,
+ *      for either route, the active `extract` prompt's body loaded from
+ *      the `prompts` table (A5) right here, not a literal in the provider:
+ *      an `AiProvider` adapter has no database dependency of its own (see
+ *      the doc comment on `ExtractInput.promptBody`), so resolving the
+ *      active row is this job's responsibility, once per call.
  *
  * With no AI provider configured at all (`deps.ai` absent, not merely a
  * provider that fails on this one file - see the note on `IngestDeps`), the
@@ -301,17 +307,32 @@ export function createIngestTask(deps: IngestDeps) {
         return;
       }
 
+      // A5: the prompt body is a versioned database row, never a literal
+      // baked into the provider - see the doc comment on
+      // `ExtractInput.promptBody`. A missing active row is a genuine
+      // deploy misconfiguration (seeding is expected to have run - see
+      // `packages/db/src/seeds/prompts.ts`), surfaced the same way every
+      // other unexpected failure in this task is: caught below, `failed`.
+      const [activePrompt] = await db.select().from(prompts)
+        .where(and(eq(prompts.slug, EXTRACT_PROMPT_SLUG), eq(prompts.status, "active")));
+      if (!activePrompt) {
+        throw new Error(`no active "${EXTRACT_PROMPT_SLUG}" prompt found in the prompts table (A5)`);
+      }
+
       stage = "extract";
       const { canonical, usage } = await ai.extractInvoice({
         fileKey: invoice.fileKey,
-        promptVersion: EXTRACT_PROMPT_VERSION,
+        promptVersion: activePrompt.version,
+        promptBody: activePrompt.body,
         mode: quality.route,
-        ...(quality.route === "text" ? { pages: doc.pages } : {}),
+        ...(quality.route === "text"
+          ? { pages: doc.pages }
+          : { file: { bytes, mimeType: sniffed } }),
       });
 
       await db.insert(aiCalls).values({
         id: newId("aic"), invoiceId, purpose: "extract",
-        provider: usage.provider, model: usage.model, promptVersion: EXTRACT_PROMPT_VERSION,
+        provider: usage.provider, model: usage.model, promptVersion: activePrompt.version,
         tokensIn: usage.tokensIn, tokensOut: usage.tokensOut,
         costUsd: usage.costUsd, latencyMs: usage.latencyMs,
       });
