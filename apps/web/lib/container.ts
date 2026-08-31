@@ -1,7 +1,7 @@
 import { buildAdapters, type TaskHandler } from "@pentefino/adapters";
 // eslint-disable-next-line pentefino/require-with-user -- the ingest job runs system-wide, with no user session
 import { getUnscopedDb, type Database } from "@pentefino/db";
-import { createIngestTask } from "@pentefino/jobs";
+import { createExpireFilesTask, createIngestTask } from "@pentefino/jobs";
 
 export type ContainerOverrides = {
   /**
@@ -25,6 +25,11 @@ function buildContainer(overrides: ContainerOverrides): Container {
   const handlers: Record<string, TaskHandler> = {};
   const adapters = buildAdapters(process.env, handlers, overrides.fixtures ?? {});
   handlers.ingest = createIngestTask({ db, storage: adapters.storage, ai: adapters.ai });
+  // RF-110: the daily file-expiry job runs system-wide too - no route
+  // enqueues it today (there is no scheduler wired up yet in this slice),
+  // but registering it here alongside `ingest` keeps `container()` the one
+  // place that knows which task name maps to which handler.
+  handlers.expireFiles = createExpireFilesTask({ db, storage: adapters.storage });
   return { db, ...adapters };
 }
 
