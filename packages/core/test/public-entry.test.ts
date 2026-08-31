@@ -35,6 +35,8 @@ describe("the public entry point", () => {
       "extractionQuality",
       "VISION_THRESHOLD",
       "detectIssuer",
+      "sniffMimeType",
+      "MAX_PAGES",
     ];
     const missing = expected.filter((name) => !(name in core));
     expect(missing).toEqual([]);

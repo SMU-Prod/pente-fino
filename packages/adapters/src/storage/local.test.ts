@@ -24,6 +24,16 @@ function sha256(body: Uint8Array): string {
   return createHash("sha256").update(body).digest("hex");
 }
 
+// A real PDF magic-byte header, so bodies passed to put() sniff as
+// "application/pdf" - the same as every mimeType these tests declare at
+// signUpload(). Task 4 makes put() sniff the real bytes rather than trust
+// the declared mimeType, so a fixture body of arbitrary bytes ([1, 2, 3])
+// no longer round trips: it would now be refused as unsupported_type.
+const PDF_HEADER = [0x25, 0x50, 0x44, 0x46];
+function pdfBody(...trailing: number[]): Uint8Array {
+  return new Uint8Array([...PDF_HEADER, ...trailing]);
+}
+
 const owner = "ses_owner00000000000000";
 
 describe("local storage", () => {
@@ -59,13 +69,13 @@ describe("local storage", () => {
 
   it("does not let owner B's put land on owner A's file key for the same content hash", async () => {
     const s = storage();
-    const bodyA = new Uint8Array([1, 2, 3]);
-    const bodyB = new Uint8Array([1, 2, 3]); // same bytes - same hash - different owner
+    const bodyA = pdfBody(1, 2, 3);
+    const bodyB = pdfBody(1, 2, 3); // same bytes - same hash - different owner
     const a = await s.signUpload({
-      owner: "ses_ownerA000000000000", contentHash: sha256(bodyA), mimeType: "application/pdf", sizeBytes: 3,
+      owner: "ses_ownerA000000000000", contentHash: sha256(bodyA), mimeType: "application/pdf", sizeBytes: bodyA.length,
     });
     const b = await s.signUpload({
-      owner: "ses_ownerB000000000000", contentHash: sha256(bodyB), mimeType: "application/pdf", sizeBytes: 3,
+      owner: "ses_ownerB000000000000", contentHash: sha256(bodyB), mimeType: "application/pdf", sizeBytes: bodyB.length,
     });
     await s.put(a.fileKey, bodyA);
     await expect(s.exists(b.fileKey)).resolves.toBe(false);
@@ -140,7 +150,7 @@ describe("local storage", () => {
 
   it("round trips a body", async () => {
     const s = storage();
-    const body = new Uint8Array([1, 2, 3]);
+    const body = pdfBody(1, 2, 3);
     const { fileKey } = await s.signUpload({
       owner,
       contentHash: sha256(body),
@@ -164,7 +174,7 @@ describe("local storage", () => {
 
   it("deletes", async () => {
     const s = storage();
-    const body = new Uint8Array([9]);
+    const body = pdfBody(9);
     const { fileKey } = await s.signUpload({
       owner,
       contentHash: sha256(body),
@@ -179,7 +189,7 @@ describe("local storage", () => {
   describe("exists", () => {
     it("reports true for a key that was written", async () => {
       const s = storage();
-      const body = new Uint8Array([7]);
+      const body = pdfBody(7);
       const { fileKey } = await s.signUpload({
         owner,
         contentHash: sha256(body),
@@ -240,7 +250,7 @@ describe("local storage", () => {
 
     it("accepts a put whose body matches the signed size and content hash exactly", async () => {
       const s = storage();
-      const body = new Uint8Array([10, 20, 30, 40]);
+      const body = pdfBody(10, 20, 30, 40);
       const { fileKey } = await s.signUpload({
         owner,
         contentHash: sha256(body),
@@ -249,6 +259,51 @@ describe("local storage", () => {
       });
       await expect(s.put(fileKey, body)).resolves.toBeUndefined();
       expect(await s.get(fileKey)).toEqual(body);
+    });
+
+    // --- RF-104: the sign route only ever sees a client-declared mimeType on
+    // a file it has not received yet, so it cannot enforce the real type
+    // (see the note on ACCEPTED in apps/web/app/api/uploads/sign/route.ts).
+    // put() is where real bytes exist, so it is where the check has to land.
+
+    it("rejects a put whose bytes do not sniff as any accepted type", async () => {
+      const s = storage();
+      const body = new Uint8Array([1, 2, 3, 4]); // no magic bytes at all
+      const { fileKey } = await s.signUpload({
+        owner, contentHash: sha256(body), mimeType: "application/pdf", sizeBytes: body.length,
+      });
+      await expect(s.put(fileKey, body)).rejects.toMatchObject({ reason: "unsupported_type" });
+    });
+
+    it("rejects a .docx renamed to .pdf - a ZIP header sniffs as nothing accepted", async () => {
+      const s = storage();
+      // PK\x03\x04: every .docx (and every ZIP) starts with this, whatever
+      // the filename or declared mimeType claims.
+      const body = new Uint8Array([0x50, 0x4b, 0x03, 0x04, 0, 0, 0, 0]);
+      const { fileKey } = await s.signUpload({
+        owner, contentHash: sha256(body), mimeType: "application/pdf", sizeBytes: body.length,
+      });
+      await expect(s.put(fileKey, body)).rejects.toMatchObject({ reason: "unsupported_type" });
+    });
+
+    it("rejects a put whose sniffed type contradicts the mimeType signUpload was called with", async () => {
+      const s = storage();
+      // A real PNG header, signed as if it were a PDF.
+      const body = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2]);
+      const { fileKey } = await s.signUpload({
+        owner, contentHash: sha256(body), mimeType: "application/pdf", sizeBytes: body.length,
+      });
+      await expect(s.put(fileKey, body)).rejects.toMatchObject({ reason: "type_mismatch" });
+    });
+
+    it("does not write the object to disk when the type check rejects it", async () => {
+      const s = storage();
+      const body = new Uint8Array([1, 2, 3, 4]);
+      const { fileKey } = await s.signUpload({
+        owner, contentHash: sha256(body), mimeType: "application/pdf", sizeBytes: body.length,
+      });
+      await expect(s.put(fileKey, body)).rejects.toThrow();
+      expect(await s.exists(fileKey)).toBe(false);
     });
   });
 

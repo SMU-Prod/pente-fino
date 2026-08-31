@@ -23,3 +23,7 @@ export {
   detectIssuer,
   type IssuerCandidate, type IssuerMatch,
 } from "./invoice/detect-issuer.js";
+export {
+  sniffMimeType, MAX_PAGES,
+  type SniffedType,
+} from "./invoice/file-gate.js";

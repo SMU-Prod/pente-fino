@@ -1,6 +1,7 @@
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { sniffMimeType } from "@pentefino/core";
 import type { SignedUpload, Storage } from "@pentefino/core/ports";
 
 const TTL_MS = 5 * 60 * 1000;
@@ -19,7 +20,10 @@ function isEnoent(error: unknown): boolean {
   return typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT";
 }
 
-function putError(reason: "unsigned" | "size_mismatch" | "hash_mismatch", message: string): Error {
+function putError(
+  reason: "unsigned" | "size_mismatch" | "hash_mismatch" | "unsupported_type" | "type_mismatch",
+  message: string,
+): Error {
   return Object.assign(new Error(message), { reason });
 }
 
@@ -36,12 +40,13 @@ export function createLocalStorage(options: {
   const now = options.now ?? Date.now;
   const storageRoot = resolve(options.root);
 
-  // What each signUpload() call promised: the size and content hash that a
-  // later put() for the same fileKey must actually deliver. This is the
-  // in-memory equivalent of the policy a real R2 presigned PUT enforces
-  // through its signature - put() has no access to the uploadUrl, only to
-  // the fileKey, so the promise has to be kept somewhere it can look it up.
-  const pendingUploads = new Map<string, { sizeBytes: number; contentHash: string }>();
+  // What each signUpload() call promised: the size, content hash and
+  // declared MIME type that a later put() for the same fileKey must actually
+  // deliver. This is the in-memory equivalent of the policy a real R2
+  // presigned PUT enforces through its signature - put() has no access to
+  // the uploadUrl, only to the fileKey, so the promise has to be kept
+  // somewhere it can look it up.
+  const pendingUploads = new Map<string, { sizeBytes: number; contentHash: string; mimeType: string }>();
 
   function sign(fileKey: string, expiresAt: number, sizeBytes: number, contentHash: string): string {
     return createHmac("sha256", options.secret)
@@ -84,7 +89,7 @@ export function createLocalStorage(options: {
       const fileKey = `uploads/${owner}/${contentHash}.${extension}`;
       const expiresAt = now() + TTL_MS;
       const sig = sign(fileKey, expiresAt, sizeBytes, contentHash);
-      pendingUploads.set(fileKey, { sizeBytes, contentHash });
+      pendingUploads.set(fileKey, { sizeBytes, contentHash, mimeType });
       return {
         fileKey,
         uploadUrl: `local://${fileKey}?exp=${expiresAt}&size=${sizeBytes}&hash=${contentHash}&sig=${sig}`,
@@ -109,6 +114,25 @@ export function createLocalStorage(options: {
         throw putError(
           "hash_mismatch",
           `refusing put: body content hash does not match the signed content hash for ${fileKey}`,
+        );
+      }
+      // RF-104's type check: the sign route only ever saw a client-declared
+      // MIME type on a file it had not received yet (see the note on
+      // ACCEPTED in apps/web/app/api/uploads/sign/route.ts). Here the real
+      // bytes exist, so this is the one place that can tell a renamed
+      // .docx (a ZIP header) or a JPEG-with-a-fake-PDF-extension from what
+      // it actually is - never trusting the declared mimeType again.
+      const sniffed = sniffMimeType(body);
+      if (sniffed === null) {
+        throw putError(
+          "unsupported_type",
+          `refusing put: body's leading bytes do not match any accepted file type for ${fileKey}`,
+        );
+      }
+      if (sniffed !== pending.mimeType) {
+        throw putError(
+          "type_mismatch",
+          `refusing put: body sniffs as ${sniffed}, which does not match the signed mimeType ${pending.mimeType} for ${fileKey}`,
         );
       }
       mkdirSync(dirname(target), { recursive: true });
