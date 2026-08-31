@@ -16,6 +16,12 @@ export {
 } from "./cases/next-stage.js";
 export { pairInvoiceItems, type InvoiceDiff, type PairedItem } from "./diff/index.js";
 export {
+<<<<<<< HEAD
   extractionQuality, VISION_THRESHOLD,
   type QualityScore, type Anchor,
 } from "./invoice/extraction-quality.js";
+=======
+  detectIssuer,
+  type IssuerCandidate, type IssuerMatch,
+} from "./invoice/detect-issuer.js";
+>>>>>>> worktree-agent-a5aed4cc64366c762
