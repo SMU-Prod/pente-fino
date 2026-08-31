@@ -159,6 +159,9 @@ importers:
       '@electric-sql/pglite':
         specifier: ^0.2.15
         version: 0.2.17
+      '@pentefino/ai':
+        specifier: workspace:*
+        version: link:../ai
       '@pentefino/core':
         specifier: workspace:*
         version: link:../core

@@ -5,6 +5,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as schema from "./schema.js";
+import { seedAll } from "./seeds/index.js";
 
 // Re-exported so a real test file can build fixtures and assertions
 // straight against the table definitions (`schema.invoices`, ...) without
@@ -39,8 +40,13 @@ export async function createTestDb(): Promise<TestDb> {
     await client.exec(readFileSync(join(MIGRATIONS_DIR, file), "utf8"));
   }
 
+  const db = drizzle(client, { schema });
+  // So every test starts from a database that looks like production
+  // (A5, PRD §20.1/§20.3) instead of one only migrations touched.
+  await seedAll(db);
+
   return {
-    db: drizzle(client, { schema }),
+    db,
     close: () => client.close(),
   };
 }

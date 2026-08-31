@@ -8,3 +8,10 @@
 export * as schema from "./schema.js";
 export { getUnscopedDb, type Database } from "./client.js";
 export { withUser, ensureAnonymousSession, type Session, type ScopedDb } from "./with-user.js";
+// Exported for a future deploy/ops seeding step against the real database;
+// `testing.ts` calls `seedAll` directly from `./seeds/index.js` and does not
+// need this re-export. A caller outside packages/db still has to add its own
+// name to require-with-user.js's ALLOWED_PACKAGE_EXPORTS (INV-008) before
+// this import stops tripping the lint rule — these three are not on that
+// list yet, since nothing outside this package calls them today.
+export { seedAll, seedIssuers, seedPrompts } from "./seeds/index.js";
