@@ -50,10 +50,15 @@ async function insertInvoice(overrides: { createdAt?: Date } = {}): Promise<{ id
 beforeEach(async () => {
   ctx = await createTestDb();
   root = mkdtempSync(join(tmpdir(), "pf-expire-"));
-  issuerId = newId("iss");
-  await ctx.db.insert(issuers).values({
-    id: issuerId, slug: "claro-movel", category: "telecom", displayName: "Claro Móvel",
-  });
+  // createTestDb seeds the six telecom issuers of PRD §20.1, so reuse the
+  // seeded row rather than inserting a second one under the same slug —
+  // production really does have this issuer now.
+  const [seeded] = await ctx.db
+    .select({ id: issuers.id })
+    .from(issuers)
+    .where(eq(issuers.slug, "claro-movel"));
+  if (!seeded) throw new Error("expected createTestDb to seed the claro-movel issuer");
+  issuerId = seeded.id;
 });
 
 afterEach(async () => {
