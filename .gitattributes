@@ -1,0 +1,11 @@
+# PDFs are binary. Git's own text/binary heuristic only looks for a NUL
+# byte in the first few KB of a file - a small hand-built PDF (see
+# fixtures/synthetic/pdfs/*.pdf) can easily have none, so without this
+# rule Git treats it as text and rewrites LF to CRLF on checkout wherever
+# core.autocrlf=true (the common Windows default, and the default this
+# repo's local dev machines actually run with). That silently corrupts a
+# PDF's byte-exact xref offsets and content-stream /Length values -
+# confirmed by forcing a checkout of an unmarked fixture and watching its
+# byte length change. `-text` disables any EOL translation for the match,
+# regardless of what the content-sniffing heuristic would have guessed.
+*.pdf -text
