@@ -14,6 +14,7 @@ export { createLocalStorage } from "./storage/local.js";
 export { createInProcessQueue, type TaskHandler } from "./queue/in-process.js";
 export { createFixtureAiProvider } from "./ai/fixture.js";
 export { createLocalMailer } from "./mailer/local.js";
+export { createUnpdfReader } from "./reader/unpdf.js";
 
 export type Adapters = { storage: Storage; queue: TaskQueue; ai: AiProvider; mailer: Mailer };
 
