@@ -19,6 +19,12 @@
 export const EVENTS = [
   "invoice_uploaded", "invoice_extracted", "invoice_analyzed",
   "invoice_needs_review", "invoice_failed",
+  // RF-110's daily expiry job (Task 9, E1) needs its own pair for the same
+  // reason invoice_analyzed/invoice_failed exist: the file's deletion (or a
+  // storage failure that must not silently repeat forever) is a real state
+  // transition on the invoice row that A3 requires be readable from `events`
+  // alone, not just inferred from `file_key` going null.
+  "invoice_file_expired", "invoice_file_expiry_failed",
   "report_viewed", "finding_dismissed", "finding_confirmed",
   "card_shared", "public_report_viewed",
   "case_created", "contest_generated", "contest_edited", "contest_marked_sent",
