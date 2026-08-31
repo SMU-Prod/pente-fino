@@ -80,14 +80,23 @@ function countLeafPageObjects(bytes: Uint8Array): number {
 export function createUnpdfReader(): DocumentReader {
   return {
     async read(bytes: Uint8Array): Promise<ReadDocument> {
-      // Counted before handing `bytes` to pdf.js: `getDocumentProxy` posts the
-      // buffer to its (in-process, for Node) worker as a transferable, which
-      // detaches it - reading `bytes` afterward would see a zero-length
-      // buffer, always agreeing with whatever pdf.js reports and silently
-      // disabling this whole check.
-      const leafPageObjects = countLeafPageObjects(bytes);
+      // Work on a private copy. `getDocumentProxy` posts the buffer to its
+      // (in-process, for Node) worker as a transferable, which DETACHES it -
+      // so without this copy, reading a document would silently zero out the
+      // caller's own array. That already bit once: a test suite sharing one
+      // module-level fixture constant across cases saw every case after the
+      // first receive an empty buffer. A reader that consumes its input is a
+      // contract nobody expects, so the copy is the reader's problem, not
+      // every caller's.
+      const owned = new Uint8Array(bytes);
 
-      const pdf = await getDocumentProxy(bytes);
+      // Counted before handing `owned` to pdf.js, for the same detachment
+      // reason: reading it afterward would see a zero-length buffer, always
+      // agreeing with whatever pdf.js reports and silently disabling this
+      // whole check.
+      const leafPageObjects = countLeafPageObjects(owned);
+
+      const pdf = await getDocumentProxy(owned);
       const { totalPages, text } = await extractText(pdf, { mergePages: false });
 
       if (leafPageObjects > totalPages) {

@@ -128,3 +128,27 @@ describe("unpdf reader - /Count integrity", () => {
     expect(doc.pages.join(" ")).toContain("Claro");
   });
 });
+
+describe("the reader does not consume its caller's buffer", () => {
+  it("leaves the input readable after a read, so a shared fixture survives", async () => {
+    const bytes = fixture("text-2page.pdf");
+    const lengthBefore = bytes.length;
+    const firstByte = bytes[0];
+
+    await createUnpdfReader().read(bytes);
+
+    expect(bytes.length).toBe(lengthBefore);
+    expect(bytes[0]).toBe(firstByte);
+  });
+
+  it("reads the same buffer twice with identical results", async () => {
+    const bytes = fixture("text-2page.pdf");
+    const reader = createUnpdfReader();
+
+    const first = await reader.read(bytes);
+    const second = await reader.read(bytes);
+
+    expect(second.pageCount).toBe(first.pageCount);
+    expect(second.pages).toEqual(first.pages);
+  });
+});
