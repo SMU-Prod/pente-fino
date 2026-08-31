@@ -35,6 +35,9 @@ jobs:
       - name: Golden set size
         run: pnpm golden:count
 
+      - name: Golden set accuracy (RNF-16)
+        run: pnpm golden:run
+
       - name: Build
         run: pnpm build
 
