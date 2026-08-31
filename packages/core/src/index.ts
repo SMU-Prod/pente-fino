@@ -15,3 +15,7 @@ export {
   type StageEvent, type StageTransition, type CaseOutcome,
 } from "./cases/next-stage.js";
 export { pairInvoiceItems, type InvoiceDiff, type PairedItem } from "./diff/index.js";
+export {
+  detectIssuer,
+  type IssuerCandidate, type IssuerMatch,
+} from "./invoice/detect-issuer.js";
