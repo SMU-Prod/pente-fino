@@ -8,13 +8,16 @@
   },
   "scripts": {
     "build": "turbo run build",
-    "test": "turbo run test",
+    "test": "turbo run test && node --test scripts/golden-anonymize.test.mjs",
     "typecheck": "turbo run typecheck",
     "lint": "turbo run lint",
-    "golden:count": "node -e \"const {readdirSync,existsSync}=require('fs');const d='fixtures/golden';const n=existsSync(d)?readdirSync(d,{withFileTypes:true}).filter(e=>e.isDirectory()).length:0;console.log(`golden set issuers: ${n}`);if(n===0)console.log('WARNING: empty golden set — RNF-16 is not being enforced');\""
+    "golden:count": "node -e \"const {readdirSync,existsSync}=require('fs');const d='fixtures/golden';const n=existsSync(d)?readdirSync(d,{withFileTypes:true}).filter(e=>e.isDirectory()).length:0;console.log(`golden set issuers: ${n}`);if(n===0)console.log('WARNING: empty golden set — RNF-16 is not being enforced');\"",
+    "golden:anonymize": "node scripts/golden-anonymize.mjs"
   },
   "devDependencies": {
+    "@pentefino/adapters": "workspace:*",
     "@pentefino/config": "workspace:*",
+    "@pentefino/core": "workspace:*",
     "@typescript-eslint/parser": "^8.68.0",
     "eslint": "^9.17.0",
     "turbo": "^2.3.3",
