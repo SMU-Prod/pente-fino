@@ -8,6 +8,10 @@
 export * as schema from "./schema.js";
 export { getUnscopedDb, type Database } from "./client.js";
 export { withUser, ensureAnonymousSession, type Session, type ScopedDb } from "./with-user.js";
+export {
+  requestClaimCode, confirmClaimCode,
+  CLAIM_CODE_TTL_MS, CLAIM_CODE_MAX_ATTEMPTS, CLAIM_RATE_LIMIT_COUNT, CLAIM_RATE_LIMIT_WINDOW_MS,
+} from "./claim.js";
 // Exported for a future deploy/ops seeding step against the real database;
 // `testing.ts` calls `seedAll` directly from `./seeds/index.js` and does not
 // need this re-export. A caller outside packages/db still has to add its own

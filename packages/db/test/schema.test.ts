@@ -28,9 +28,13 @@ beforeEach(async () => { ctx = await createTestDb(); });
 afterEach(async () => { await ctx.close(); });
 
 // The number of tables PRD §6.2 defines (confirmed against the brief's
-// `Produces` list and the generated migration). Any drift here means either
-// a missing table or a migration that silently failed to apply.
-const EXPECTED_TABLE_COUNT = 20;
+// `Produces` list and the generated migration), plus `claim_codes` - new
+// infrastructure Task 7 (RF-147) adds on top of the PRD's own schema, since
+// §6.2 specifies only the eventual target of a claim
+// (`anonymous_sessions.claimed_by_user_id`), not how the e-mail code itself
+// is issued or checked. Any drift here means either a missing table or a
+// migration that silently failed to apply.
+const EXPECTED_TABLE_COUNT = 21;
 
 // --- Fixtures for tests that need parent rows to satisfy foreign keys ---
 

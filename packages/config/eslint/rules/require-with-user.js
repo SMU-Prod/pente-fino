@@ -58,6 +58,16 @@ const ALLOWED_PACKAGE_EXPORTS = new Set([
   "Database",
   "Session",
   "ScopedDb",
+  // RF-147 (Task 7): requestClaimCode/confirmClaimCode carry their own
+  // ownership check (scoped by sessionId, see claim.ts) the same way
+  // withUser does, and the four constants are tuning knobs (lifetime,
+  // attempts, rate limit), not raw data access.
+  "requestClaimCode",
+  "confirmClaimCode",
+  "CLAIM_CODE_TTL_MS",
+  "CLAIM_CODE_MAX_ATTEMPTS",
+  "CLAIM_RATE_LIMIT_COUNT",
+  "CLAIM_RATE_LIMIT_WINDOW_MS",
 ]);
 
 const PACKAGE_ENTRY = "@pentefino/db";

@@ -9,7 +9,7 @@ import { nanoid } from "nanoid";
 export type IdPrefix =
   | "usr" | "ses" | "iss" | "inv" | "itm" | "rul" | "fnd" | "cas"
   | "doc" | "prt" | "evt" | "aic" | "prm" | "tar" | "flg" | "agg"
-  | "ent" | "seo" | "rmt" | "prp" | "run";
+  | "ent" | "seo" | "rmt" | "prp" | "run" | "clm";
 
 export function newId(prefix: IdPrefix): string {
   return `${prefix}_${nanoid(21)}`;
