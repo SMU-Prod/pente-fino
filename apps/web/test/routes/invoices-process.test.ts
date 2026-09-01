@@ -17,7 +17,32 @@ vi.mock("../../lib/container.js", () => ({ container: vi.fn() }));
 
 const { cookies } = await import("next/headers");
 const { container } = await import("../../lib/container.js");
-const { POST } = await import("../../app/api/invoices/[id]/process/route.js");
+const { POST, ingestIdempotencyKey } = await import("../../app/api/invoices/[id]/process/route.js");
+
+/** A promise plus its resolve/reject, for controlling exactly when the AI call settles (Task 1). */
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((res) => {
+    resolve = res;
+  });
+  return { promise, resolve };
+}
+
+/**
+ * Task 1 (E3): the route no longer awaits ingestion, so a test can no longer
+ * assume the pipeline has finished just because `POST` resolved. This joins
+ * the same run through the queue's own idempotency contract - the identical
+ * public `enqueue()` call the route itself made, with the same key - rather
+ * than a `setTimeout` guess or a test-only escape hatch: it resolves once
+ * the background run actually settles, whether that is already true
+ * (`completed`) or still running (`inFlight`), exactly as
+ * packages/adapters/src/queue/in-process.ts already guarantees for any two
+ * calls sharing a key.
+ */
+async function drainIngest(invoiceId: string) {
+  const { queue } = container();
+  await queue.enqueue("ingest", { invoiceId }, { idempotencyKey: ingestIdempotencyKey(invoiceId) }).catch(() => {});
+}
 
 const SECRET = "route-test-secret";
 
@@ -137,32 +162,83 @@ describe("POST /api/invoices/[id]/process", () => {
     const body = await response.json();
     expect(body).toEqual({ invoiceId, status: "queued" });
 
-    // The in-process queue (Task 11) runs the handler inline, so by the time
-    // the response resolves the real ingest task (Task 13) has already run
-    // against the real (PGlite) database - this is a full, real, end-to-end
-    // path through the route, not a mocked pipeline.
+    // Task 1 (E3): the route no longer awaits the queue, so the response
+    // above tells us nothing about whether ingestion has finished - only
+    // that it was accepted. `drainIngest` joins the same run through the
+    // queue's own idempotency contract before this assertion is meaningful.
+    await drainIngest(invoiceId);
     const [row] = await ctx.db.select().from(invoices).where(eq(invoices.id, invoiceId));
     expect(row?.status).toBe("analyzed");
+  });
+
+  // --- Task 1 (E3): the queue stops blocking the response. `POST /process`
+  // used to `await queue.enqueue(...)`, so classify/extract/validate/persist
+  // all ran inside the request - the exact thing that made RF-141's progress
+  // stream impossible (nothing happens between "queued" and "done" from the
+  // client's point of view) and RNF-01's "time to report" indistinguishable
+  // from the request's own duration. This proves the decoupling directly: the
+  // response comes back while a gated AI call is still pending, not after.
+
+  it("returns 202 before ingestion finishes, running it after the response instead of inside it (Task 1)", async () => {
+    useCookies(createCookieStore({ pf_session: signSession(sessionA, SECRET) }));
+    const gate = deferred<void>();
+    vi.mocked(container).mockReturnValue(
+      buildTestContainer({
+        db: ctx.db, storageRoot, mailRoot,
+        ai: {
+          async extractInvoice() {
+            await gate.promise;
+            return {
+              canonical,
+              usage: { provider: "fixture", model: "fixture", tokensIn: 0, tokensOut: 0, costUsd: 0, latencyMs: 0 },
+            };
+          },
+        },
+      }),
+    );
+
+    const response = await POST(request(), ctxFor(invoiceId));
+    expect(response.status).toBe(202);
+    const body = await response.json();
+    expect(body).toEqual({ invoiceId, status: "queued" });
+
+    // The AI call is still gated shut at this point - if the route were
+    // still awaiting ingestion, reaching here would be impossible.
+    const [midFlight] = await ctx.db.select().from(invoices).where(eq(invoices.id, invoiceId));
+    expect(midFlight?.status).not.toBe("analyzed");
+
+    gate.resolve();
+    await drainIngest(invoiceId);
+    const [settled] = await ctx.db.select().from(invoices).where(eq(invoices.id, invoiceId));
+    expect(settled?.status).toBe("analyzed");
   });
 
   it("does not re-run extraction when the same owner calls process twice for the same invoice (idempotency, A4)", async () => {
     useCookies(createCookieStore({ pf_session: signSession(sessionA, SECRET) }));
     await POST(request(), ctxFor(invoiceId));
     await POST(request(), ctxFor(invoiceId));
+    await drainIngest(invoiceId);
 
     const rows = await ctx.db.query.aiCalls.findMany();
     expect(rows).toHaveLength(1);
   });
 
-  // --- Finding 4: the route's catch used to test
-  // `String(error).includes("not found")`, so a genuine extraction failure
-  // whose message happened to contain those words (a provider replying
-  // "model … not found", say) was mis-reported as a 404 for an invoice that
-  // actually exists. §8 says every error is `{ error: { code, message } }`,
-  // and `extraction_failed` (422) exists in the catalogue precisely for
-  // this case.
+  // --- Task 1 (E3): `extraction_failed` (422) was this route's HTTP
+  // translation of a failure raised *inside* the `await queue.enqueue(...)`
+  // call it used to make. Now that ingestion runs after the response has
+  // already gone out, a failure there can no longer become this route's
+  // status code - by the time it happens there is no response left to
+  // shape. Nothing about visibility regresses: the ingest task's own
+  // try/catch (apps/jobs/src/tasks/ingest.ts) already flips the invoice to
+  // `status: "failed"` and writes an `invoice_failed` event before this
+  // route ever ran; the 422 was only ever a same-request echo of that
+  // durable record, never the record itself. These two tests - previously
+  // "returns extraction_failed (422)..." - now pin the new contract: 202
+  // immediately, `failed` once the caller observes the same run settle.
+  // `not_found` is unaffected and untested here again: ownership is still
+  // checked synchronously, before anything is enqueued (see the tests above).
 
-  it("returns extraction_failed (422), not a false not_found, when ingest genuinely fails with a message that contains the words \"not found\"", async () => {
+  it("still returns 202 when ingest will genuinely fail with a message that contains the words \"not found\", and the invoice ends up failed, not a false not_found (Task 1)", async () => {
     useCookies(createCookieStore({ pf_session: signSession(sessionA, SECRET) }));
     vi.mocked(container).mockReturnValue(
       buildTestContainer({
@@ -172,18 +248,20 @@ describe("POST /api/invoices/[id]/process", () => {
     );
 
     const response = await POST(request(), ctxFor(invoiceId));
-    expect(response.status).toBe(422);
+    expect(response.status).toBe(202);
     const body = await response.json();
-    expect(body).toEqual({ error: { code: "extraction_failed", message: expect.any(String) } });
+    expect(body).toEqual({ invoiceId, status: "queued" });
 
     // The invoice genuinely exists and failed - not the same thing as
     // "not found" - so it must be left in the real failed state, not queued
-    // or silently reset.
+    // or silently reset. Only visible now by reading it back after the
+    // background run has actually settled.
+    await drainIngest(invoiceId);
     const [row] = await ctx.db.select().from(invoices).where(eq(invoices.id, invoiceId));
     expect(row?.status).toBe("failed");
   });
 
-  it("returns extraction_failed (422) for a genuine extraction failure with an unrelated message", async () => {
+  it("still returns 202 for a genuine extraction failure with an unrelated message, and the invoice ends up failed (Task 1)", async () => {
     useCookies(createCookieStore({ pf_session: signSession(sessionA, SECRET) }));
     vi.mocked(container).mockReturnValue(
       buildTestContainer({
@@ -193,8 +271,10 @@ describe("POST /api/invoices/[id]/process", () => {
     );
 
     const response = await POST(request(), ctxFor(invoiceId));
-    expect(response.status).toBe(422);
-    const body = await response.json();
-    expect(body.error.code).toBe("extraction_failed");
+    expect(response.status).toBe(202);
+
+    await drainIngest(invoiceId);
+    const [row] = await ctx.db.select().from(invoices).where(eq(invoices.id, invoiceId));
+    expect(row?.status).toBe("failed");
   });
 });

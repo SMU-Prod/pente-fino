@@ -28,6 +28,20 @@ type EnqueueResult = { runId: string; deduplicated: boolean };
  * in-flight entry is removed once the run settles either way: on success
  * the completed map already holds the result, and on failure the key must
  * be free for a genuine retry.
+ *
+ * Task 1 (E3): a caller does not have to await the promise `enqueue()`
+ * returns for the handler to run - it is invoked synchronously, inside this
+ * function, before anything here awaits it, and it keeps running to
+ * completion regardless of whether anyone is still listening. That is what
+ * lets `POST /api/invoices/:id/process` fire ingestion and respond without
+ * waiting for it: nothing had to change here for that, because a fire-and-
+ * forget caller was always a valid way to use this queue. It is also why a
+ * test that needs to know when a fire-and-forgotten run has actually
+ * settled can just call `enqueue()` again with the same task and
+ * idempotency key and await *that* - it transparently joins the run already
+ * in flight (or reads back its completed result) through the exact
+ * dedup path described above, rather than reaching for a `setTimeout` guess
+ * or a test-only escape hatch that production code could stumble into.
  */
 export function createInProcessQueue(handlers: Record<string, TaskHandler>): TaskQueue {
   const completed = new Map<string, string>(); // idempotencyKey -> runId

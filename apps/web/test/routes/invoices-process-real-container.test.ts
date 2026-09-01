@@ -25,7 +25,19 @@ vi.mock("next/headers", () => ({ cookies: vi.fn() }));
 
 const { cookies } = await import("next/headers");
 const { container } = await import("../../lib/container.js");
-const { POST } = await import("../../app/api/invoices/[id]/process/route.js");
+const { POST, ingestIdempotencyKey } = await import("../../app/api/invoices/[id]/process/route.js");
+
+/**
+ * Task 1 (E3): the route no longer awaits ingestion, so by the time `POST`
+ * resolves the background run may still be in flight. This joins that exact
+ * run through the queue's own idempotency contract - the same public
+ * `enqueue()` call the route itself made, with the same key - rather than a
+ * `setTimeout` guess or a test-only escape hatch.
+ */
+async function drainIngest(invoiceId: string) {
+  const { queue } = container();
+  await queue.enqueue("ingest", { invoiceId }, { idempotencyKey: ingestIdempotencyKey(invoiceId) }).catch(() => {});
+}
 
 const SECRET = "route-test-secret";
 
@@ -116,6 +128,7 @@ describe("POST /api/invoices/[id]/process, through the real container (Task 14, 
 
     await POST(request(), ctxFor(invoiceId));
     await POST(request(), ctxFor(invoiceId));
+    await drainIngest(invoiceId);
 
     const rows = await ctx.db.query.aiCalls.findMany();
     expect(rows).toHaveLength(1);

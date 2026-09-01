@@ -43,8 +43,21 @@ vi.mock("../../lib/container.js", () => ({ container: vi.fn() }));
 const { cookies } = await import("next/headers");
 const { container } = await import("../../lib/container.js");
 const { POST: signUpload } = await import("../../app/api/uploads/sign/route.js");
-const { POST: processInvoice } = await import("../../app/api/invoices/[id]/process/route.js");
+const { POST: processInvoice, ingestIdempotencyKey } = await import("../../app/api/invoices/[id]/process/route.js");
 const { GET: getReport } = await import("../../app/api/invoices/[id]/report/route.js");
+
+/**
+ * Task 1 (E3): `processInvoice` no longer awaits ingestion, so this joins
+ * the same run through the queue's own idempotency contract - the identical
+ * public `enqueue()` call the route itself made, with the same key - before
+ * asserting anything the run is responsible for. Without this, the
+ * background run would still be in flight when `afterEach` closes the test
+ * database out from under it.
+ */
+async function drainIngest(invoiceId: string) {
+  const { queue } = container();
+  await queue.enqueue("ingest", { invoiceId }, { idempotencyKey: ingestIdempotencyKey(invoiceId) }).catch(() => {});
+}
 
 const SECRET = "e2e-route-secret";
 
@@ -154,6 +167,7 @@ describe("E0 acceptance · a fixture invoice crosses the empty pipeline", () => 
       ctxFor(invoiceId),
     );
     expect(processResponse.status).toBe(202);
+    await drainIngest(invoiceId);
 
     // 4 · the report — same cookie again, a third real request. The route's
     // own response body is what gets asserted, not a recomputation of
