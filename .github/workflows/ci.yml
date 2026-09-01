@@ -41,6 +41,49 @@ jobs:
       - name: Build
         run: pnpm build
 
+      # ---------------------------------------------------------------
+      # E3 Task 8: the performance and accessibility gates (PRD §16.4
+      # items 5-6; RNF-03/04/05/09/10). See apps/web/lighthouserc.cjs and
+      # scripts/check-*.mjs for what each one actually measures and why —
+      # in particular, why /laudo/[id] and /l/[token] are not in scope
+      # yet (both need a seeded database row this job doesn't have).
+      # ---------------------------------------------------------------
+
+      - name: Build web app (captures First Load JS sizes for RNF-05)
+        run: pnpm --filter @pentefino/web build | tee apps/web/.next-build.log
+
+      - name: Bundle budget (RNF-05: initial JS <= 120 kB gzip)
+        run: node scripts/check-bundle-budget.mjs apps/web/.next-build.log
+
+      # Lighthouse (chrome-launcher) and the axe scan both need a real
+      # Chromium; installing Playwright's build once and pointing both at
+      # it keeps this to one browser download instead of two, and means
+      # neither gate depends on whatever Chrome the runner image happens
+      # to ship today.
+      - name: Install Chromium (shared by Lighthouse and axe)
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Resolve Chromium path
+        run: echo "CHROME_PATH=$(node -e "import('playwright').then(m => console.log(m.chromium.executablePath()))")" >> "$GITHUB_ENV"
+
+      - name: Lighthouse budget (RNF-03 LCP <= 2.0s on 4G, RNF-04 CLS <= 0.05)
+        working-directory: apps/web
+        run: pnpm exec lhci autorun --config=./lighthouserc.cjs
+
+      - name: Start web app for accessibility scan
+        working-directory: apps/web
+        run: |
+          PORT=4173 pnpm start &
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:4173/ > /dev/null && exit 0
+            sleep 1
+          done
+          echo "web app never became ready on :4173" >&2
+          exit 1
+
+      - name: Accessibility — axe (RNF-09 no critical violation, RNF-10 contrast in both themes)
+        run: node scripts/check-a11y.mjs http://localhost:4173
+
       - name: Secret scan
         uses: gitleaks/gitleaks-action@v2
         env:
