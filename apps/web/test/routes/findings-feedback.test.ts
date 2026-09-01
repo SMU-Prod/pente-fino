@@ -120,16 +120,28 @@ describe("POST /api/findings/[id]/feedback", () => {
 
     const events = await withUser({ sessionId: sessionA }, ctx.db).events();
     const confirmed = events.find((e) => e.type === "finding_confirmed");
-    expect(confirmed?.payload).toEqual({ answer: "Sim" });
+    // The rule reference is not optional decoration: rule-metrics.ts skips
+    // any feedback event without it, so an event missing it is not a weaker
+    // signal, it is no signal — and RF-126 then promotes every shadow rule
+    // on its thirtieth firing however many people rejected it.
+    expect(confirmed?.payload).toMatchObject({
+      answer: "Sim",
+      ruleSlug: expect.any(String),
+      ruleVersion: expect.any(Number),
+    });
   });
 
-  it("confirms a finding with no answer, leaving the event payload empty", async () => {
+  it("confirms a finding with no answer, still carrying the rule reference", async () => {
     useCookies(createCookieStore({ pf_session: signSession(sessionA, SECRET) }));
     await POST(request(findingId, { action: "confirm" }), ctxFor(findingId));
 
     const events = await withUser({ sessionId: sessionA }, ctx.db).events();
     const confirmed = events.find((e) => e.type === "finding_confirmed");
-    expect(confirmed?.payload).toEqual({});
+    expect(confirmed?.payload).toMatchObject({
+      ruleSlug: expect.any(String),
+      ruleVersion: expect.any(Number),
+    });
+    expect(confirmed?.payload).not.toHaveProperty("answer");
   });
 
   // --- INV-008, the property this task's brief specifically calls out:
