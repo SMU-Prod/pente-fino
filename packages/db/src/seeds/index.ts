@@ -1,9 +1,11 @@
 import type { Database } from "../client.js";
 import { seedIssuers } from "./issuers.js";
 import { seedPrompts } from "./prompts.js";
+import { seedDeterministicRules } from "./rules/deterministic.js";
 
 export { seedIssuers } from "./issuers.js";
 export { seedPrompts } from "./prompts.js";
+export { seedDeterministicRules } from "./rules/deterministic.js";
 
 /**
  * Runs every seed. Called after migrations wherever a database should look
@@ -13,4 +15,5 @@ export { seedPrompts } from "./prompts.js";
 export async function seedAll(db: Database): Promise<void> {
   await seedIssuers(db);
   await seedPrompts(db);
+  await seedDeterministicRules(db);
 }
