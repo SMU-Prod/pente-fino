@@ -5,3 +5,7 @@ export { arithmetic } from "./arithmetic.js";
 export { delta } from "./delta.js";
 export { reference } from "./reference.js";
 export { confirm, confirmAnswerKey } from "./confirm.js";
+export {
+  suppressor, applySuppressors,
+  type SuppressedFinding, type SuppressionResult,
+} from "./suppressor.js";
