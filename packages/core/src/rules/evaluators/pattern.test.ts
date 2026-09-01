@@ -201,4 +201,14 @@ describe("pattern evaluator", () => {
     const context = ctx({});
     expect(() => pattern(rule(spec), context)).toThrow();
   });
+
+  it("rejects a catastrophically-backtracking spec.match before ever running it (see safe-regex.test.ts)", () => {
+    const spec: RuleSpec = { kind: "pattern", match: "(A+)+" };
+    expect(() => pattern(rule(spec), ctx({}))).toThrow(/backtrack/i);
+  });
+
+  it("rejects a catastrophically-backtracking spec.notMatch the same way", () => {
+    const spec: RuleSpec = { kind: "pattern", match: "SVA", notMatch: "(A+)+" };
+    expect(() => pattern(rule(spec), ctx({}))).toThrow(/backtrack/i);
+  });
 });
