@@ -43,7 +43,8 @@ vi.mock("../../lib/container.js", () => ({ container: vi.fn() }));
 const { cookies } = await import("next/headers");
 const { container } = await import("../../lib/container.js");
 const { POST: signUpload } = await import("../../app/api/uploads/sign/route.js");
-const { POST: processInvoice, ingestIdempotencyKey } = await import("../../app/api/invoices/[id]/process/route.js");
+const { POST: processInvoice } = await import("../../app/api/invoices/[id]/process/route.js");
+const { ingestIdempotencyKey } = await import("../../lib/ingest-key.js");
 const { GET: getReport } = await import("../../app/api/invoices/[id]/report/route.js");
 
 /**

@@ -25,7 +25,8 @@ vi.mock("next/headers", () => ({ cookies: vi.fn() }));
 
 const { cookies } = await import("next/headers");
 const { container } = await import("../../lib/container.js");
-const { POST, ingestIdempotencyKey } = await import("../../app/api/invoices/[id]/process/route.js");
+const { POST } = await import("../../app/api/invoices/[id]/process/route.js");
+const { ingestIdempotencyKey } = await import("../../lib/ingest-key.js");
 
 /**
  * Task 1 (E3): the route no longer awaits ingestion, so by the time `POST`

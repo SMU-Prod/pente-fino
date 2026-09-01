@@ -1,6 +1,7 @@
 import { cookies } from "next/headers";
 import { withUser } from "@pentefino/db";
 import { ingestErrorReason } from "@pentefino/jobs";
+import { ingestIdempotencyKey } from "@/lib/ingest-key.js";
 import { container } from "@/lib/container.js";
 import { apiError } from "@/lib/errors.js";
 import { SESSION_COOKIE, getSessionSecret, readSession } from "@/lib/session.js";
@@ -18,20 +19,6 @@ import { SESSION_COOKIE, getSessionSecret, readSession } from "@/lib/session.js"
  * the id exists.
  */
 
-/**
- * The idempotency key `queue.enqueue()` below dedupes ingestion runs on.
- * Exported (Task 1, E3) so a test can call `enqueue("ingest", ..., {
- * idempotencyKey: ingestIdempotencyKey(id) })` a second time to observe the
- * *same* run this route just fired, deterministically: the queue's own dedup
- * contract (packages/adapters/src/queue/in-process.ts) guarantees a second
- * call with this key either joins the run still in flight or reads back its
- * completed result - it never re-invokes the handler. That is the public
- * `enqueue()` API used exactly as production already uses it, not a
- * test-only hook a production caller could stumble into by accident.
- */
-export function ingestIdempotencyKey(invoiceId: string): string {
-  return `ingest:${invoiceId}`;
-}
 
 /**
  * Task 1 (E3) - the queue stops blocking the response. This route used to
