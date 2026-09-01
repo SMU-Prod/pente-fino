@@ -4,6 +4,7 @@ node_modules/
 dist/
 .data/
 *.log
+.lighthouseci/
 *.tsbuildinfo
 .env
 .env.local
