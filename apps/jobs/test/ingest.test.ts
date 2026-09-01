@@ -156,6 +156,17 @@ describe("ingest task", () => {
     expect(rows.map((r) => r.type)).toContain("invoice_extracted");
   });
 
+  // Task 2 (E3): RF-141's SSE stream polls `events`, not `invoices.status`,
+  // because a column can be overwritten before any poll reads it - a row
+  // cannot. Entering `extracting` used to be a plain status update with no
+  // row at all; this pins that it now writes one, same as every other
+  // transition this task makes.
+  it("records invoice_processing_started when it starts extracting, not just invoice_extracted when it finishes (Task 2, E3)", async () => {
+    await task()({ invoiceId });
+    const rows = await ctx.db.select().from(events).where(eq(events.invoiceId, invoiceId));
+    expect(rows.map((r) => r.type)).toContain("invoice_processing_started");
+  });
+
   it("records an event when the invoice reaches analyzed, so the outcome is readable from events alone (A3)", async () => {
     await task()({ invoiceId });
     const rows = await ctx.db.select().from(events).where(eq(events.invoiceId, invoiceId));

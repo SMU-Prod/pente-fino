@@ -27,9 +27,24 @@
  * emit it (RF-120's `runRules`, wired to persistence) is not built yet as of
  * this task — see the doc comment on `createRuleMetricsTask` for what that
  * means for E2 today.
+ *
+ * `invoice_processing_started` is a fourth addition, for Task 2 (E3),
+ * RF-141's SSE progress stream. Before it, the state machine above had a
+ * gap of its own: `invoice_uploaded` names entering `queued` and
+ * `invoice_extracted` names *finishing* extraction, but nothing named
+ * entering `extracting` itself — the ingest task changed
+ * `invoices.status` there with a plain `db.update`, no `events` row. A
+ * poller reading a *column* can miss a value that a later write overwrites
+ * before anyone reads it; a poller reading *rows* cannot, because a row
+ * once written stays there to be read whenever the next poll happens to
+ * run. RF-141's acceptance (at least four distinct events between `queued`
+ * and `analyzed`) has to hold regardless of how fast validation and
+ * persistence run after extraction returns, so it has to be built on the
+ * second kind of read — which meant this transition needed the row
+ * `invoice_uploaded`/`invoice_extracted`/`invoice_analyzed` already had.
  */
 export const EVENTS = [
-  "invoice_uploaded", "invoice_extracted", "invoice_analyzed",
+  "invoice_uploaded", "invoice_processing_started", "invoice_extracted", "invoice_analyzed",
   "invoice_needs_review", "invoice_failed",
   // RF-110's daily expiry job (Task 9, E1) needs its own pair for the same
   // reason invoice_analyzed/invoice_failed exist: the file's deletion (or a
