@@ -7,6 +7,7 @@ severidade máxima, mesmo que o produto funcione.
 |---|---|---|---|
 | INV-001 | `billing.spec.ts` | `packages/db` | Colunas SQL e campos de tipo em `@pentefino/core` (`RuleSpec`, `Playbook`, `ContestDocument`, `InvoiceCanonical`), vocabulário em português e inglês. Não cobre conteúdo arbitrário gravado em `jsonb` em tempo de execução — só a forma declarada nos tipos |
 | INV-002 | `credentials.spec.ts` | `packages/db` | Automatizado só para `gov.br` em contexto de autenticação. Credencial de banco e de operadora ficam para revisão em PR, como a própria §3 do PRD prevê |
+| INV-003 | `authorship.spec.ts` | `packages/ai` | Vocabulário fechado de primeira pessoa do plural **institucional** — o sistema entrando com a peça, se apresentando como representante, ou tomando o caso como agente contínuo ("entramos com a reclamação", "em seu nome", "nossa equipe jurídica"), acento-insensível e com o mesmo casamento por qualquer espaço em branco de `lint.ts`. Varre os cinco campos que o RF-162 já nomeia para o lint (`subject`, `body`, cada `request`, cada linha de `scriptForCall`, cada `attachmentsChecklist`). Deliberadamente **não** trata todo verbo na primeira pessoa do plural como violação: uma pessoa que é plural de verdade — uma casa escrevendo junto ("Nós, moradores desta residência, solicitamos...") — continua legal, porque "solicitamos"/"reconhecemos"/"pagamos"/"somos" descrevem o que a própria pessoa faz, não um ato do sistema em nome dela; a suíte prova as duas direções (pega o documento institucional, aceita o documento e a casa que fala por si). Cobre hoje o playbook literal da §20.2 (`asks` e `legalRefs` de toda etapa) e o checklist de anexos do RF-165. A varredura de `packages/ai/src/prompts` (Task 2, prompt semeado da contestação) e de `packages/core/src/documents/assemble.ts` (Task 1) fica documentada como pendente — não fingindo passar, no mesmo molde de `suppressors.spec.ts` — e entra sozinha quando cada uma aterrissar, sem editar este arquivo |
 | INV-004 / INV-005 | `lint.spec.ts` | `packages/ai` | — |
 | INV-006 | `sensitive.spec.ts` | `packages/db` | Vocabulário de saúde, religião, sindicato e política em português, sem acento, cobrindo termos reais de fatura/fatura de cartão (farmácia, dízimo, sindicato, eleitoral...). Toda regra, em **qualquer status** — draft/shadow/active/paused, não só active/shadow como a INV-010 — porque nada na redação da inviolável limita a checagem a regras em observação. Cobre `spec` (recursivamente, qualquer `kind`), `reason`, `slug` e `legalBasis`; não cobre `author` (nome de pessoa). Camada extra: nenhum arquivo-fonte de `packages/db/src/seeds` pode ter o vocabulário embutido, mesmo antes de virar seed. O motor (`runRules`) não produz achado nenhum para uma fatura fixture com itens de aparência sensível, dado o catálogo real de hoje (vazio — nenhum seed popula `rules` ainda) |
 | INV-007 | `masking.spec.ts` | `packages/core` | — |
@@ -17,8 +18,6 @@ severidade máxima, mesmo que o produto funcione.
 
 | Inviolável | Depende de | Bloco |
 |---|---|---|
-| INV-003 (autoria do usuário) | gerador de contestação e templates | E4 |
 | INV-009 (nada vendido à empresa) | revisão de arquitetura em PR, não teste automatizável | contínuo |
 
-Nenhuma delas tem teste falso ocupando o lugar. Quando o bloco chegar, o
-teste entra junto.
+Não há teste falso ocupando o lugar dela.
