@@ -62,6 +62,34 @@ export const anonymousSessions = pgTable("anonymous_sessions", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+// RF-147's credential (§8.2 `POST /api/sessions/claim`). Not in PRD §6.2 -
+// this table is new infrastructure this task adds, since the PRD only
+// specifies `anonymous_sessions.claimed_by_user_id` as the eventual target
+// of a claim, not how the e-mail code itself is issued or checked. One row
+// per code ever sent; a superseded, expired, or exhausted row is never
+// deleted, only left behind - packages/db/src/claim.ts (the only module
+// that reads or writes this table) always looks at the most recent row for
+// a given (email, session_id) pair. `email` is stored lower-cased and
+// trimmed by that same module, so `claim_codes_email_created` (which
+// enforces §8.3's 3-per-hour-per-e-mail limit) never misses a match over
+// case or whitespace alone.
+export const claimCodes = pgTable("claim_codes", {
+  id: text("id").primaryKey(),
+  email: text("email").notNull(),
+  sessionId: text("session_id").notNull().references(() => anonymousSessions.id),
+  // HMAC-SHA256 of the plaintext code, keyed with a secret this table never
+  // stores - see claim.ts's header comment for why a plain hash alone is
+  // not enough for a keyspace this small (1,000,000 six-digit codes).
+  codeHash: text("code_hash").notNull(),
+  attempts: integer("attempts").notNull().default(0),
+  consumedAt: timestamp("consumed_at", { withTimezone: true }),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => ({
+  byEmailCreated: index("claim_codes_email_created").on(t.email, t.createdAt),
+}));
+
 export const issuers = pgTable("issuers", {
   id: text("id").primaryKey(),
   slug: text("slug").notNull().unique(), // "claro-movel"

@@ -11,10 +11,10 @@ export const ERROR_CATALOGUE = {
 
 export type ErrorCode = keyof typeof ERROR_CATALOGUE;
 
-export function apiError(code: ErrorCode, details?: unknown): Response {
+export function apiError(code: ErrorCode, details?: unknown, headers?: HeadersInit): Response {
   const { http, message } = ERROR_CATALOGUE[code];
   return Response.json(
     { error: { code, message, ...(details === undefined ? {} : { details }) } },
-    { status: http },
+    { status: http, ...(headers === undefined ? {} : { headers }) },
   );
 }
