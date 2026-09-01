@@ -62,6 +62,7 @@ describe("INV-004/RF-128 · the rule engine's own user-facing text passes the fo
     shadow: false,
     legalBasis: [{ law: "CDC", article: "art. 39, III, p.u.", effect: "vedada" }],
     issuerId: null,
+    category: "telecom",
   };
   // Below RF-124's 0.55 cut: every finding it produces becomes a question.
   const questionRule: ActiveRule = {
@@ -72,6 +73,7 @@ describe("INV-004/RF-128 · the rule engine's own user-facing text passes the fo
     shadow: false,
     legalBasis: [{ law: "CDC", article: "art. 39", effect: "vedada" }],
     issuerId: null,
+    category: "telecom",
   };
 
   const findings = runRules({

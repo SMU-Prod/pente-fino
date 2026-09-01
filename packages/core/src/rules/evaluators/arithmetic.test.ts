@@ -14,6 +14,7 @@ function rule(spec: RuleSpec, overrides: Partial<ActiveRule> = {}): ActiveRule {
     shadow: false,
     legalBasis: [{ law: "NR 11/ANA/2024", article: "1º", effect: "limite" }],
     issuerId: null,
+    category: "water",
     ...overrides,
   };
 }

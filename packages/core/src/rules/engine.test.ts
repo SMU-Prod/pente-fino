@@ -32,6 +32,11 @@ function baseRule(overrides: Partial<ActiveRule> = {}): ActiveRule {
     shadow: false,
     legalBasis: [LEGAL],
     issuerId: null,
+    // Matches `invoiceWith`'s own default issuer category — every test in
+    // this file that does not override the invoice's issuer stays
+    // category-consistent with its rule(s) for free; the one describe block
+    // that deliberately wants a mismatch overrides it explicitly.
+    category: "telecom",
     ...overrides,
   };
 }
@@ -90,6 +95,56 @@ describe("RF-120: purity, determinism, no mutation", () => {
     expect(JSON.stringify(previous)).toBe(previousSnapshot);
     expect(JSON.stringify(rules)).toBe(rulesSnapshot);
     expect(JSON.stringify(references)).toBe(referencesSnapshot);
+  });
+});
+
+describe("RF-120: category filter — defence in depth against the caller's own query", () => {
+  // The gap this closes: a caller that queries `rules` without filtering by
+  // category (or queries it correctly but for the wrong invoice) used to
+  // have its mistake propagate straight into a user-facing finding — e.g. a
+  // `card` insurance rule firing on a `telecom` invoice. The engine itself
+  // must refuse that, not merely rely on the caller's `WHERE category = ?`.
+  it("never evaluates a rule whose category does not match the invoice's, even when the caller includes it anyway", () => {
+    const invoice = invoiceWith([
+      { name: "Fatura", items: [{ description: "MP*Chubbsegurosbrasi", amountCents: 1200 }] },
+    ]);
+    const cardRuleOnTelecomInvoice = baseRule({
+      slug: "rn-021-seguro-embutido-cartao",
+      category: "card",
+      spec: { kind: "pattern", match: "CHUBB" },
+    });
+
+    expect(run({ invoice, rules: [cardRuleOnTelecomInvoice] })).toEqual([]);
+  });
+
+  it("still evaluates a rule whose category matches the invoice's own category", () => {
+    const invoice = invoiceWith([{ name: "Fatura", items: [{ description: "Encargo suspeito", amountCents: 100 }] }]);
+    const matchingRule = baseRule({ category: "telecom", spec: { kind: "pattern", match: "ENCARGO" } });
+
+    expect(run({ invoice, rules: [matchingRule] })).toHaveLength(1);
+  });
+
+  it("filters by category before RF-123 precedence runs, so a mismatched-category issuer-specific rule cannot " +
+    "shadow out the matching generic rule of the same slug", () => {
+    const invoice = invoiceWith([{ name: "Fatura", items: [{ description: "Encargo suspeito", amountCents: 100 }] }]);
+    const genericTelecomRule = baseRule({
+      slug: "regra-partilhada",
+      category: "telecom",
+      spec: { kind: "pattern", match: "ENCARGO" },
+      confidenceBase: 0.6,
+    });
+    const specificWrongCategoryRule = baseRule({
+      slug: "regra-partilhada",
+      category: "card",
+      issuerId: "issuer-x",
+      spec: { kind: "pattern", match: "ENCARGO" },
+      confidenceBase: 0.95,
+    });
+
+    const findings = run({ invoice, rules: [genericTelecomRule, specificWrongCategoryRule] });
+
+    expect(findings).toHaveLength(1);
+    expect(findings[0]?.confidence).toBe(0.6);
   });
 });
 

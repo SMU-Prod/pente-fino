@@ -16,6 +16,7 @@ function rule(spec: RuleSpec, overrides: Partial<ActiveRule> = {}): ActiveRule {
     shadow: false,
     legalBasis: [],
     issuerId: null,
+    category: "energy",
     ...overrides,
   };
 }

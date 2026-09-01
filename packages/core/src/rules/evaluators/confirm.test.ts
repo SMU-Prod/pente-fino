@@ -29,6 +29,7 @@ function confirmRule(): ActiveRule {
     shadow: false,
     legalBasis: [{ law: "CDC", article: "39", effect: "vedada" }],
     issuerId: null,
+    category: "card",
   };
 }
 
@@ -46,6 +47,7 @@ describe("confirm - guards", () => {
       shadow: false,
       legalBasis: [{ law: "CDC", article: "39", effect: "vedada" }],
       issuerId: null,
+      category: "card",
     };
     expect(confirm(notConfirm, ctx({}))).toEqual([]);
   });

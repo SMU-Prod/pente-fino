@@ -38,6 +38,7 @@ function rule(options: {
     shadow: false,
     legalBasis: [{ law: "CDC", article: "39", effect: "vedada" }],
     issuerId: null,
+    category: "telecom",
   };
 }
 
@@ -57,6 +58,7 @@ describe("delta - guards", () => {
       shadow: false,
       legalBasis: [{ law: "CDC", article: "39", effect: "vedada" }],
       issuerId: null,
+      category: "telecom",
     };
     expect(delta(notDelta, ctx(current, previous))).toEqual([]);
   });

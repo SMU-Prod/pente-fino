@@ -48,6 +48,7 @@ function referenceRule(overrides: {
     shadow: false,
     legalBasis: [{ law: "REN 1.000/2021", article: "art. 348", effect: "limite" }],
     issuerId: null,
+    category: "energy",
   };
 }
 
@@ -65,6 +66,7 @@ describe("reference - guards", () => {
       shadow: false,
       legalBasis: [{ law: "CDC", article: "39", effect: "vedada" }],
       issuerId: null,
+      category: "energy",
     };
     expect(reference(notReference, ctx(energyInvoice(), { tariffs: [], flags: [] }))).toEqual([]);
   });

@@ -3,7 +3,7 @@ import {
   type EvaluationContext, type Evaluator,
 } from "./evaluators/index.js";
 import { formatCentsBRL } from "./evaluators/shared.js";
-import type { InvoiceCanonical } from "../invoice/canonical.js";
+import type { Category, InvoiceCanonical } from "../invoice/canonical.js";
 import type { Finding } from "./finding.js";
 import type { ReferenceFlag, ReferenceTariff } from "./references.js";
 import type { LegalRef, RuleSpec } from "./spec.js";
@@ -21,6 +21,15 @@ export type ActiveRule = {
   // outranks the generic rule of the same slug, resolved inside the engine
   // rather than depending on how the caller happened to query `rules`.
   issuerId: string | null;
+  // RF-120: "avalia todas as regras active da categoria (e as do emissor)"
+  // names a filter, and until this field existed the engine had no data of
+  // its own to apply it with — see `filterByCategory` below for what that
+  // let through in production (a `card` rule firing on a `telecom`
+  // invoice). The caller's own query (`WHERE category = ? OR issuer_id =
+  // ?`) should still do this filtering; this field lets the engine refuse
+  // the mismatch itself too, rather than trusting the caller got it right
+  // every time.
+  category: Category;
 };
 
 export type RuleEngineInput = {
@@ -49,7 +58,8 @@ export type RuleEngineInput = {
  * organised:
  *
  *   1. **Select** — resolve `input.rules` down to the rules that actually
- *      apply (see "Selection is mostly RF-123" below).
+ *      apply: first the RF-120 category filter, then RF-123 precedence
+ *      (see "Selection is mostly RF-123" below).
  *   2. **RF-123 precedence** — of the rules selected in step 1, an
  *      issuer-specific rule (`issuerId !== null`) outranks the generic rule
  *      (`issuerId === null`) of the same `slug`; only the specific one's
@@ -76,21 +86,32 @@ export type RuleEngineInput = {
  *      clustering, exactly as specified — see "RF-129 runs after
  *      clustering, on purpose" below for what that implies.
  *
- * ## Selection is mostly RF-123 (steps 1 and 2 are one pass)
+ * ## The category filter is defence in depth, not the caller's replacement
  *
- * `ActiveRule` carries no `category` field, and `InvoiceCanonical` carries
- * no reference to a specific issuer row — only `issuer.category` and an
- * optional `issuer.cnpj`. There is therefore no axis left inside this
- * engine along which to filter `input.rules` further: RF-120's "avalia
- * todas as regras ativas da categoria (e as do emissor)" describes the
- * caller's query (`WHERE status = 'active' AND (category = ? OR issuerId =
- * ?)`), not a second filter the engine could apply from the data it has.
- * What the engine CAN and must do with the candidates it receives is
- * collapse duplicate `slug`s down to one rule per slug, per RF-123: an
- * issuer-specific entry wins over a generic one of the same slug. Two
- * different non-null `issuerId`s sharing one slug would mean the caller
- * mixed candidates for more than one issuer into a single call — outside
- * this engine's ability to arbitrate, and assumed not to happen.
+ * RF-120's "avalia todas as regras ativas da categoria (e as do emissor)"
+ * describes the caller's own query (`WHERE status = 'active' AND (category
+ * = ? OR issuerId = ?)`) — the caller should still write it. But a caller
+ * that forgets, or that queries correctly for one invoice and then reuses
+ * the same rule set for another, used to have that mistake land straight in
+ * a `Finding` a user sees: nothing inside this engine had `category` data
+ * of its own to check the caller's work against. `ActiveRule.category` (and
+ * `filterByCategory` below, the first thing `runRules` does) closes that —
+ * a rule whose `category` does not equal `input.invoice.issuer.category` is
+ * dropped before it ever reaches selection, evaluation, or a finding,
+ * regardless of what the caller passed in.
+ *
+ * ## Selection is otherwise mostly RF-123 (steps 1 and 2 are one pass)
+ *
+ * Once the category filter has run, `InvoiceCanonical` still carries no
+ * reference to a specific issuer row — only `issuer.category` and an
+ * optional `issuer.cnpj` — so there is no further axis inside this engine
+ * along which to filter `input.rules`. What the engine CAN and must do with
+ * the candidates it receives is collapse duplicate `slug`s down to one rule
+ * per slug, per RF-123: an issuer-specific entry wins over a generic one of
+ * the same slug. Two different non-null `issuerId`s sharing one slug would
+ * mean the caller mixed candidates for more than one issuer into a single
+ * call — outside this engine's ability to arbitrate, and assumed not to
+ * happen.
  *
  * ## Task 3's suppressor evaluator
  *
@@ -193,7 +214,8 @@ export type RuleEngineInput = {
  * total a user sees.
  */
 export function runRules(input: RuleEngineInput): Finding[] {
-  const selected = selectApplicableRules(input.rules);
+  const inCategory = filterByCategory(input.rules, input.invoice.issuer.category);
+  const selected = selectApplicableRules(inCategory);
   const ctx: EvaluationContext = {
     invoice: input.invoice,
     previous: input.previous,
@@ -206,6 +228,15 @@ export function runRules(input: RuleEngineInput): Finding[] {
   const thresholded = applyConfidenceThresholds(suppressed);
   const clustered = applyClustering(thresholded, selected);
   return enforceEvidenceAndLegalBasis(clustered);
+}
+
+// ---------------------------------------------------------------------------
+// Step 1 (first half) — RF-120 category filter, defence in depth. See the
+// module doc comment's "The category filter is defence in depth" section.
+// ---------------------------------------------------------------------------
+
+function filterByCategory(rules: ActiveRule[], category: Category): ActiveRule[] {
+  return rules.filter((rule) => rule.category === category);
 }
 
 // ---------------------------------------------------------------------------

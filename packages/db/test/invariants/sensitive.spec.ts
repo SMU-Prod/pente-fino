@@ -361,6 +361,7 @@ describe("INV-006 · never infer or store a sensitive category from an invoice",
       shadow: false,
       legalBasis: [],
       issuerId: null,
+      category: "telecom",
     };
     expect(findSensitiveTerm(stringsIn(sensitiveRule.spec).join("\n"))).toBe("farmac");
 

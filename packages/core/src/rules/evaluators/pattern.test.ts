@@ -14,6 +14,7 @@ function rule(spec: RuleSpec, overrides: Partial<ActiveRule> = {}): ActiveRule {
     shadow: false,
     legalBasis: [{ law: "CDC", article: "39 III p.u.", effect: "limite" }],
     issuerId: null,
+    category: "telecom",
     ...overrides,
   };
 }

@@ -159,6 +159,7 @@ function activeRule(entry: (typeof DETERMINISTIC_RULES)[number]): ActiveRule {
     shadow: true,
     legalBasis: entry.legalBasis,
     issuerId: null,
+    category: entry.category,
   };
 }
 

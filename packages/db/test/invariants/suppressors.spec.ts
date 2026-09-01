@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { inArray } from "drizzle-orm";
-import { runRules, type ActiveRule, type InvoiceCanonical } from "@pentefino/core";
+import { runRules, type ActiveRule, type Category, type InvoiceCanonical } from "@pentefino/core";
 import { createTestDb, type TestDb } from "../../src/testing.js";
 import { rules } from "../../src/schema.js";
 import { RN_090, RN_091, RN_092 } from "../../src/seeds/rules/suppressors.js";
@@ -113,8 +113,14 @@ function invoice(partial: Omit<InvoiceCanonical, "extraction">): InvoiceCanonica
   return { ...partial, extraction: { confidence: 0.9, warnings: [] } } as InvoiceCanonical;
 }
 
-/** A rogue, unrelated-slug rule that flags a dead thesis without naming it. */
-function rogueRule(slug: string, match: string): ActiveRule {
+/**
+ * A rogue, unrelated-slug rule that flags a dead thesis without naming it.
+ * `category` must match the fixture invoice it is run against (RF-120's
+ * category filter, defence in depth — a mismatched category would make the
+ * rogue rule silently inert, and the test below would then "pass" for the
+ * wrong reason: nothing to suppress, rather than something suppressed).
+ */
+function rogueRule(slug: string, match: string, category: Category = "energy"): ActiveRule {
   return {
     slug,
     version: 1,
@@ -123,6 +129,7 @@ function rogueRule(slug: string, match: string): ActiveRule {
     shadow: false,
     legalBasis: [{ law: "CDC", article: "42, parágrafo único", effect: "dobro" }],
     issuerId: null,
+    category,
   };
 }
 
@@ -137,6 +144,7 @@ async function loadSuppressorActiveRules(db: TestDb["db"]): Promise<ActiveRule[]
     shadow: row.status === "shadow",
     legalBasis: row.legalBasis,
     issuerId: row.issuerId,
+    category: row.category,
   }));
 }
 
@@ -225,7 +233,7 @@ describe("INV-010 · no finding for a dead thesis survives the engine, under any
 
   it("suppresses RN-092 (tarifa mínima de água por economia) even flagged by an unrelated slug", async () => {
     const suppressors = await loadSuppressorActiveRules(ctx.db);
-    const rogue = rogueRule("agua-cobranca-nao-identificada", "TARIFA MINIMA");
+    const rogue = rogueRule("agua-cobranca-nao-identificada", "TARIFA MINIMA", "water");
     const fixture = invoice({
       issuer: { name: "Sabesp", category: "water" },
       period: { start: "2026-06-01", end: "2026-06-30" },

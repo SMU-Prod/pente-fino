@@ -210,43 +210,72 @@ describe("RN-021's confirm fallback, exercised directly against the confirm eval
 });
 
 describe("end-to-end evaluation against runRules", () => {
-  // As of this test, `runRules` (packages/core/src/rules/engine.ts) is still
-  // the RF-120 boundary stub that throws for any non-empty rule set — Task 4
-  // of this same E2 block (the dispatcher wiring `spec.kind` to the right
-  // evaluator) has not landed on this branch yet, even though the
-  // individual evaluator functions (pattern/confirm) already exist and are
-  // unit-tested in packages/core. So none of RN-020/021(pattern)/021(confirm)
-  // /023 can be exercised through the real, wired `runRules` path today —
-  // exactly like deterministic.test.ts's own equivalent test for RN-001..011.
+  // Task 4 of this same E2 block landed the real engine
+  // (packages/core/src/rules/engine.ts), so RN-020/021(pattern)/021(confirm)
+  // /023 can now be exercised through the real, wired `runRules` path.
   //
-  // `pattern`/`confirm` are also not reachable directly from this package:
-  // `@pentefino/core`'s package.json only exposes its top-level index and
-  // `./ports` (no `./rules/evaluators/*` subpath), so a cross-package direct
-  // call to the evaluator functions themselves is not possible from here
-  // either. What packages/db *can* prove today about pattern.match, done
-  // above, is the actual match-string correctness against the exported
-  // `normalizeDescription` + `compileSafePattern` — the two symbols the
-  // module's own `pattern.ts` uses to do exactly this.
-  it("still throws the E2-not-implemented stub, naming every lexicon rule", () => {
-    const activeRules: ActiveRule[] = LEXICON_RULES.map((r) => ({
-      slug: r.slug,
+  // Faithful to production, not every seeded rule regardless of category:
+  // an ingest job only ever loads the rules matching the invoice's own
+  // category (and its issuer) - RF-120's own caller-side query - never the
+  // whole `rules` table. Passing every `LEXICON_RULES` entry here regardless
+  // of category used to be exactly this test's own bug: run over a clean
+  // telecom fixture, it produced a finding from RN-021's `card`-only confirm
+  // rule (a recurring-charge question meant for card statements) on a Claro
+  // invoice with no card and no recurring charge at all - the caller's
+  // mistake this file itself was making, not a hypothetical one. The
+  // engine's own RF-120 category filter (`engine.ts`) now refuses that
+  // cross-category evaluation as defence in depth even if a caller gets its
+  // query wrong, but this test's job is to prove the *correctly scoped*
+  // caller path, the one production actually takes.
+  function toActiveRule(entry: (typeof LEXICON_RULES)[number]): ActiveRule {
+    return {
+      slug: entry.slug,
       version: 1,
-      spec: r.spec,
-      confidenceBase: r.confidenceBase,
+      spec: entry.spec,
+      confidenceBase: entry.confidenceBase,
       shadow: true,
-      legalBasis: r.legalBasis,
+      legalBasis: entry.legalBasis,
       issuerId: null,
-    }));
-    const { invoice, previous } = LEXICON_FIXTURES[RN_020]!.fires;
+      category: entry.category,
+    };
+  }
 
-    expect(() =>
-      runRules({
-        invoice,
-        previous,
-        rules: activeRules,
-        answers: {},
-        references: { tariffs: [], flags: [] },
-      }),
-    ).toThrow(/E2/);
+  it("fires RN-020 and only RN-020 on a telecom invoice, when only the telecom-category rules are loaded " +
+    "(as a real caller's category-scoped query would)", () => {
+    const { invoice, previous } = LEXICON_FIXTURES[RN_020]!.fires;
+    expect(invoice.issuer.category).toBe("telecom");
+
+    const telecomRules = LEXICON_RULES
+      .filter((entry) => entry.category === invoice.issuer.category)
+      .map(toActiveRule);
+
+    const findings = runRules({
+      invoice,
+      previous,
+      rules: telecomRules,
+      answers: {},
+      references: { tariffs: [], flags: [] },
+    });
+
+    expect(findings.length).toBeGreaterThan(0);
+    expect(findings.every((f) => f.ruleSlug === RN_020)).toBe(true);
+  });
+
+  it("never lets a card-only rule (RN-021's confirm fallback) reach a telecom invoice, even if a caller " +
+    "mistakenly loads every seeded rule regardless of category - the exact defect this file used to have", () => {
+    const { invoice, previous } = LEXICON_FIXTURES[RN_020]!.fires;
+    const everyLexiconRule = LEXICON_RULES.map(toActiveRule);
+
+    const findings = runRules({
+      invoice,
+      previous,
+      rules: everyLexiconRule,
+      answers: {},
+      references: { tariffs: [], flags: [] },
+    });
+
+    expect(findings.some((f) => f.ruleSlug === RN_021_CONFIRM)).toBe(false);
+    expect(findings.some((f) => f.ruleSlug === RN_021)).toBe(false);
+    expect(findings.some((f) => f.ruleSlug === RN_023)).toBe(false);
   });
 });
