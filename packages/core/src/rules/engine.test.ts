@@ -130,37 +130,40 @@ describe("RF-123: issuer-specific precedence", () => {
   });
 });
 
-describe("suppressor phase (§12.4) — Task 3's evaluator is not required to exist yet", () => {
-  it("removes a finding whose ruleSlug is named in an active suppressor rule's blocks", () => {
+describe("suppressor phase (§12.4) — powered by Task 3's real evaluators/suppressor.ts", () => {
+  it("removes a finding whose own evidence text matches an active suppressor rule's blocks", () => {
     const invoice = invoiceWith([{ name: "Fatura", items: [{ description: "ICMS sobre TUSD", amountCents: 500 }] }]);
+    // `some-icms-rule` names nothing about ICMS/TUSD in its slug on purpose —
+    // suppressor.ts matches evidence text, never ruleSlug (INV-010 must
+    // catch a dead thesis even under an unrelated-looking slug).
     const flagged = baseRule({ slug: "some-icms-rule", spec: { kind: "pattern", match: "ICMS" } });
-    const suppressor = baseRule({
+    const suppressorRule = baseRule({
       slug: "rn-090-suppressor",
-      spec: { kind: "suppressor", blocks: ["some-icms-rule"], reason: "STJ Tema 986" },
+      spec: { kind: "suppressor", blocks: ["(?=.*ICMS)(?=.*TUSD)"], reason: "STJ Tema 986" },
     });
 
-    expect(run({ invoice, rules: [flagged, suppressor] })).toEqual([]);
+    expect(run({ invoice, rules: [flagged, suppressorRule] })).toEqual([]);
   });
 
-  it("leaves findings alone when no suppressor rule blocks them", () => {
+  it("leaves findings alone when no suppressor rule's pattern matches their evidence", () => {
     const invoice = invoiceWith([{ name: "Fatura", items: [{ description: "ICMS sobre TUSD", amountCents: 500 }] }]);
     const flagged = baseRule({ slug: "some-icms-rule", spec: { kind: "pattern", match: "ICMS" } });
-    const suppressor = baseRule({
+    const suppressorRule = baseRule({
       slug: "rn-090-suppressor",
-      spec: { kind: "suppressor", blocks: ["a-different-rule"], reason: "STJ Tema 986" },
+      spec: { kind: "suppressor", blocks: ["COSIP"], reason: "STJ Tema 986" },
     });
 
-    expect(run({ invoice, rules: [flagged, suppressor] })).toHaveLength(1);
+    expect(run({ invoice, rules: [flagged, suppressorRule] })).toHaveLength(1);
   });
 
   it("never routes a suppressor-kind rule to the other six evaluators (they throw on the wrong kind)", () => {
     const invoice = invoiceWith([{ name: "Fatura", items: [{ description: "Qualquer coisa", amountCents: 100 }] }]);
-    const suppressor = baseRule({
+    const suppressorRule = baseRule({
       slug: "rn-091",
-      spec: { kind: "suppressor", blocks: ["nonexistent"], reason: "x" },
+      spec: { kind: "suppressor", blocks: ["NONEXISTENT"], reason: "x" },
     });
-    expect(() => run({ invoice, rules: [suppressor] })).not.toThrow();
-    expect(run({ invoice, rules: [suppressor] })).toEqual([]);
+    expect(() => run({ invoice, rules: [suppressorRule] })).not.toThrow();
+    expect(run({ invoice, rules: [suppressorRule] })).toEqual([]);
   });
 });
 

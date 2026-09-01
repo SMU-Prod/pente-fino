@@ -1,5 +1,5 @@
 import {
-  arithmetic, confirm, delta, pattern, reference, threshold,
+  applySuppressors, arithmetic, confirm, delta, pattern, reference, threshold,
   type EvaluationContext, type Evaluator,
 } from "./evaluators/index.js";
 import { formatCentsBRL } from "./evaluators/shared.js";
@@ -92,21 +92,37 @@ export type RuleEngineInput = {
  * mixed candidates for more than one issuer into a single call — outside
  * this engine's ability to arbitrate, and assumed not to happen.
  *
- * ## Task 3's suppressor evaluator, and its absence
+ * ## Task 3's suppressor evaluator
  *
  * RF-121 names `suppressor` as a seventh evaluator kind, built in Task 3 of
- * this same block, running in parallel with this one. As of this file,
- * `evaluators/index.ts` exports only the six evaluators that produce
- * findings (`pattern`/`delta`/`threshold`/`reference`/`confirm`/
- * `arithmetic`) — there is no `evaluators/suppressor.ts` to import yet.
- * `applySuppressorPhase` below is this engine's own implementation of that
- * phase, against the exact `RuleSpec` "suppressor" shape already defined in
- * `spec.ts` (`blocks`/`reason`) — a real implementation, not a stub, so the
- * engine does not have to wait on Task 3 to ship a correct pipeline today.
- * When Task 3's module lands, whoever integrates the two should compare
- * behaviour and either replace this function with an import of `suppressor`
- * from `evaluators/index.ts`, or reconcile any difference — this comment is
- * the marker for that follow-up.
+ * this same block, running in parallel with this one. Task 3 had not landed
+ * when this file was started: `evaluators/index.ts` exported only the six
+ * evaluators that produce findings, with no `evaluators/suppressor.ts` to
+ * import. `applySuppressorPhase` began as this engine's own implementation
+ * of that phase against the exact `RuleSpec` "suppressor" shape already
+ * defined in `spec.ts` (`blocks`/`reason`) — a real implementation, not a
+ * stub, so the pipeline was correct even before Task 3 shipped. Task 3
+ * landed and merged into this same branch while this file was still being
+ * written, at which point `applySuppressorPhase` was rewritten to its
+ * current body: a thin wrapper around `applySuppressors` from
+ * `evaluators/suppressor.ts` (re-exported through `evaluators/index.ts`),
+ * which matches `spec.blocks` (regex sources) against each finding's own
+ * `evidence` text rather than against `ruleSlug` — see that module's doc
+ * comment for why (INV-010 must catch a dead thesis even under a rule slug
+ * that names nothing about it). This engine trusts that design outright
+ * rather than re-implementing or second-guessing it.
+ *
+ * One gap this integration leaves open, worth flagging rather than hiding:
+ * `applySuppressors` returns `{ survivors, suppressed }`, and its own doc
+ * comment expects the caller to "record `result.suppressed` somewhere an
+ * operator can later ask 'why didn't this fire'" — an audit trail, not a
+ * silent drop. `runRules`'s signature returns only `Finding[]` (kept as
+ * specified for this task), so `applySuppressorPhase` below keeps only
+ * `.survivors` and discards `.suppressed` entirely. Nothing downstream of
+ * `runRules` can answer "why didn't this fire" today. Surfacing that
+ * without changing this function's signature — a second return channel, a
+ * side-effecting logger port, or similar — is a real, undecided design
+ * question for whichever task wires this engine into the ingest pipeline.
  *
  * ## RF-124's two boundaries do not carry equal weight here
  *
@@ -238,18 +254,15 @@ function runEvaluators(rules: ActiveRule[], ctx: EvaluationContext): Finding[] {
 }
 
 // ---------------------------------------------------------------------------
-// Step 3b — suppressor phase (§12.4) — see the module doc comment for why
-// this is not (yet) an import from evaluators/suppressor.ts
+// Step 3b — suppressor phase (§12.4) — see the module doc comment ("Task 3's
+// suppressor evaluator") for the history and for the audit-trail gap this
+// leaves open.
 // ---------------------------------------------------------------------------
 
 function applySuppressorPhase(rules: ActiveRule[], findings: Finding[]): Finding[] {
-  const blocked = new Set<string>();
-  for (const rule of rules) {
-    if (rule.spec.kind !== "suppressor") continue;
-    for (const slug of rule.spec.blocks) blocked.add(slug);
-  }
-  if (blocked.size === 0) return findings;
-  return findings.filter((finding) => !blocked.has(finding.ruleSlug));
+  const suppressorRules = rules.filter((rule) => rule.spec.kind === "suppressor");
+  if (suppressorRules.length === 0) return findings; // nothing to run `applySuppressors` over
+  return applySuppressors(suppressorRules, findings).survivors;
 }
 
 // ---------------------------------------------------------------------------
