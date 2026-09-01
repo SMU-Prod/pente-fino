@@ -214,7 +214,14 @@ describe("withUser", () => {
     expect(untouched?.status).toBe("open");
 
     const result = await scoped.setFindingFeedback(findingId, "dismissed_by_user");
-    expect(result).toEqual({ id: findingId, invoiceId });
+    // The rule reference rides along because the caller has to put it in
+    // the feedback event: rule-metrics.ts skips any event without it.
+    expect(result).toMatchObject({
+      id: findingId,
+      invoiceId,
+      ruleSlug: expect.any(String),
+      ruleVersion: expect.any(Number),
+    });
     const [updated] = await ctx.db.select().from(findings).where(eq(findings.id, findingId));
     expect(updated?.status).toBe("dismissed_by_user");
   });
