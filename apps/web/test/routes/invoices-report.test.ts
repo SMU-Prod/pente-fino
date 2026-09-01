@@ -179,6 +179,44 @@ describe("GET /api/invoices/[id]/report", () => {
     expect(body.totals).toEqual({ suspectCents: 1500, doubledCents: 700 });
   });
 
+  // --- RF-143: dismissing a finding must not just hide it on the client -
+  // a reload (this same route, called again) must keep it gone, and the
+  // totals it reads off `findingsForInvoice` must never disagree with the
+  // list a person is looking at.
+
+  it("excludes a dismissed finding from both the list and the totals, so a reload does not bring it back (RF-143)", async () => {
+    const dismissedId = newId("fnd");
+    await ctx.db.insert(findings).values({
+      id: dismissedId, invoiceId, ruleId, ruleVersion: 1, confidence: 0.9, amountCents: 3000, doubledCents: 1500,
+      status: "dismissed_by_user",
+    });
+
+    useCookies(createCookieStore({ pf_session: signSession(sessionA, SECRET) }));
+    const response = await GET(request(), ctxFor(invoiceId));
+    const body = await response.json();
+
+    expect(body.findings.map((f: { id: string }) => f.id)).not.toContain(dismissedId);
+    // Unchanged from the single visible (open) finding the top-level
+    // beforeEach seeds - the dismissed finding's 3000/1500 must not be
+    // summed in here, or the totals would disagree with the list.
+    expect(body.totals).toEqual({ suspectCents: 1500, doubledCents: 700 });
+  });
+
+  it("keeps a confirmed finding in both the list and the totals - it is the strongest signal on the screen", async () => {
+    const confirmedId = newId("fnd");
+    await ctx.db.insert(findings).values({
+      id: confirmedId, invoiceId, ruleId, ruleVersion: 1, confidence: 0.9, amountCents: 2000, doubledCents: 1000,
+      status: "confirmed_by_user",
+    });
+
+    useCookies(createCookieStore({ pf_session: signSession(sessionA, SECRET) }));
+    const response = await GET(request(), ctxFor(invoiceId));
+    const body = await response.json();
+
+    expect(body.findings.map((f: { id: string }) => f.id)).toContain(confirmedId);
+    expect(body.totals).toEqual({ suspectCents: 1500 + 2000, doubledCents: 700 + 1000 });
+  });
+
   // --- RF-124: the route classifies every finding by confidence into one of
   // three bands, but never picks the pt-BR wording itself (that is the UI's
   // job, per PRD §13.3).

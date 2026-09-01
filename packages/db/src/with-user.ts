@@ -1,4 +1,4 @@
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, inArray } from "drizzle-orm";
 import { newId, newPublicToken, type EventType } from "@pentefino/core";
 import { getUnscopedDb } from "./client.js";
 import { anonymousSessions, cases, events, findings, invoiceItems, invoices, issuers, rules } from "./schema.js";
@@ -6,6 +6,34 @@ import { anonymousSessions, cases, events, findings, invoiceItems, invoices, iss
 export type Session = { userId: string } | { sessionId: string };
 
 type Db = ReturnType<typeof getUnscopedDb>;
+
+/**
+ * RF-143: "isso eu contratei" must remove a finding from the report for
+ * good, not just from the client's in-memory list until the next fetch -
+ * `findingsForInvoice` is where both the list and its totals
+ * (apps/web/lib/report.ts sums exactly what this returns) draw from, so
+ * this is the one place that has to know which of `findings.status`'s six
+ * values still describe money genuinely at stake:
+ *
+ *   - `open`               untouched - nobody has looked at it yet.
+ *   - `confirmed_by_user`  the person said this charge is wrong - the
+ *                          strongest signal the screen can carry.
+ *   - `contested`          a case (E4) is actively disputing it - still
+ *                          unresolved, so still shown.
+ *   - `unresolved`         a dispute (E5) concluded without fixing the
+ *                          charge - the money was never recovered, so this
+ *                          is not "handled", it is exactly as live as
+ *                          `open`, just with a failed attempt behind it.
+ *
+ * `dismissed_by_user` and `resolved` are the two statuses left out:
+ * dismissal means the person recognises the charge (a false positive from
+ * their side), and `resolved` means the case already fixed this specific
+ * amount - in both cases there is nothing left on this invoice for the
+ * report to ask the person to check. A finding whose case is resolved is
+ * a different thing from one nobody has looked at, and showing it as if it
+ * still needed attention would misrepresent what is actually still owed.
+ */
+const VISIBLE_FINDING_STATUSES = ["open", "confirmed_by_user", "contested", "unresolved"] as const;
 
 /**
  * Creates the `anonymous_sessions` row a fresh session id needs before any
@@ -108,6 +136,14 @@ export function withUser(session: Session, db: Db = getUnscopedDb()) {
      * the `/report` route, which also sums this same result for its totals)
      * gets it for free instead of having to remember it itself.
      *
+     * RF-143: `inArray(findings.status, VISIBLE_FINDING_STATUSES)` is the
+     * other half of that same guarantee - see the constant's own comment
+     * for which of the six `findings.status` values still belong on a
+     * report and why. This has to live here, not in a caller, for the exact
+     * reason the shadow filter does: a status once excluded here can never
+     * come back on a reload, no matter which of `findingsForInvoice`'s
+     * callers renders next.
+     *
      * `rules` and `invoiceItems` are joined in even though neither is a
      * user-scoped table of its own (no separate ownership check needed for
      * either): `ruleSpec` is what lets a caller recognise a `confirm`-kind
@@ -142,7 +178,11 @@ export function withUser(session: Session, db: Db = getUnscopedDb()) {
         .from(findings)
         .innerJoin(rules, eq(findings.ruleId, rules.id))
         .leftJoin(invoiceItems, eq(findings.itemId, invoiceItems.id))
-        .where(and(eq(findings.invoiceId, invoiceId), eq(findings.shadow, false)))
+        .where(and(
+          eq(findings.invoiceId, invoiceId),
+          eq(findings.shadow, false),
+          inArray(findings.status, [...VISIBLE_FINDING_STATUSES]),
+        ))
         .orderBy(findings.createdAt);
     },
 
