@@ -9,6 +9,16 @@ export { normalizeDescription } from "./invoice/normalize.js";
 export { validateInvoice, type ValidationResult, type ValidationFailure } from "./invoice/validate.js";
 export { maskCanonical, maskText, containsPii, CNPJ_SHAPE_SOURCE } from "./invoice/mask.js";
 export { runRules, type ActiveRule, type RuleEngineInput } from "./rules/engine.js";
+// A `rules.spec.match`/`notMatch` string is admin-edited configuration
+// (`safe-regex.ts`'s own doc comment) seeded from outside this package —
+// packages/db's seed files are exactly that kind of caller. Exported so
+// whoever writes a `pattern` RuleSpec can verify it is safe (and, via
+// `compileSafePattern`, that it actually matches what they intend) before
+// it ever reaches a `rules` row, instead of only being checkable from
+// inside `packages/core` itself.
+export {
+  assertSafePattern, compileSafePattern, UnsafePatternError,
+} from "./rules/evaluators/safe-regex.js";
 export { TARIFF_FLAGS, type TariffFlag, type ReferenceTariff, type ReferenceFlag } from "./rules/references.js";
 export {
   nextStage, CASE_OUTCOMES,

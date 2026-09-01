@@ -3,11 +3,13 @@ import { seedIssuers } from "./issuers.js";
 import { seedPrompts } from "./prompts.js";
 import { seedDeterministicRules } from "./rules/deterministic.js";
 import { seedSuppressorRules } from "./rules/suppressors.js";
+import { seedLexiconRules } from "./rules/lexicon.js";
 
 export { seedIssuers } from "./issuers.js";
 export { seedPrompts } from "./prompts.js";
 export { seedDeterministicRules } from "./rules/deterministic.js";
 export { seedSuppressorRules } from "./rules/suppressors.js";
+export { seedLexiconRules } from "./rules/lexicon.js";
 
 /**
  * Runs every seed. Called after migrations wherever a database should look
@@ -19,4 +21,5 @@ export async function seedAll(db: Database): Promise<void> {
   await seedPrompts(db);
   await seedDeterministicRules(db);
   await seedSuppressorRules(db);
+  await seedLexiconRules(db);
 }
