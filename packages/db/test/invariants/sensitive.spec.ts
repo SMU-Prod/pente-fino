@@ -344,17 +344,14 @@ describe("INV-006 · never infer or store a sensitive category from an invoice",
   });
 
   // The above is only a meaningful non-finding because there is nothing to
-  // fire — it does not prove the check would catch a sensitive rule that
-  // did reach the engine, because `runRules` currently throws for *any*
-  // non-empty rule set (RF-121's evaluators are still landing in this same
-  // block; see `engine.ts` and `engine.test.ts`'s own
-  // "throws naming E2 and the unevaluated rules" test), so a genuinely
-  // sensitive `ActiveRule` cannot be run through it today without that
-  // unrelated gap masking the result either way. What can be proven today
-  // is that the same detector gating the rows above also covers
-  // `ActiveRule` — the exact shape `runRules` accepts — so a sensitive rule
-  // is caught before it would ever reach the engine, regardless of which
-  // of the two shapes (DB row or engine input) it is inspected in.
+  // fire, not because `runRules` cannot judge yet — Task 4 (E2) landed the
+  // real engine (see `engine.ts`), so a genuinely sensitive `ActiveRule`
+  // could now be run through it end to end. This test still checks the
+  // upstream, cheaper gate instead: the same detector that covers the DB
+  // row shape above also covers `ActiveRule` — the exact shape `runRules`
+  // accepts — so a sensitive rule is caught before it would ever reach the
+  // engine, regardless of which of the two shapes (DB row or engine input)
+  // it is inspected in.
   it("flags a sensitive term inside an ActiveRule's spec too — the exact shape runRules accepts, not just the DB row shape", () => {
     const sensitiveRule: ActiveRule = {
       slug: "probe-engine-boundary",
