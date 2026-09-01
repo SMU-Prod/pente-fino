@@ -20,6 +20,18 @@ export type ReferenceTariff = {
   validTo: string | null; // ISO date, null = still in force
   tusdCentsMwh: number;
   teCentsMwh: number;
+  // RN-040's first named trap (§12.3): ANEEL publishes several rows per
+  // issuer/subgroup/period under different `DscBaseTarifa` values (e.g.
+  // "Tarifa de Aplicação" vs. components like TUSD Fio B on their own).
+  // Only "Tarifa de Aplicação" is the comparable, tax-exclusive all-in
+  // rate RN-040 wants; the `reference` evaluator filters on this field
+  // itself rather than trusting that whatever imported the row already
+  // filtered it, because a wrong base tariff silently produces a false
+  // accusation. Not yet a column on `packages/db`'s `reference_tariffs`
+  // table (the ANEEL import is out of scope for E2 — see the plan's
+  // self-review) — that table will need this column before real data can
+  // flow through this filter in production.
+  dscBaseTarifa: string;
 };
 
 export const TARIFF_FLAGS = ["verde", "amarela", "vermelha_1", "vermelha_2", "escassez"] as const;
