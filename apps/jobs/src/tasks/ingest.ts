@@ -1,15 +1,18 @@
-import { and, eq, notInArray, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, lt, ne, notInArray, or, sql } from "drizzle-orm";
 import { createHash } from "node:crypto";
 import {
   detectIssuer, extractionQuality, MAX_PAGES, maskCanonical, maskText, newId,
   normalizeDescription, runRules, sniffMimeType, validateInvoice,
 } from "@pentefino/core";
+import type { ActiveRule } from "@pentefino/core";
 import type { AiProvider, DocumentReader, ReadDocument, Storage } from "@pentefino/core/ports";
 import type { EventType } from "@pentefino/core";
 // eslint-disable-next-line pentefino/require-with-user -- system job with no user session; writes go through the caller-injected `Database` (deps.db), not a client this module creates itself
 import { schema, type Database } from "@pentefino/db";
 
-const { aiCalls, events, invoiceItems, invoices, issuers, prompts } = schema;
+const {
+  aiCalls, events, findings: findingsTable, invoiceItems, invoices, issuers, prompts, rules,
+} = schema;
 
 export type IngestDeps = {
   db: Database;
@@ -433,23 +436,91 @@ export function createIngestTask(deps: IngestDeps) {
           : eq(invoiceItems.invoiceId, invoiceId),
       );
 
+      // RF-120: the caller's own query - every `active`/`shadow` rule whose
+      // category matches this invoice's category, plus any rule specific to
+      // this exact issuer. The engine's own category filter (`engine.ts`)
+      // refuses a category mismatch too, but that is defence in depth, not
+      // a replacement for this query doing it right in the first place.
+      const ruleRows = await db.select().from(rules).where(and(
+        inArray(rules.status, ["active", "shadow"]),
+        or(
+          and(eq(rules.category, masked.issuer.category), isNull(rules.issuerId)),
+          eq(rules.issuerId, issuerId),
+        ),
+      ));
+      const activeRules: ActiveRule[] = ruleRows.map((row) => ({
+        slug: row.slug,
+        version: row.version,
+        spec: row.spec,
+        confidenceBase: row.confidenceBase,
+        shadow: row.status === "shadow",
+        legalBasis: row.legalBasis,
+        issuerId: row.issuerId,
+        category: row.category,
+      }));
+      // Built from the very rows `activeRules` came from, so every finding
+      // `runRules` returns for a real (non-aggregate) rule is guaranteed to
+      // resolve here - see the "should be unreachable" guard below.
+      const ruleIdByRef = new Map(ruleRows.map((row) => [`${row.slug}@${row.version}`, row.id]));
+
+      // The same issuer's most recent already-analyzed cycle, if any - the
+      // single `previous` invoice a handful of evaluators compare against
+      // (delta.ts's deltas, pattern.ts's `requireRecurrence`).
+      // `EvaluationContext` carries at most one previous invoice, a known
+      // limitation the rules that need it already document (see
+      // lexicon.ts/deterministic.ts's own "1-cycle proxy" comments).
+      const ownerFilter = ownerUserId
+        ? eq(invoices.userId, ownerUserId)
+        : eq(invoices.sessionId, ownerSessionId!);
+      const [previousRow] = await db.select({ canonical: invoices.canonical }).from(invoices)
+        .where(and(
+          eq(invoices.issuerId, issuerId),
+          ownerFilter,
+          eq(invoices.status, "analyzed"),
+          ne(invoices.id, invoiceId),
+          lt(invoices.periodStart, masked.period.start),
+        ))
+        .orderBy(desc(invoices.periodStart))
+        .limit(1);
+
       const findings = runRules({
         invoice: masked,
-        previous: null,
-        rules: [],
+        previous: previousRow?.canonical ?? null,
+        rules: activeRules,
+        // No route persists a user's answer to a `confirm`-kind question
+        // yet (see confirm.ts's own doc comment on answer keying) - every
+        // confirm rule therefore always evaluates as "unanswered" here,
+        // which is the honest state of the world today, not a shortcut
+        // taken by this wiring.
         answers: {},
+        // RN-040/041's ANEEL reference tables have no import pipeline yet,
+        // and `ReferenceTariff.dscBaseTarifa` - the field `reference.ts`'s
+        // own evaluator filters on - is not even a column on
+        // `reference_tariffs` today (see `references.ts`'s own doc comment).
+        // There is nothing honest to load here yet, so this stays empty
+        // rather than faking a shape the schema cannot back.
         references: { tariffs: [], flags: [] },
       });
-      if (findings.length > 0) {
-        throw new Error(`E0 expects no findings; rules arrive in E2 (got ${findings.length})`);
-      }
+
+      // RF-128's `cluster:` aggregate has no backing `rules` row - its
+      // `ruleSlug` is synthetic (see engine.ts's own "Clustering key" doc
+      // comment) and `findings.ruleId` is NOT NULL, FK'd to `rules`. It is
+      // deliberately never persisted here: `/report`'s own `buildAggregates`
+      // (apps/web/app/api/invoices/[id]/report/route.ts) already recomputes
+      // the identical view at read time, from the individually-persisted
+      // member findings' `invoiceItems.section` - so nothing is lost by not
+      // storing the synthetic row a second time under an invented rule
+      // reference. Its members (real, non-aggregate findings) ARE persisted
+      // below like any other finding.
+      const persistableFindings = findings.filter((finding) => !finding.ruleSlug.startsWith("cluster:"));
 
       // Wrapped in a transaction (finding 2): `analyzed` is the one status
       // the guard at the top of this function treats as permanently done,
       // so it is also the one status a crash between the update and the
       // event insert could strand forever, with no retry ever able to add
       // the missing `invoice_analyzed` event. A single transaction makes
-      // the pair all-or-nothing instead.
+      // the invoice, its findings, their events, and `invoice_analyzed`
+      // all land together or not at all.
       await db.transaction(async (tx) => {
         await tx.update(invoices).set({
           status: "analyzed",
@@ -460,6 +531,38 @@ export function createIngestTask(deps: IngestDeps) {
           dueDate: masked.dueDate,
           totalCents: masked.totalCents,
         }).where(eq(invoices.id, invoiceId));
+
+        for (const finding of persistableFindings) {
+          const ruleId = ruleIdByRef.get(`${finding.ruleSlug}@${finding.ruleVersion}`);
+          if (!ruleId) {
+            // `selectApplicableRules` (engine.ts) only ever returns rules
+            // present in its own input, so every non-aggregate finding here
+            // must trace back to one of the rows `ruleIdByRef` was built
+            // from. Reaching this means that invariant broke.
+            throw new Error(
+              `finding_created for ${finding.ruleSlug}@${finding.ruleVersion} has no matching rules row ` +
+              "among the rules loaded for this invoice",
+            );
+          }
+          await tx.insert(findingsTable).values({
+            id: newId("fnd"),
+            invoiceId,
+            itemId: finding.itemId,
+            ruleId,
+            ruleVersion: finding.ruleVersion,
+            confidence: finding.confidence,
+            evidence: finding.evidence,
+            amountCents: finding.amountCents,
+            doubledCents: finding.doubledCents,
+            shadow: finding.shadow,
+          });
+          // The contract `rule-metrics.ts` needs (see its own doc comment):
+          // an event missing either `ruleSlug` or `ruleVersion` is silently
+          // skipped, not thrown on - this is the exact seam that broke once
+          // already between the feedback route and that job (see
+          // apps/jobs/test/feedback-metrics-contract.test.ts).
+          await recordVia(tx, "finding_created", { ruleSlug: finding.ruleSlug, ruleVersion: finding.ruleVersion });
+        }
 
         await recordVia(tx, "invoice_analyzed");
       });

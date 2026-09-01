@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { PgDatabase } from "drizzle-orm/pg-core";
 import { dirname, join } from "node:path";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -8,9 +8,30 @@ import { fileURLToPath } from "node:url";
 import { extractionQuality, newId, type InvoiceCanonical } from "@pentefino/core";
 import { createFixtureAiProvider, createLocalStorage, createUnpdfReader } from "@pentefino/adapters";
 import { createTestDb, schema, type TestDb } from "@pentefino/db/testing";
+import { ensureAnonymousSession, withUser } from "@pentefino/db";
 import { createIngestTask } from "../src/tasks/ingest.js";
+import { createRuleMetricsTask } from "../src/tasks/rule-metrics.js";
 
-const { events, invoiceItems, invoices, issuers } = schema;
+const { events, findings, invoiceItems, invoices, issuers, ruleMetrics, rules } = schema;
+
+/** A minimal, valid `rules` row for tests that wire a real rule into the pipeline. */
+function ruleFixture(overrides: Partial<typeof rules.$inferInsert> = {}) {
+  return {
+    id: newId("rul"),
+    slug: "test-rule",
+    version: 1,
+    category: "telecom" as const,
+    issuerId: null,
+    kind: "pattern" as const,
+    spec: { kind: "pattern" as const, match: "PLANO" },
+    legalBasis: [{ law: "CDC", article: "39, III", effect: "vedada" as const }],
+    confidenceBase: 0.9,
+    status: "active" as const,
+    author: "test",
+    reason: "test fixture",
+    ...overrides,
+  };
+}
 
 // The same hand-built, committed fixtures the unpdf reader's own tests use
 // (packages/adapters/src/reader/unpdf.test.ts) - real, parseable PDFs, not
@@ -152,6 +173,122 @@ describe("ingest task", () => {
     await task()({ invoiceId });
     const rows = await ctx.db.query.findings.findMany();
     expect(rows).toEqual([]);
+  });
+
+  // --- Task 10 (E2): wiring runRules into the pipeline for real, replacing
+  // the hard-coded `rules: []` guard above.
+
+  it("persists a finding when an active rule matches, carrying the firing rule's own ruleId/ruleVersion, " +
+    "and records finding_created with the rule reference rule-metrics.ts needs (ruleSlug + ruleVersion)", async () => {
+    const rule = ruleFixture({ slug: "test-plano-ativa" });
+    await ctx.db.insert(rules).values(rule);
+
+    await task()({ invoiceId });
+
+    const rows = await ctx.db.select().from(findings).where(eq(findings.invoiceId, invoiceId));
+    expect(rows).toHaveLength(1); // only "Plano pós-pago" matches "PLANO", not the CPF line
+    expect(rows[0]?.ruleId).toBe(rule.id);
+    expect(rows[0]?.ruleVersion).toBe(1);
+    expect(rows[0]?.confidence).toBe(0.9);
+    expect(rows[0]?.amountCents).toBe(9000);
+    expect(rows[0]?.shadow).toBe(false);
+    expect(rows[0]?.status).toBe("open");
+
+    const eventRows = await ctx.db.select().from(events)
+      .where(and(eq(events.invoiceId, invoiceId), eq(events.type, "finding_created")));
+    expect(eventRows).toHaveLength(1);
+    expect(eventRows[0]?.payload).toMatchObject({ ruleSlug: "test-plano-ativa", ruleVersion: 1 });
+  });
+
+  it("does not load a rule from a different category into the pipeline (RF-120's own caller-side query, " +
+    "not only the engine's defence-in-depth filter)", async () => {
+    await ctx.db.insert(rules).values(ruleFixture({ slug: "test-plano-card", category: "card" }));
+
+    await task()({ invoiceId });
+
+    const rows = await ctx.db.select().from(findings).where(eq(findings.invoiceId, invoiceId));
+    expect(rows).toEqual([]);
+  });
+
+  it("does not persist RF-128's synthetic cluster: aggregate as its own findings row - findings.ruleId is " +
+    "NOT NULL and FK'd to rules, and a cluster aggregate has no backing rules row (engine.ts's own doc " +
+    "comment) - but does persist its 3+ underlying member findings", async () => {
+    // A section name and match term that collide with nothing the real
+    // seeds (lexicon.ts/deterministic.ts) already ship - "Serviços
+    // Digitais" plus "SVA" would also fire the seeded RN-020 (shadow), which
+    // would cluster separately and double the finding count this test
+    // checks, for a reason that has nothing to do with what it tests.
+    const clusteringCanonical: InvoiceCanonical = {
+      ...canonical,
+      totalCents: 3000,
+      sections: [{
+        name: "Pacotes Extras Teste",
+        items: [
+          { description: "XYZTESTE Turbo", amountCents: 1000 },
+          { description: "XYZTESTE Cinema", amountCents: 1000 },
+          { description: "XYZTESTE Musica", amountCents: 1000 },
+        ],
+      }],
+    };
+    await ctx.db.insert(rules).values(ruleFixture({
+      slug: "test-sva-cluster",
+      spec: { kind: "pattern", sections: ["Pacotes Extras Teste"], match: "XYZTESTE" },
+    }));
+    const clusterTask = createIngestTask({
+      db: ctx.db,
+      storage: createLocalStorage({ root, secret: "s" }),
+      reader: createUnpdfReader(),
+      ai: createFixtureAiProvider({ [fileKey]: clusteringCanonical }),
+    });
+
+    await clusterTask({ invoiceId });
+
+    const rows = await ctx.db.select().from(findings).where(eq(findings.invoiceId, invoiceId));
+    expect(rows).toHaveLength(3);
+    expect(rows.every((r) => r.amountCents === 1000)).toBe(true);
+
+    const eventRows = await ctx.db.select().from(events)
+      .where(and(eq(events.invoiceId, invoiceId), eq(events.type, "finding_created")));
+    expect(eventRows).toHaveLength(3); // one per persisted member, none for the aggregate
+  });
+
+  it("wires a shadow rule's finding all the way through: persisted with shadow=true, invisible to " +
+    "findingsForInvoice (the exact function apps/web's /report route calls, RF-125), and still counted " +
+    "toward `fired` by rule-metrics - the whole point of shadow mode", async () => {
+    const sessionId = newId("ses");
+    await ensureAnonymousSession(sessionId, new Date(Date.now() + 24 * 60 * 60 * 1000), ctx.db);
+    const shadowInvoiceId = newId("inv");
+    await ctx.db.insert(invoices).values({
+      id: shadowInvoiceId, issuerId, sessionId, contentHash: "shadow-test", source: "pdf_text",
+      status: "queued", fileKey,
+    });
+    const rule = ruleFixture({ slug: "test-plano-shadow", status: "shadow" });
+    await ctx.db.insert(rules).values(rule);
+
+    await task()({ invoiceId: shadowInvoiceId });
+
+    const rows = await ctx.db.select().from(findings).where(eq(findings.invoiceId, shadowInvoiceId));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.shadow).toBe(true);
+
+    const scoped = withUser({ sessionId }, ctx.db);
+    expect(await scoped.findingsForInvoice(shadowInvoiceId)).toEqual([]);
+
+    const eventRows = await ctx.db.select().from(events)
+      .where(and(eq(events.invoiceId, shadowInvoiceId), eq(events.type, "finding_created")));
+    expect(eventRows).toHaveLength(1);
+    expect(eventRows[0]?.payload).toMatchObject({ ruleSlug: "test-plano-shadow", ruleVersion: 1 });
+
+    const day = new Date("2026-08-31T00:00:00.000Z");
+    await ctx.db.update(events).set({ occurredAt: day }).where(eq(events.invoiceId, shadowInvoiceId));
+    await createRuleMetricsTask({ db: ctx.db })({ now: day.toISOString() });
+
+    const [metricsRow] = await ctx.db.select().from(ruleMetrics).where(and(
+      eq(ruleMetrics.ruleSlug, "test-plano-shadow"),
+      eq(ruleMetrics.ruleVersion, 1),
+      eq(ruleMetrics.day, "2026-08-31"),
+    ));
+    expect(metricsRow?.fired).toBe(1);
   });
 
   it("sends an invoice that fails validation to needs_review (RF-108)", async () => {

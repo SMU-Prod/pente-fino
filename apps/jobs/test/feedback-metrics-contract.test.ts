@@ -8,14 +8,17 @@ import { createRuleMetricsTask } from "../src/tasks/rule-metrics.js";
 const { findings, invoices, issuers, ruleMetrics, rules } = schema;
 
 /**
- * The seam between the feedback endpoint and the metrics job.
+ * The seam between the feedback endpoint / the ingest pipeline and the
+ * metrics job.
  *
- * `rule-metrics.ts` attributes a dismissal to a rule by `ruleSlug` and
- * `ruleVersion` in the event payload, and skips any event missing either.
- * The feedback route is the only thing that writes those events. Each side
- * was built and tested on its own and each was correct on its own; together
- * they did not work, because the route recorded no rule reference and the
- * job silently dropped every event it wrote.
+ * `rule-metrics.ts` attributes a firing, dismissal or confirmation to a rule
+ * by `ruleSlug` and `ruleVersion` in the event payload, and skips any event
+ * missing either. The feedback route and the ingest pipeline
+ * (`apps/jobs/src/tasks/ingest.ts`) are the only things that write those
+ * events. Each side of the feedback/dismissal seam was built and tested on
+ * its own and each was correct on its own; together they did not work,
+ * because the route recorded no rule reference and the job silently dropped
+ * every event it wrote.
  *
  * What that cost is worse than a lost statistic. With `dismissed` stuck at
  * zero, RF-126's promotion test — `dismissed / fired < 0,15` — is satisfied
@@ -24,9 +27,12 @@ const { findings, invoices, issuers, ruleMetrics, rules } = schema;
  * to. The automatic brake becomes an automatic accelerator, and shadow mode
  * stops being a filter and becomes a delay.
  *
- * So this file tests the two sides against each other rather than each
- * alone: write feedback the way the route writes it, run the job the way
- * the scheduler runs it, and assert the count actually moved.
+ * `finding_created` is the same contract's third leg — RF-126/127's ratio has
+ * no meaning at all if `fired` itself is silently zero — so this file tests
+ * both the feedback route's side and the ingest pipeline's side against
+ * `rule-metrics.ts`: write the event the way each producer actually writes
+ * it, run the job the way the scheduler runs it, and assert the count
+ * actually moved.
  */
 
 const DAY = new Date("2026-08-31T00:00:00.000Z");
@@ -36,6 +42,7 @@ const RULE_VERSION = 1;
 
 let ctx: TestDb;
 let sessionId: string;
+let invoiceId: string;
 let findingId: string;
 
 beforeEach(async () => {
@@ -50,7 +57,7 @@ beforeEach(async () => {
     .where(eq(issuers.slug, "claro-movel"));
   if (!issuer) throw new Error("expected createTestDb to seed the claro-movel issuer");
 
-  const invoiceId = await scoped.insertInvoice({
+  invoiceId = await scoped.insertInvoice({
     contentHash: "contract-hash", source: "pdf_text", issuerId: issuer.id,
   });
 
@@ -115,6 +122,46 @@ async function recordFeedbackLikeTheRoute(action: "dismiss" | "confirm") {
   // aggregates so the assertion does not depend on the wall clock.
   await ctx.db.update(schema.events).set({ occurredAt: DAY }).where(eq(schema.events.invoiceId, owned.invoiceId));
 }
+
+/**
+ * Records `finding_created` exactly as `apps/jobs/src/tasks/ingest.ts` does:
+ * `{ ruleSlug, ruleVersion }`, scoped to the invoice's own owner and stamped
+ * on the invoice. Production writes this row through a system-scoped
+ * `db.insert(events)` (INV-008's visible `eslint-disable`, not `withUser` —
+ * there is no session inside a background job), but the row it produces has
+ * the exact same shape `rule-metrics.ts` reads regardless of which path
+ * wrote it, so `scoped.recordEvent` here is a faithful stand-in.
+ */
+async function recordFindingCreatedLikeIngest(payload: Record<string, unknown> = {
+  ruleSlug: RULE_SLUG, ruleVersion: RULE_VERSION,
+}) {
+  const scoped = withUser({ sessionId }, ctx.db);
+  await scoped.recordEvent("finding_created", payload, invoiceId);
+  // recordEvent stamps occurredAt with now(); pin it to the day the job
+  // aggregates so the assertion does not depend on the wall clock.
+  await ctx.db.update(schema.events).set({ occurredAt: DAY }).where(eq(schema.events.invoiceId, invoiceId));
+}
+
+describe("ingest pipeline to rule-metrics contract (finding_created)", () => {
+  it("counts a finding the ingest pipeline recorded", async () => {
+    await recordFindingCreatedLikeIngest();
+    await createRuleMetricsTask({ db: ctx.db })({ now: DAY.toISOString() });
+    expect((await metricsRow())?.fired).toBe(1);
+  });
+
+  it("would leave fired at zero if the rule reference were dropped - the same failure mode this file " +
+    "already covers for finding_dismissed, but for the leg RF-126/127's whole ratio depends on: a rule " +
+    "that never registers a single `fired` can never even reach the 30/50-firing thresholds those checks " +
+    "gate on, so a silently-empty ruleSlug/ruleVersion here is not a smaller signal, it is a rule that " +
+    "never gets evaluated for promotion or pause at all", async () => {
+    await recordFindingCreatedLikeIngest({});
+
+    await createRuleMetricsTask({ db: ctx.db })({ now: DAY.toISOString() });
+
+    const row = await metricsRow();
+    expect(row?.fired ?? 0).toBe(0);
+  });
+});
 
 describe("feedback endpoint to rule-metrics contract", () => {
   it("carries the rule reference the metrics job needs", async () => {
