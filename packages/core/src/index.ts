@@ -1,4 +1,4 @@
-export { newId, type IdPrefix } from "./id.js";
+export { newId, newPublicToken, type IdPrefix } from "./id.js";
 export { EVENTS, type EventType } from "./events.js";
 export { InvoiceCanonical, CATEGORIES, type Category, type InvoiceItem } from "./invoice/canonical.js";
 export { RULE_KINDS, type RuleKind, type RuleSpec, type LegalRef } from "./rules/spec.js";

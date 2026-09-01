@@ -22,6 +22,13 @@
       "when": 1788280108087,
       "tag": "0002_flippant_vivisector",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1788282675805,
+      "tag": "0003_add_invoices_public_token",
+      "breakpoints": true
     }
   ]
 }
