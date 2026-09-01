@@ -5,6 +5,10 @@ export { RULE_KINDS, type RuleKind, type RuleSpec, type LegalRef } from "./rules
 export type { Finding } from "./rules/finding.js";
 export { STAGES, type Stage, type Playbook } from "./cases/playbook.js";
 export { ContestDocument } from "./documents/contest.js";
+export {
+  assembleContest, MANDATORY_SCRIPT_ITEMS,
+  type AssembleContestInput, type AssembledContest, type RecordedProtocol,
+} from "./documents/assemble.js";
 export { normalizeDescription } from "./invoice/normalize.js";
 export { validateInvoice, type ValidationResult, type ValidationFailure } from "./invoice/validate.js";
 export { maskCanonical, maskText, containsPii, CNPJ_SHAPE_SOURCE } from "./invoice/mask.js";
