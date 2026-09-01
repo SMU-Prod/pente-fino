@@ -1,3 +1,5 @@
+import "./globals.css";
+
 export const metadata = { title: "Pente-fino", description: "Auditor de fatura" };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

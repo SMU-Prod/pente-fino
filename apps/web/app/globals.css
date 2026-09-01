@@ -1,0 +1,42 @@
+/*
+ * PRD §13.1/§13.3. `@pentefino/ui/tokens.css` (imported once, here, from the
+ * root layout) declares the theme's custom properties for both light and
+ * dark and re-asserts light on `prefers-color-scheme: light`; everything
+ * below only consumes those variables, it never redeclares a color.
+ */
+@import "@pentefino/ui/tokens.css";
+
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
+html {
+  color-scheme: light dark;
+}
+
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-body);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* §13.3: visible focus on every interactive element - the one rule that
+   applies everywhere at once, so a focus ring is never something a single
+   component has to remember to add for itself. */
+a:focus-visible,
+button:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid var(--mark);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+/* §13.3: `prefers-reduced-motion` respected - motion is opt-in, not
+   opt-out. Nothing in this app animates unless this query allows it. */
+@media (prefers-reduced-motion: no-preference) {
+  .motion-safe-fade {
+    transition: opacity 180ms ease, transform 180ms ease;
+  }
+}
