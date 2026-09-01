@@ -310,3 +310,36 @@ describe("GET /api/card/[token]", () => {
     });
   });
 });
+
+describe("the card's cache policy does not outlive its token", () => {
+  // `next/og` is mocked in this file, so the real Response never exists here —
+  // assert on the options the route hands it, the same way the payload tests
+  // do. Asserting on `response.headers` would pass vacuously: the mock returns
+  // a Response with no cache header at all, so "does not contain immutable"
+  // is trivially true whether or not the route sets anything.
+  it("does not accept next/og's one-year immutable default", async () => {
+    const { publicToken } = await seedAnalyzedInvoice();
+    await GET(request(publicToken), ctxFor(publicToken));
+
+    const cacheControl = (capturedOptions as { headers?: Record<string, string> })
+      ?.headers?.["Cache-Control"];
+    expect(cacheControl).toBeTypeOf("string");
+    expect(cacheControl).not.toMatch(/immutable/);
+    expect(cacheControl).not.toMatch(/max-age=31536000/);
+  });
+
+  it("bounds how long a revoked card can still be served", async () => {
+    const { publicToken } = await seedAnalyzedInvoice();
+    await GET(request(publicToken), ctxFor(publicToken));
+
+    const cacheControl = (capturedOptions as { headers?: Record<string, string> })
+      ?.headers?.["Cache-Control"] ?? "";
+    const maxAge = Number(/max-age=(\d+)/.exec(cacheControl)?.[1]);
+
+    // RF-146 makes the token revocable. A cache lifetime measured in hours
+    // would mean revocation takes effect everywhere except where the image
+    // actually went.
+    expect(maxAge).toBeGreaterThan(0);
+    expect(maxAge).toBeLessThanOrEqual(600);
+  });
+});

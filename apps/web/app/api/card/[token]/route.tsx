@@ -232,5 +232,21 @@ export async function GET(_request: Request, ctx: { params: Promise<{ token: str
   if (!data) return apiError("not_found");
 
   const tree = buildCardTree(buildCardCopy(data));
-  return new ImageResponse(tree, { width: WIDTH, height: HEIGHT });
+  return new ImageResponse(tree, {
+    width: WIDTH,
+    height: HEIGHT,
+    // `next/og` defaults to `public, immutable, no-transform, max-age=31536000`.
+    // For a card minted from a real person's invoice that default is wrong in
+    // the one direction that matters: RF-146 makes the token revocable, and a
+    // year of immutable CDN caching means revoking it stops new fetches while
+    // every cache that already has the image keeps serving it — so revocation
+    // works everywhere except where the image actually went.
+    //
+    // Five minutes keeps the benefit that matters (a card is shared, and
+    // fetched by every platform that unfurls the link, in its first minutes)
+    // and bounds how long a revoked card survives. `stale-while-revalidate`
+    // covers the burst without extending that bound, since a revalidation
+    // against a revoked token returns the 404 the person asked for.
+    headers: { "Cache-Control": "public, max-age=300, stale-while-revalidate=60" },
+  });
 }
