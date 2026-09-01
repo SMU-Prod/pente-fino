@@ -17,13 +17,27 @@ const BANNED_TERMS =
 
 // Anchored to the start: a column or identifier *named* one of these things
 // is banned, regardless of what follows (`commissionPercent`,
-// `successFeeCents`, `percentualDevido`).
+// `successFeeCents`, `percentualDevido`). `percent` belongs here because
+// PRD §3 names it verbatim: a billing column called `percent_something` is
+// the shape this inviolable forbids.
 const BANNED = new RegExp(`^(${BANNED_TERMS})`, "i");
 
-// Unanchored, word-boundary form for scanning free-form source text (an
-// identifier is not the only place this vocabulary could appear — see the
-// second check below).
-const BANNED_IN_TEXT = new RegExp(`\\b(${BANNED_TERMS})`, "i");
+// The free-text scan is deliberately NARROWER than the column-name check,
+// and this is the interesting part of the file.
+//
+// `percent` is ordinary vocabulary. A rules evaluator explaining that its
+// tolerance is "a percentage of the expected value" has nothing to do with
+// taking a cut of what a user recovers, and the first version of this check
+// flagged exactly that — a comment in `rules/evaluators/arithmetic.ts` about
+// tolerance arithmetic — turning an inviolable into noise a developer learns
+// to route around. An invariant that cries wolf stops being enforcement.
+//
+// So the text scan looks only for the commission *concept*, in both
+// languages. The column-name check above still carries the full list,
+// because there `percent` is a name and not a sentence.
+const COMMISSION_CONCEPT =
+  "commission|success_?fee|comissao|taxa[ _]?de[ _]?exito";
+const BANNED_IN_TEXT = new RegExp(`\\b(${COMMISSION_CONCEPT})`, "i");
 
 // Unicode "Combining Diacritical Marks" block: NFD decomposition splits an
 // accented letter like "ã" or "ê" into a plain letter followed by one of
