@@ -11,7 +11,7 @@ CREATE TABLE "agent_proposals" (
 	"decision_reason" text,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
-	CONSTRAINT "agent_proposals_kind_values" CHECK ("agent_proposals"."kind" in ('adjust_confidence','pause_rule','promote_variant','new_rule_draft','prompt_edit')),
+	CONSTRAINT "agent_proposals_kind_values" CHECK ("agent_proposals"."kind" in ('adjust_confidence','pause_rule','promote_variant','new_rule_draft','prompt_edit','promote_rule')),
 	CONSTRAINT "agent_proposals_status_values" CHECK ("agent_proposals"."status" in ('pending','approved','rejected'))
 );
 --> statement-breakpoint
@@ -109,6 +109,18 @@ CREATE TABLE "cases" (
 	CONSTRAINT "cases_outcome_confirmed_by_values" CHECK ("cases"."outcome_confirmed_by" in ('diff','user','none'))
 );
 --> statement-breakpoint
+CREATE TABLE "claim_codes" (
+	"id" text PRIMARY KEY NOT NULL,
+	"email" text NOT NULL,
+	"session_id" text NOT NULL,
+	"code_hash" text NOT NULL,
+	"attempts" integer DEFAULT 0 NOT NULL,
+	"consumed_at" timestamp with time zone,
+	"expires_at" timestamp with time zone NOT NULL,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
+);
+--> statement-breakpoint
 CREATE TABLE "entitlements" (
 	"id" text PRIMARY KEY NOT NULL,
 	"user_id" text NOT NULL,
@@ -183,8 +195,10 @@ CREATE TABLE "invoices" (
 	"file_expires_at" timestamp with time zone,
 	"canonical" jsonb,
 	"masked" boolean DEFAULT false NOT NULL,
+	"public_token" text,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
+	CONSTRAINT "invoices_public_token_unique" UNIQUE("public_token"),
 	CONSTRAINT "invoices_source_values" CHECK ("invoices"."source" in ('pdf_text','pdf_vision','photo','csv','email')),
 	CONSTRAINT "invoices_status_values" CHECK ("invoices"."status" in ('queued','extracting','validating','analyzed','needs_review','failed'))
 );
@@ -196,6 +210,7 @@ CREATE TABLE "issuers" (
 	"display_name" text NOT NULL,
 	"cnpj" text,
 	"aliases" jsonb DEFAULT '[]'::jsonb,
+	"sections" jsonb DEFAULT '[]'::jsonb,
 	"playbook" jsonb,
 	"status" text DEFAULT 'active' NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
@@ -315,6 +330,7 @@ ALTER TABLE "case_protocols" ADD CONSTRAINT "case_protocols_case_id_cases_id_fk"
 ALTER TABLE "cases" ADD CONSTRAINT "cases_user_id_users_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "cases" ADD CONSTRAINT "cases_invoice_id_invoices_id_fk" FOREIGN KEY ("invoice_id") REFERENCES "public"."invoices"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "cases" ADD CONSTRAINT "cases_issuer_id_issuers_id_fk" FOREIGN KEY ("issuer_id") REFERENCES "public"."issuers"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "claim_codes" ADD CONSTRAINT "claim_codes_session_id_anonymous_sessions_id_fk" FOREIGN KEY ("session_id") REFERENCES "public"."anonymous_sessions"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "entitlements" ADD CONSTRAINT "entitlements_user_id_users_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "findings" ADD CONSTRAINT "findings_invoice_id_invoices_id_fk" FOREIGN KEY ("invoice_id") REFERENCES "public"."invoices"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "findings" ADD CONSTRAINT "findings_item_id_invoice_items_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."invoice_items"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
@@ -327,6 +343,7 @@ ALTER TABLE "rules" ADD CONSTRAINT "rules_issuer_id_issuers_id_fk" FOREIGN KEY (
 ALTER TABLE "seo_pages" ADD CONSTRAINT "seo_pages_issuer_id_issuers_id_fk" FOREIGN KEY ("issuer_id") REFERENCES "public"."issuers"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 CREATE UNIQUE INDEX "agg_uniq" ON "aggregates" USING btree ("issuer_id","normalized_desc","period");--> statement-breakpoint
 CREATE INDEX "cases_next_deadline" ON "cases" USING btree ("next_deadline_at") WHERE "cases"."stage" <> 'closed';--> statement-breakpoint
+CREATE INDEX "claim_codes_email_created" ON "claim_codes" USING btree ("email","created_at");--> statement-breakpoint
 CREATE INDEX "entitlements_user" ON "entitlements" USING btree ("user_id");--> statement-breakpoint
 CREATE INDEX "events_case_time" ON "events" USING btree ("case_id","occurred_at");--> statement-breakpoint
 CREATE INDEX "events_type_time" ON "events" USING btree ("type","occurred_at");--> statement-breakpoint

@@ -5,29 +5,8 @@
     {
       "idx": 0,
       "version": "7",
-      "when": 1788116032562,
-      "tag": "0000_init",
-      "breakpoints": true
-    },
-    {
-      "idx": 1,
-      "version": "7",
-      "when": 1788170309750,
-      "tag": "0001_wet_imperial_guard",
-      "breakpoints": true
-    },
-    {
-      "idx": 2,
-      "version": "7",
-      "when": 1788280108087,
-      "tag": "0002_flippant_vivisector",
-      "breakpoints": true
-    },
-    {
-      "idx": 3,
-      "version": "7",
-      "when": 1788282795148,
-      "tag": "0003_clammy_synch",
+      "when": 1788284217314,
+      "tag": "0000_superb_angel",
       "breakpoints": true
     }
   ]

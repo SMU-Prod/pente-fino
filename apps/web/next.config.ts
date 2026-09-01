@@ -1,9 +1,13 @@
 import type { NextConfig } from "next";
 
 const config: NextConfig = {
+<<<<<<< HEAD
   transpilePackages: [
     "@pentefino/core", "@pentefino/db", "@pentefino/adapters", "@pentefino/ai", "@pentefino/jobs", "@pentefino/ui",
   ],
+=======
+  transpilePackages: ["@pentefino/core", "@pentefino/db", "@pentefino/adapters", "@pentefino/ai", "@pentefino/jobs", "@pentefino/ui"],
+>>>>>>> worktree-agent-a40c28bf0cdd55e27
 
   // Every workspace package (and this app's own lib/*) writes relative
   // imports with an explicit ".js" extension pointing at a ".ts" source

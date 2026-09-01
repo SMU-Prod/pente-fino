@@ -18,6 +18,7 @@ describe("the public entry point", () => {
   it("exports every symbol a consumer outside the package relies on", () => {
     const expected = [
       "newId",
+      "newPublicToken",
       "EVENTS",
       "InvoiceCanonical",
       "CATEGORIES",

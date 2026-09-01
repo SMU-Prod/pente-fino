@@ -253,4 +253,28 @@ describe("withUser", () => {
     const scoped = withUser({ sessionId }, ctx.db);
     expect(await scoped.cases()).toHaveLength(0);
   });
+
+  // --- RF-145/RF-146: a shareable public token is minted alongside every
+  // invoice, the same way its id is — so a card (Task 5) or the future
+  // `/l/[token]` page (Task 6) always has one to address, without a second
+  // write path that could forget to set it.
+
+  it("stamps a public token on every new invoice", async () => {
+    const scoped = withUser({ userId: alice }, ctx.db);
+    const invoiceId = await scoped.insertInvoice({ contentHash: "tok-1", source: "pdf_text" });
+
+    const [row] = await ctx.db.select().from(invoices).where(eq(invoices.id, invoiceId));
+    expect(row?.publicToken).toEqual(expect.any(String));
+    expect(row?.publicToken).toHaveLength(32);
+  });
+
+  it("gives two invoices two different public tokens", async () => {
+    const scoped = withUser({ userId: alice }, ctx.db);
+    const firstId = await scoped.insertInvoice({ contentHash: "tok-2a", source: "pdf_text" });
+    const secondId = await scoped.insertInvoice({ contentHash: "tok-2b", source: "pdf_text" });
+
+    const [first] = await ctx.db.select().from(invoices).where(eq(invoices.id, firstId));
+    const [second] = await ctx.db.select().from(invoices).where(eq(invoices.id, secondId));
+    expect(first?.publicToken).not.toBe(second?.publicToken);
+  });
 });

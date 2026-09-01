@@ -1,5 +1,5 @@
 import { and, desc, eq } from "drizzle-orm";
-import { newId, type EventType } from "@pentefino/core";
+import { newId, newPublicToken, type EventType } from "@pentefino/core";
 import { getUnscopedDb } from "./client.js";
 import { anonymousSessions, cases, events, findings, invoiceItems, invoices, issuers, rules } from "./schema.js";
 
@@ -93,6 +93,10 @@ export function withUser(session: Session, db: Db = getUnscopedDb()) {
         id, ...values,
         ...(userId ? { userId } : { sessionId }),
         status: "queued",
+        // RF-145/RF-146: minted alongside the id itself, not lazily on first
+        // share - see the doc comment on `invoices.publicToken` in
+        // schema.ts for why this is a separate value from `id`.
+        publicToken: newPublicToken(),
       });
       return id;
     },

@@ -1,5 +1,5 @@
 {
-  "id": "5e3f2ca6-82e3-41d5-a29b-07a17def418b",
+  "id": "50152a28-54f4-46fa-b497-c6a9e807d821",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -80,7 +80,7 @@
       "checkConstraints": {
         "agent_proposals_kind_values": {
           "name": "agent_proposals_kind_values",
-          "value": "\"agent_proposals\".\"kind\" in ('adjust_confidence','pause_rule','promote_variant','new_rule_draft','prompt_edit')"
+          "value": "\"agent_proposals\".\"kind\" in ('adjust_confidence','pause_rule','promote_variant','new_rule_draft','prompt_edit','promote_rule')"
         },
         "agent_proposals_status_values": {
           "name": "agent_proposals_status_values",
@@ -774,6 +774,112 @@
       },
       "isRLSEnabled": false
     },
+    "public.claim_codes": {
+      "name": "claim_codes",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "email": {
+          "name": "email",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "session_id": {
+          "name": "session_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "code_hash": {
+          "name": "code_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "attempts": {
+          "name": "attempts",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "consumed_at": {
+          "name": "consumed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "claim_codes_email_created": {
+          "name": "claim_codes_email_created",
+          "columns": [
+            {
+              "expression": "email",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "claim_codes_session_id_anonymous_sessions_id_fk": {
+          "name": "claim_codes_session_id_anonymous_sessions_id_fk",
+          "tableFrom": "claim_codes",
+          "tableTo": "anonymous_sessions",
+          "columnsFrom": [
+            "session_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
     "public.entitlements": {
       "name": "entitlements",
       "schema": "",
@@ -1392,6 +1498,12 @@
           "notNull": true,
           "default": false
         },
+        "public_token": {
+          "name": "public_token",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -1499,7 +1611,15 @@
         }
       },
       "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
+      "uniqueConstraints": {
+        "invoices_public_token_unique": {
+          "name": "invoices_public_token_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "public_token"
+          ]
+        }
+      },
       "policies": {},
       "checkConstraints": {
         "invoices_source_values": {
@@ -1549,6 +1669,13 @@
         },
         "aliases": {
           "name": "aliases",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false,
+          "default": "'[]'::jsonb"
+        },
+        "sections": {
+          "name": "sections",
           "type": "jsonb",
           "primaryKey": false,
           "notNull": false,

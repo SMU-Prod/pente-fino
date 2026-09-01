@@ -127,6 +127,18 @@ export const invoices = pgTable("invoices", {
   fileExpiresAt: timestamp("file_expires_at", { withTimezone: true }),
   canonical: jsonb("canonical").$type<InvoiceCanonical>(),
   masked: boolean("masked").notNull().default(false),
+  // RF-145's shareable card and RF-146's `/l/[token]` public laudo page are
+  // both, at bottom, the same access-control question: does whoever holds
+  // this string get to see this invoice's anonymised public view? One
+  // column answers it for both rather than each minting its own secret.
+  // Deliberately not the invoice's own `id`: that value is a `newId("inv")`
+  // and already appears, unguarded, in every authenticated route, log line
+  // and event this invoice touches - fine for a resource id, wrong for a
+  // bearer capability. `publicToken` is generated once per invoice
+  // (`newPublicToken()`, see `with-user.ts#insertInvoice`) and is nullable
+  // so revocation (RF-146: "revogável") is a single `UPDATE ... SET
+  // public_token = NULL`, after which both public surfaces 404 uniformly.
+  publicToken: text("public_token").unique(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => ({
