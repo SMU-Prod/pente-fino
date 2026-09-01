@@ -65,7 +65,19 @@ export async function POST(request: Request, ctx: { params: Promise<{ id: string
   const owned = await scoped.setFindingFeedback(id, STATUS_BY_ACTION[action]);
   if (!owned) return apiError("not_found");
 
-  await scoped.recordEvent(EVENT_BY_ACTION[action], answer === undefined ? {} : { answer }, owned.invoiceId);
+  // `ruleSlug` and `ruleVersion` are not decoration: rule-metrics.ts skips
+  // any feedback event missing either, so without them `dismissed` stays at
+  // zero and RF-126 promotes every shadow rule on its 30th firing no matter
+  // how many people rejected it.
+  await scoped.recordEvent(
+    EVENT_BY_ACTION[action],
+    {
+      ruleSlug: owned.ruleSlug,
+      ruleVersion: owned.ruleVersion,
+      ...(answer === undefined ? {} : { answer }),
+    },
+    owned.invoiceId,
+  );
 
   return Response.json({ ok: true });
 }

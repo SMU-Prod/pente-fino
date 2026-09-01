@@ -152,11 +152,27 @@ export function withUser(session: Session, db: Db = getUnscopedDb()) {
      * from one that does not exist at all: both return `null`, so the
      * caller (and therefore the HTTP response) can never learn which case
      * it was (INV-008).
+     *
+     * Returns the rule that produced the finding along with the invoice,
+     * because the caller has to put `ruleSlug` and `ruleVersion` into the
+     * event it records. `rule-metrics.ts` attributes a dismissal to a rule
+     * by exactly those two fields and SKIPS any event missing either — so
+     * an event without them is not a smaller signal, it is no signal. That
+     * matters more than it looks: with `dismissed` stuck at zero, RF-126's
+     * promotion test (`dismissed / fired < 0,15`) is satisfied by every
+     * rule forever, and the shadow period stops being a filter and becomes
+     * a 30-firing delay before anything at all goes live.
      */
     async setFindingFeedback(findingId: string, status: "confirmed_by_user" | "dismissed_by_user") {
-      const [owned] = await db.select({ id: findings.id, invoiceId: findings.invoiceId })
+      const [owned] = await db.select({
+        id: findings.id,
+        invoiceId: findings.invoiceId,
+        ruleSlug: rules.slug,
+        ruleVersion: findings.ruleVersion,
+      })
         .from(findings)
         .innerJoin(invoices, eq(findings.invoiceId, invoices.id))
+        .innerJoin(rules, eq(findings.ruleId, rules.id))
         .where(and(eq(findings.id, findingId), ownsInvoice));
       if (!owned) return null;
       await db.update(findings).set({ status }).where(eq(findings.id, findingId));
