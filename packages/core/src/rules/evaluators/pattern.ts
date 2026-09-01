@@ -1,4 +1,5 @@
 import { normalizeDescription } from "../../invoice/normalize.js";
+import { compileSafePattern } from "./safe-regex.js";
 import { computeDoubledCents, formatCentsBRL } from "./shared.js";
 import type { Finding } from "../finding.js";
 import type { Evaluator } from "./types.js";
@@ -14,6 +15,14 @@ import type { Evaluator } from "./types.js";
  * against `normalizeDescription(item.description)` (RF-122) - the already
  * upper-cased, accent-stripped, number-stripped form - never the raw text.
  * `notMatch` excludes an item even when `match` also matched it.
+ *
+ * Both are compiled through `compileSafePattern` (see `safe-regex.ts`),
+ * never `new RegExp` directly: `spec.match`/`spec.notMatch` are admin-
+ * authored configuration, same as `threshold`/`arithmetic`'s expressions,
+ * and a pathological pattern can hang the ingest worker on an ordinary
+ * item description just as effectively as `eval` could execute arbitrary
+ * code - not remote code execution, but the same author, the same lack of
+ * review, and the same "close it before it ships" answer.
  *
  * ## `valueRange` is inclusive on both ends (deliberate decision)
  *
@@ -56,8 +65,8 @@ export const pattern: Evaluator = (rule, ctx) => {
   }
   const spec = rule.spec;
 
-  const matchRe = new RegExp(spec.match);
-  const notMatchRe = spec.notMatch === undefined ? null : new RegExp(spec.notMatch);
+  const matchRe = compileSafePattern(spec.match);
+  const notMatchRe = spec.notMatch === undefined ? null : compileSafePattern(spec.notMatch);
 
   const previousDescriptions =
     ctx.previous === null

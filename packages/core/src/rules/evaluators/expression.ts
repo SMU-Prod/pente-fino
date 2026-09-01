@@ -92,6 +92,14 @@ import type { EvaluationContext } from "./types.js";
  *   data. Division by zero is folded into this same "missing" case rather
  *   than produced as `Infinity`, for the same reason: `Infinity > x` would
  *   otherwise satisfy almost any threshold by accident.
+ * - A result that is **present but non-finite** (`Infinity`, `-Infinity`,
+ *   `NaN` - from a literal so large it overflows a double, or from
+ *   arithmetic overflow on fields that were genuinely present) is neither
+ *   of the above: not missing, and not a fixed defect independent of the
+ *   invoice, but a broken computation on real data. `evaluateExpression`
+ *   throws for it, for the same reason division-by-zero is folded into
+ *   "missing" above - an unguarded `Infinity` would satisfy almost any
+ *   threshold and fire on every invoice forever.
  */
 
 export class ExpressionError extends Error {}
@@ -150,7 +158,11 @@ function tokenize(source: string): Token[] {
       while (j < source.length && /[0-9.]/.test(source[j]!)) j++;
       const text = source.slice(i, j);
       const value = Number(text);
-      if (Number.isNaN(value)) {
+      if (!Number.isFinite(value)) {
+        // Catches both a malformed literal ("1.2.3" -> NaN) and one that is
+        // syntactically fine but overflows a double ("1" followed by ~310
+        // digits -> Infinity) - the latter fits comfortably under
+        // MAX_SOURCE_LENGTH, so length alone would not have caught it.
         throw new ExpressionError(`invalid number "${text}"`);
       }
       tokens.push({ kind: "number", value });
@@ -445,5 +457,17 @@ export function evaluateNode(node: ExprNode, ctx: EvaluationContext): number | u
 
 /** Parses and evaluates `source` against `ctx` in one call. */
 export function evaluateExpression(source: string, ctx: EvaluationContext): number | undefined {
-  return evaluateNode(parseExpression(source), ctx);
+  const result = evaluateNode(parseExpression(source), ctx);
+  if (result !== undefined && !Number.isFinite(result)) {
+    // `undefined` (missing data) is left alone - that is the normal
+    // "produce no finding" signal. A *defined* non-finite result (Infinity,
+    // -Infinity or NaN) can only come from arithmetic overflow on data that
+    // genuinely was present (e.g. multiplying two large-but-finite fields),
+    // and is not safe to compare: `Infinity > x` would satisfy almost any
+    // threshold and fire on every invoice forever, for no reason any user
+    // action caused. Treated as loudly as an unknown field, not silently
+    // as missing data.
+    throw new ExpressionError(`expression evaluated to a non-finite result (${result})`);
+  }
+  return result;
 }

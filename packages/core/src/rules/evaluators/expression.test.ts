@@ -141,6 +141,38 @@ describe("evaluateExpression: field lookup against an invoice", () => {
   });
 });
 
+describe("non-finite results are rejected loudly, never silently accepted", () => {
+  it("rejects a numeric literal so large it overflows to Infinity, at parse time", () => {
+    // 310 digits comfortably clears Number.MAX_VALUE (~1.8e308) while
+    // staying well under the 500-character source cap, so the length cap
+    // alone would not have caught this.
+    const hugeLiteral = "1".repeat(310);
+    expect(hugeLiteral.length).toBeLessThan(500);
+    expect(() => parseExpression(hugeLiteral)).toThrow(ExpressionError);
+    expect(() => parseExpression(hugeLiteral)).toThrow(/invalid number/);
+  });
+
+  it("rejects an arithmetic overflow to Infinity on fields that were genuinely present", () => {
+    // Each field value is itself a perfectly ordinary finite number; only
+    // their product overflows. Missing-data handling must not swallow this
+    // - it is not "the invoice lacks a field", it is "the rule's own
+    // arithmetic broke", and must not be allowed to satisfy any threshold.
+    const ctx = ctxWith({ totalCents: 1e200 });
+    expect(() => evaluateExpression("total * total", ctx)).toThrow(ExpressionError);
+    expect(() => evaluateExpression("total * total", ctx)).toThrow(/non-finite/);
+  });
+
+  it("rejects a NaN produced by Infinity arithmetic (Infinity - Infinity)", () => {
+    const ctx = ctxWith({ totalCents: 1e200 });
+    expect(() => evaluateExpression("total * total - total * total", ctx)).toThrow(/non-finite/);
+  });
+
+  it("does not confuse this with the ordinary 'missing field' case, which must still return undefined", () => {
+    const ctx = ctxWith({ tariffs: undefined });
+    expect(evaluateExpression("icms", ctx)).toBeUndefined();
+  });
+});
+
 describe("evaluateExpression: sectionTotal / sectionCount", () => {
   const ctx = ctxWith({
     sections: [
