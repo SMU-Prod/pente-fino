@@ -1,5 +1,9 @@
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { TOKENS } from "./tokens.js";
+
+const tokensCss = readFileSync(fileURLToPath(new URL("./tokens.css", import.meta.url)), "utf8");
 
 describe("design tokens", () => {
   it("carries the light palette of §13.1", () => {
@@ -25,5 +29,22 @@ describe("design tokens", () => {
 
   it("keeps the theme-invariant deep token identical across themes, as §13.1 gives only one value", () => {
     expect(TOKENS.dark.deep).toBe(TOKENS.light.deep);
+  });
+
+  // --- §13.1: the display face carries `SOFT 20 / WONK 1` as its fixed
+  // identity, not a user-adjustable range. This has to live in `:root` -
+  // font-variation-settings is inherited, so setting it once here reaches
+  // every element that renders in Fraunces without repeating it at each of
+  // laudo.module.css's four call sites, and is silently ignored by
+  // whichever font --font-body/--font-mono actually resolve to, since
+  // neither defines a SOFT or WONK axis.
+
+  it("pins the Fraunces display face to SOFT 20 / WONK 1 (§13.1)", () => {
+    const rootBlock = tokensCss.match(/:root\s*\{([^}]*)\}/)?.[1] ?? "";
+    expect(rootBlock).toMatch(/font-variation-settings:\s*"SOFT"\s*20,\s*"WONK"\s*1/);
+  });
+
+  it("keeps the tabular-nums utility for figures read in columns (§13.1)", () => {
+    expect(tokensCss).toMatch(/\.tabular\s*\{\s*font-variant-numeric:\s*tabular-nums;?\s*\}/);
   });
 });

@@ -20,6 +20,16 @@
   --font-display: "Fraunces", Georgia, serif;
   --font-body: "IBM Plex Sans", system-ui, sans-serif;
   --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+  /*
+   * The display face's fixed identity - a variation, not a per-component
+   * choice, so it lives here once instead of at every `--font-display`
+   * call site. `font-variation-settings` is inherited, so this reaches
+   * every element that ends up in Fraunces; it is a silent no-op for
+   * whichever font `--font-body`/`--font-mono` actually resolve to, since
+   * neither one defines a `SOFT` or `WONK` axis for the browser to apply
+   * this to.
+   */
+  font-variation-settings: "SOFT" 20, "WONK" 1;
 }
 
 /* Dark unless the page explicitly opts into light via data-theme. */

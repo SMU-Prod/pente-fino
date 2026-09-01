@@ -197,6 +197,77 @@ describe("withUser", () => {
     expect(rows.map((row) => row.id)).toEqual([visibleId]);
   });
 
+  // --- RF-143: "isso eu contratei" must remove the item from the report for
+  // good, not just from the client's in-memory state until the next fetch.
+  // `findingsForInvoice` is the one place both the list and the totals
+  // (apps/web/lib/report.ts sums exactly what this returns) draw from, so
+  // the status filter belongs here, the same way the RF-125 shadow filter
+  // above does.
+  //
+  // Every status this table's CHECK constraint allows gets its own
+  // assertion so this pins the full decision, not just the one status the
+  // bug report happened to mention:
+  //   - open              untouched, stays (nobody has acted on it yet)
+  //   - confirmed_by_user the person said this charge is wrong - the
+  //                       strongest signal on the screen, stays
+  //   - dismissed_by_user the person said they recognise the charge - gone
+  //   - contested         a case is actively disputing it (E4) - the money
+  //                       is still at stake, stays
+  //   - unresolved        the dispute concluded without fixing the charge
+  //                       (E5) - still wrong, still unpaid-back, stays
+  //   - resolved          the case already fixed this specific charge (E5)
+  //                       - nothing left to check, gone, same as a dismissal
+
+  it("excludes a dismissed_by_user finding from findingsForInvoice, permanently (RF-143)", async () => {
+    const issuerId = await seedIssuer(ctx.db);
+    const ruleId = await seedRule(ctx.db);
+    const scoped = withUser({ userId: alice }, ctx.db);
+    const invoiceId = await scoped.insertInvoice({ contentHash: "dismissed-1", source: "pdf_text", issuerId });
+    const openId = await seedFinding(ctx.db, invoiceId, ruleId);
+    const dismissedId = newId("fnd");
+    await ctx.db.insert(findings).values({
+      id: dismissedId, invoiceId, ruleId, ruleVersion: 1, confidence: 0.9, amountCents: 500,
+      status: "dismissed_by_user",
+    });
+
+    const rows = await scoped.findingsForInvoice(invoiceId);
+    expect(rows.map((row) => row.id)).toEqual([openId]);
+  });
+
+  it("excludes a resolved finding from findingsForInvoice - its case already fixed the charge", async () => {
+    const issuerId = await seedIssuer(ctx.db);
+    const ruleId = await seedRule(ctx.db);
+    const scoped = withUser({ userId: alice }, ctx.db);
+    const invoiceId = await scoped.insertInvoice({ contentHash: "resolved-1", source: "pdf_text", issuerId });
+    const openId = await seedFinding(ctx.db, invoiceId, ruleId);
+    const resolvedId = newId("fnd");
+    await ctx.db.insert(findings).values({
+      id: resolvedId, invoiceId, ruleId, ruleVersion: 1, confidence: 0.9, amountCents: 500, status: "resolved",
+    });
+
+    const rows = await scoped.findingsForInvoice(invoiceId);
+    expect(rows.map((row) => row.id)).toEqual([openId]);
+  });
+
+  it("keeps confirmed_by_user, contested and unresolved findings visible - each is still a live problem", async () => {
+    const issuerId = await seedIssuer(ctx.db);
+    const ruleId = await seedRule(ctx.db);
+    const scoped = withUser({ userId: alice }, ctx.db);
+    const invoiceId = await scoped.insertInvoice({ contentHash: "live-statuses-1", source: "pdf_text", issuerId });
+
+    const ids: Record<string, string> = {};
+    for (const status of ["open", "confirmed_by_user", "contested", "unresolved"] as const) {
+      const id = newId("fnd");
+      await ctx.db.insert(findings).values({
+        id, invoiceId, ruleId, ruleVersion: 1, confidence: 0.9, amountCents: 100, status,
+      });
+      ids[status] = id;
+    }
+
+    const rows = await scoped.findingsForInvoice(invoiceId);
+    expect(rows.map((row) => row.id).sort()).toEqual(Object.values(ids).sort());
+  });
+
   // --- the feedback route's only path to the `dismissed`/`confirmed` signal
   // RF-126/RF-127 read - ownership must hold here exactly as it does for
   // every other method in this module (INV-008).
