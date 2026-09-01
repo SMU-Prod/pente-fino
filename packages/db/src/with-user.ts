@@ -1,7 +1,7 @@
 import { and, desc, eq } from "drizzle-orm";
 import { newId, type EventType } from "@pentefino/core";
 import { getUnscopedDb } from "./client.js";
-import { anonymousSessions, cases, events, findings, invoices, issuers } from "./schema.js";
+import { anonymousSessions, cases, events, findings, invoiceItems, invoices, issuers, rules } from "./schema.js";
 
 export type Session = { userId: string } | { sessionId: string };
 
@@ -97,11 +97,70 @@ export function withUser(session: Session, db: Db = getUnscopedDb()) {
       return id;
     },
 
+    /**
+     * RF-125: a `shadow` finding is how a rule still on probation collects
+     * data without ever reaching a user - `eq(findings.shadow, false)`
+     * below is the one place that filter lives, so every caller (today just
+     * the `/report` route, which also sums this same result for its totals)
+     * gets it for free instead of having to remember it itself.
+     *
+     * `rules` and `invoiceItems` are joined in even though neither is a
+     * user-scoped table of its own (no separate ownership check needed for
+     * either): `ruleSpec` is what lets a caller recognise a `confirm`-kind
+     * rule and surface its question as `askUser` (RF-124) without a second
+     * round trip, and `section` is what RF-128's same-section clustering
+     * groups findings by. `ruleId` is NOT NULL on `findings` and always
+     * references a real row, so the inner join never drops a genuine
+     * finding; `itemId` is nullable (a whole-invoice, e.g. arithmetic,
+     * finding has none), hence the left join for it.
+     */
     async findingsForInvoice(invoiceId: string) {
       const [owned] = await db.select({ id: invoices.id }).from(invoices)
         .where(and(eq(invoices.id, invoiceId), ownsInvoice));
       if (!owned) return [];
-      return db.select().from(findings).where(eq(findings.invoiceId, invoiceId));
+      return db.select({
+        id: findings.id,
+        invoiceId: findings.invoiceId,
+        itemId: findings.itemId,
+        ruleId: findings.ruleId,
+        ruleVersion: findings.ruleVersion,
+        confidence: findings.confidence,
+        evidence: findings.evidence,
+        amountCents: findings.amountCents,
+        doubledCents: findings.doubledCents,
+        shadow: findings.shadow,
+        status: findings.status,
+        createdAt: findings.createdAt,
+        updatedAt: findings.updatedAt,
+        ruleSpec: rules.spec,
+        section: invoiceItems.section,
+      })
+        .from(findings)
+        .innerJoin(rules, eq(findings.ruleId, rules.id))
+        .leftJoin(invoiceItems, eq(findings.itemId, invoiceItems.id))
+        .where(and(eq(findings.invoiceId, invoiceId), eq(findings.shadow, false)))
+        .orderBy(findings.createdAt);
+    },
+
+    /**
+     * The only write path to the `dismissed`/`confirmed` signal RF-126 and
+     * RF-127's automatic promotion/pause read (see
+     * apps/web/app/api/findings/[id]/feedback/route.ts) - ownership is
+     * enforced the same way every other method here does it, by joining
+     * through `invoices` with the same `ownsInvoice` predicate. A finding
+     * whose invoice this session/user does not own is indistinguishable
+     * from one that does not exist at all: both return `null`, so the
+     * caller (and therefore the HTTP response) can never learn which case
+     * it was (INV-008).
+     */
+    async setFindingFeedback(findingId: string, status: "confirmed_by_user" | "dismissed_by_user") {
+      const [owned] = await db.select({ id: findings.id, invoiceId: findings.invoiceId })
+        .from(findings)
+        .innerJoin(invoices, eq(findings.invoiceId, invoices.id))
+        .where(and(eq(findings.id, findingId), ownsInvoice));
+      if (!owned) return null;
+      await db.update(findings).set({ status }).where(eq(findings.id, findingId));
+      return owned;
     },
 
     /**
