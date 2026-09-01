@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest";
 import { EVENTS } from "./events.js";
 
 describe("EVENTS", () => {
-  it("carries every event named in PRD §15.1, plus the ingest and expiry terminals Tasks 13 and 9 (E1) added", () => {
-    expect(EVENTS).toHaveLength(31);
+  it("carries every event named in PRD §15.1, plus the ingest, expiry and finding terminals Tasks 13, 9 and 8 (E1/E2) added", () => {
+    expect(EVENTS).toHaveLength(32);
   });
 
   it("has no duplicates, because names are a contract", () => {
@@ -31,5 +31,9 @@ describe("EVENTS", () => {
   it("names both outcomes of RF-110's daily expiry job", () => {
     expect(EVENTS).toContain("invoice_file_expired");
     expect(EVENTS).toContain("invoice_file_expiry_failed");
+  });
+
+  it("names the rule-firing event RF-302's rule_metrics job and RF-126/RF-127's promotion/pause read", () => {
+    expect(EVENTS).toContain("finding_created");
   });
 });

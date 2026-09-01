@@ -1,7 +1,7 @@
 import { buildAdapters, createUnpdfReader, type TaskHandler } from "@pentefino/adapters";
 // eslint-disable-next-line pentefino/require-with-user -- the ingest job runs system-wide, with no user session
 import { getUnscopedDb, type Database } from "@pentefino/db";
-import { createExpireFilesTask, createIngestTask } from "@pentefino/jobs";
+import { createExpireFilesTask, createIngestTask, createRuleLifecycleTask, createRuleMetricsTask } from "@pentefino/jobs";
 
 export type ContainerOverrides = {
   /**
@@ -32,6 +32,16 @@ function buildContainer(overrides: ContainerOverrides): Container {
   // but registering it here alongside `ingest` keeps `container()` the one
   // place that knows which task name maps to which handler.
   handlers.expireFiles = createExpireFilesTask({ db, storage: adapters.storage });
+  // RF-302/RF-126/RF-127 (Task 8, E2): the nightly rule-metrics materialiser
+  // and the promotion/pause job that reads it. Same story as `expireFiles`
+  // above - no scheduler is wired up yet to actually enqueue either of
+  // these, but `container()` stays the single place that knows every task
+  // name this process can run. `ruleLifecycle` must run after `ruleMetrics`
+  // each night (it reads the `rule_metrics` rows the other one just wrote);
+  // that ordering is a scheduler concern, not something either handler
+  // enforces on its own.
+  handlers.ruleMetrics = createRuleMetricsTask({ db });
+  handlers.ruleLifecycle = createRuleLifecycleTask({ db });
   return { db, ...adapters };
 }
 
