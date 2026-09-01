@@ -216,7 +216,15 @@ export function createIngestTask(deps: IngestDeps) {
 
     let stage: Stage = "classify";
     try {
-      await db.update(invoices).set({ status: "extracting" }).where(eq(invoices.id, invoiceId));
+      // Task 2 (E3): status and event land in the same transaction, same
+      // reason the needs_review/failed/analyzed transitions below already do
+      // it (finding 2) - a crash between the two would otherwise strand the
+      // invoice at `extracting` with no `invoice_processing_started` row to
+      // show a poller anything happened at all.
+      await db.transaction(async (tx) => {
+        await tx.update(invoices).set({ status: "extracting" }).where(eq(invoices.id, invoiceId));
+        await recordVia(tx, "invoice_processing_started");
+      });
 
       if (!invoice.fileKey) {
         throw new Error(`invoice ${invoiceId} has no fileKey to extract from`);

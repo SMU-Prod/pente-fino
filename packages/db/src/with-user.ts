@@ -262,6 +262,31 @@ export function withUser(session: Session, db: Db = getUnscopedDb()) {
     async events() {
       return db.select().from(events).where(ownsEvent).orderBy(desc(events.occurredAt));
     },
+
+    /**
+     * RF-141: the SSE progress stream (`GET /api/invoices/:id/status`) reads
+     * a durable trail rather than a live-only channel, precisely so a client
+     * that connects after the pipeline already finished can replay it
+     * instead of hanging on events that already happened. Same ownership
+     * gate as `findingsForInvoice`/`issuerForInvoice`: a wrong session and a
+     * nonexistent invoice id both come back as an empty array (INV-008), and
+     * the caller (already holding the result of its own `invoices()` check)
+     * is the one that turns "empty" into `not_found` vs. "genuinely no
+     * events yet".
+     *
+     * Ascending by `occurredAt` - the opposite of `events()` above, which
+     * serves a most-recent-first activity feed. A progress stream replays
+     * history in the order it happened, and a poller diffing "which of these
+     * have I already sent" needs a stable order to walk.
+     */
+    async eventsForInvoice(invoiceId: string) {
+      const [owned] = await db.select({ id: invoices.id }).from(invoices)
+        .where(and(eq(invoices.id, invoiceId), ownsInvoice));
+      if (!owned) return [];
+      return db.select().from(events)
+        .where(eq(events.invoiceId, invoiceId))
+        .orderBy(events.occurredAt);
+    },
   };
 }
 
