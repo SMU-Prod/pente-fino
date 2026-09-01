@@ -47,9 +47,24 @@ export function ingestIdempotencyKey(invoiceId: string): string {
  * own doc comment - so a caller choosing not to await it was always enough
  * to run it "outside the response cycle". This route now does exactly that:
  * ownership is still confirmed synchronously below, then ingestion is fired
- * and the response goes out without waiting for it, exactly like the real
- * Trigger.dev adapter arriving in E5 will (trigger() there returns a handle
- * immediately too; the work happens elsewhere).
+ * and the response goes out without waiting for it.
+ *
+ * ## This does not survive a serverless deploy, and that is why E5 exists
+ *
+ * Firing and forgetting works here because dev and the test suite run in a
+ * long-lived Node process that stays alive to finish the work. A Vercel
+ * Function does not: the platform is free to freeze or reclaim the instance
+ * once the response is sent, so ingestion started this way can be killed
+ * part-way through - after the AI has been paid for and before the findings
+ * are written.
+ *
+ * The resemblance to Trigger.dev is only skin deep, and in the direction
+ * that matters it is backwards. `trigger()` also returns immediately, but
+ * it returns immediately *because the work runs on Trigger's own
+ * infrastructure* rather than in a function that is about to be shut down.
+ * That is exactly what ADR-02 chose it for. Until the real adapter lands in
+ * E5, this route is correct locally and unsafe in production - so nothing
+ * here should be deployed on the assumption that fire-and-forget completes.
  *
  * That has one real cost, and it is deliberate: a failure raised *inside*
  * ingestion can no longer become this route's HTTP status, because by the

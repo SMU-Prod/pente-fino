@@ -10,6 +10,14 @@ type EnqueueResult = { runId: string; deduplicated: boolean };
  * instead of on a durable worker. Durable waits of days (ADR-02) are an E5
  * concern; at E0 nothing waits.
  *
+ * A caller that does not await `enqueue()` gets something that looks like
+ * asynchronous work and is not: the handler runs in this process, so it only
+ * finishes if this process stays alive. In dev and in tests it does. In a
+ * serverless function it need not — the instance can be frozen or reclaimed
+ * once its response is sent, killing a run part-way through. That is the
+ * difference between this and the real adapter, and it is the whole reason
+ * ADR-02 picked a durable worker rather than a background promise.
+ *
  * A run is only remembered - and therefore only deduplicated - once its
  * handler actually resolves. If the handler throws, the failure propagates
  * to the caller (nothing here catches it) and the idempotency key is left
