@@ -5,11 +5,12 @@ import { join } from "node:path";
 import { newId } from "@pentefino/core";
 import { withUser } from "@pentefino/db";
 import { createTestDb, schema, type TestDb } from "@pentefino/db/testing";
+import { lintUserFacingText } from "@pentefino/ai";
 import { signSession } from "../../lib/session.js";
 import { createCookieStore, jarFor, type MockCookieStore } from "../helpers/cookies.js";
 import { buildTestContainer } from "../helpers/container.js";
 
-const { anonymousSessions, findings, invoices, issuers, rules } = schema;
+const { anonymousSessions, findings, invoiceItems, invoices, issuers, rules } = schema;
 
 vi.mock("next/headers", () => ({ cookies: vi.fn() }));
 vi.mock("../../lib/container.js", () => ({ container: vi.fn() }));
@@ -28,6 +29,7 @@ const sessionB = "ses_other00000000000000";
 let invoiceId: string;
 let findingId: string;
 let issuerId: string;
+let ruleId: string;
 
 beforeEach(async () => {
   process.env.SESSION_SIGNING_SECRET = SECRET;
@@ -47,7 +49,7 @@ beforeEach(async () => {
     id: invoiceId, issuerId, sessionId: sessionA, contentHash: "report-hash", source: "pdf_text", status: "analyzed",
   });
 
-  const ruleId = newId("rul");
+  ruleId = newId("rul");
   await ctx.db.insert(rules).values({
     id: ruleId, slug: ruleId, category: "telecom", kind: "pattern",
     spec: { kind: "pattern", match: "x" }, confidenceBase: 0.5, author: "system", reason: "fixture",
@@ -155,5 +157,120 @@ describe("GET /api/invoices/[id]/report", () => {
 
     const events = await withUser({ sessionId: sessionA }, ctx.db).events();
     expect(events.map((e) => e.type)).toContain("report_viewed");
+  });
+
+  // --- RF-125: a shadow finding earns trust silently; it must never reach
+  // this response, in the list or in the totals it inflates otherwise.
+
+  it("excludes a shadow finding from both the findings list and the totals (RF-125)", async () => {
+    const shadowId = newId("fnd");
+    await ctx.db.insert(findings).values({
+      id: shadowId, invoiceId, ruleId, ruleVersion: 1, confidence: 0.9, amountCents: 5000, doubledCents: 2500,
+      shadow: true,
+    });
+
+    useCookies(createCookieStore({ pf_session: signSession(sessionA, SECRET) }));
+    const response = await GET(request(), ctxFor(invoiceId));
+    const body = await response.json();
+
+    expect(body.findings.map((f: { id: string }) => f.id)).not.toContain(shadowId);
+    // Unchanged from the single visible finding the top-level beforeEach
+    // seeds - the shadow finding's 5000/2500 must not be summed in here.
+    expect(body.totals).toEqual({ suspectCents: 1500, doubledCents: 700 });
+  });
+
+  // --- RF-124: the route classifies every finding by confidence into one of
+  // three bands, but never picks the pt-BR wording itself (that is the UI's
+  // job, per PRD §13.3).
+
+  it("carries RF-124's confidence band per finding", async () => {
+    const questionId = newId("fnd");
+    const verifyId = newId("fnd");
+    await ctx.db.insert(findings).values([
+      { id: questionId, invoiceId, ruleId, ruleVersion: 1, confidence: 0.5, amountCents: 100 },
+      { id: verifyId, invoiceId, ruleId, ruleVersion: 1, confidence: 0.7, amountCents: 100 },
+    ]);
+
+    useCookies(createCookieStore({ pf_session: signSession(sessionA, SECRET) }));
+    const response = await GET(request(), ctxFor(invoiceId));
+    const body = await response.json();
+    const byId = Object.fromEntries(body.findings.map((f: { id: string }) => [f.id, f]));
+
+    expect(byId[questionId].band).toBe("question"); // < 0.55
+    expect(byId[verifyId].band).toBe("verify"); // 0.55 - 0.8
+    expect(byId[findingId].band).toBe("likely"); // > 0.8 (confidence 0.9 from the top beforeEach)
+  });
+
+  // --- RF-124's other half: a `confirm`-kind rule's finding carries the
+  // question the interface should ask, instead of the route asserting
+  // anything about the charge itself.
+
+  it("exposes askUser for a confirm-kind finding", async () => {
+    const confirmRuleId = newId("rul");
+    await ctx.db.insert(rules).values({
+      id: confirmRuleId, slug: confirmRuleId, category: "telecom", kind: "confirm",
+      spec: {
+        kind: "confirm", question: "Você reconhece esta cobrança?", options: ["Sim", "Não"],
+        onNo: "create_finding",
+      },
+      confidenceBase: 0.4, author: "system", reason: "fixture",
+    });
+    const confirmFindingId = newId("fnd");
+    await ctx.db.insert(findings).values({
+      id: confirmFindingId, invoiceId, ruleId: confirmRuleId, ruleVersion: 1, confidence: 0.4, amountCents: 0,
+    });
+
+    useCookies(createCookieStore({ pf_session: signSession(sessionA, SECRET) }));
+    const response = await GET(request(), ctxFor(invoiceId));
+    const body = await response.json();
+    const found = body.findings.find((f: { id: string }) => f.id === confirmFindingId);
+
+    expect(found.askUser).toEqual({ question: "Você reconhece esta cobrança?", options: ["Sim", "Não"] });
+    expect(found.band).toBe("question");
+    // A `pattern`-kind finding (the top beforeEach's fixture) never gets one.
+    expect(body.findings.find((f: { id: string }) => f.id === findingId).askUser).toBeUndefined();
+  });
+
+  // --- RF-128: 3+ findings sharing a section become one aggregate, shown
+  // above the individual lines, matching the PRD's own acceptance example.
+
+  it("puts the RF-128 cluster aggregate first and its wording passes the §14.3 lint", async () => {
+    const clusterInvoiceId = newId("inv");
+    await ctx.db.insert(invoices).values({
+      id: clusterInvoiceId, issuerId, sessionId: sessionA, contentHash: "cluster-hash", source: "pdf_text",
+      status: "analyzed",
+    });
+
+    const findingIds: string[] = [];
+    for (let i = 0; i < 5; i += 1) {
+      const itemId = newId("itm");
+      await ctx.db.insert(invoiceItems).values({
+        id: itemId, invoiceId: clusterInvoiceId, lineNo: i, itemKey: `sva-${i}`,
+        section: "Serviços digitais", description: `SVA ${i}`, normalizedDesc: `SVA ${i}`, amountCents: 1032,
+      });
+      const fId = newId("fnd");
+      await ctx.db.insert(findings).values({
+        id: fId, invoiceId: clusterInvoiceId, itemId, ruleId, ruleVersion: 1, confidence: 0.9, amountCents: 1032,
+      });
+      findingIds.push(fId);
+    }
+
+    useCookies(createCookieStore({ pf_session: signSession(sessionA, SECRET) }));
+    const response = await GET(
+      new Request(`http://localhost/api/invoices/${clusterInvoiceId}/report`), ctxFor(clusterInvoiceId),
+    );
+    const body = await response.json();
+
+    expect(body.findings).toHaveLength(6); // 1 aggregate + 5 individual lines
+    expect(body.findings[0].aggregate).toBe(true);
+    // PRD §10 RF-128's own acceptance text, verbatim.
+    expect(body.findings[0].evidence).toEqual(["R$ 51,60 em 5 serviços digitais"]);
+    expect(body.findings.slice(1).map((f: { id: string }) => f.id).sort()).toEqual(findingIds.sort());
+    // The aggregate is a display-only view over the same money - it must
+    // not be double-counted into the totals a user reads as "at stake".
+    expect(body.totals.suspectCents).toBe(5160);
+
+    const lint = lintUserFacingText(body.findings[0].evidence[0]);
+    expect(lint.ok).toBe(true);
   });
 });

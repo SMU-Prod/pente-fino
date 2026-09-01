@@ -177,6 +177,53 @@ describe("withUser", () => {
     expect(await other.findingsForInvoice(invoiceId)).toHaveLength(0);
   });
 
+  // --- RF-125: a shadow finding is how an unvalidated rule collects data
+  // while it earns trust. It must never reach `/report`'s list or totals -
+  // `findingsForInvoice` is where both draw their data, so the filter
+  // belongs here, once, rather than in every caller.
+
+  it("excludes shadow findings from findingsForInvoice (RF-125)", async () => {
+    const issuerId = await seedIssuer(ctx.db);
+    const ruleId = await seedRule(ctx.db);
+    const scoped = withUser({ userId: alice }, ctx.db);
+    const invoiceId = await scoped.insertInvoice({ contentHash: "shadow-1", source: "pdf_text", issuerId });
+    const visibleId = await seedFinding(ctx.db, invoiceId, ruleId);
+    const shadowId = newId("fnd");
+    await ctx.db.insert(findings).values({
+      id: shadowId, invoiceId, ruleId, ruleVersion: 1, confidence: 0.9, amountCents: 999, shadow: true,
+    });
+
+    const rows = await scoped.findingsForInvoice(invoiceId);
+    expect(rows.map((row) => row.id)).toEqual([visibleId]);
+  });
+
+  // --- the feedback route's only path to the `dismissed`/`confirmed` signal
+  // RF-126/RF-127 read - ownership must hold here exactly as it does for
+  // every other method in this module (INV-008).
+
+  it("setFindingFeedback updates status only for a finding the caller owns", async () => {
+    const issuerId = await seedIssuer(ctx.db);
+    const ruleId = await seedRule(ctx.db);
+    const scoped = withUser({ userId: alice }, ctx.db);
+    const invoiceId = await scoped.insertInvoice({ contentHash: "feedback-1", source: "pdf_text", issuerId });
+    const findingId = await seedFinding(ctx.db, invoiceId, ruleId);
+
+    const other = withUser({ userId: bob }, ctx.db);
+    expect(await other.setFindingFeedback(findingId, "dismissed_by_user")).toBeNull();
+    const [untouched] = await ctx.db.select().from(findings).where(eq(findings.id, findingId));
+    expect(untouched?.status).toBe("open");
+
+    const result = await scoped.setFindingFeedback(findingId, "dismissed_by_user");
+    expect(result).toEqual({ id: findingId, invoiceId });
+    const [updated] = await ctx.db.select().from(findings).where(eq(findings.id, findingId));
+    expect(updated?.status).toBe("dismissed_by_user");
+  });
+
+  it("setFindingFeedback returns null for a finding id that does not exist", async () => {
+    const scoped = withUser({ userId: alice }, ctx.db);
+    expect(await scoped.setFindingFeedback(newId("fnd"), "confirmed_by_user")).toBeNull();
+  });
+
   it("returns only the caller's cases", async () => {
     const issuerId = await seedIssuer(ctx.db);
     const scoped = withUser({ userId: alice }, ctx.db);
