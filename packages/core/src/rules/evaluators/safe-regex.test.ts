@@ -106,29 +106,45 @@ describe("empirical proof: the guard actually holds against real catastrophic ba
   // way of partitioning the "a"s between the inner and outer "+" before
   // concluding the match fails, which is exponential in the run length.
   //
-  // n=24 was calibrated standalone (plain `node`, no test-runner overhead)
-  // at ~250ms; measured again from inside this suite (vitest + v8 coverage
-  // + parallel workers) it took ~5s - a >1000x margin either way above the
-  // sub-millisecond an ordinary regex match costs, but a reminder that
-  // absolute timing under a test runner is noisy. The assertions below are
-  // deliberately one-sided and generous in both directions - a low floor
-  // that is still unambiguously "not a normal match", and a timeout with
-  // wide headroom over the worst run actually observed - rather than
-  // pinned to either measurement.
+  // Calibrating this against a fixed millisecond number turned out not to
+  // hold: measured standalone (plain `node`) n=22 took tens of
+  // milliseconds; measured inside this suite on a machine also busy with
+  // other agent worktrees, the very same pattern and length ranged from
+  // ~60ms to over 10 SECONDS across different runs - CPU scheduling noise
+  // this large, not JIT variance. No fixed absolute threshold survives
+  // that swing in either direction (too low and it stops proving
+  // anything; too high and a lucky fast run fails it).
+  //
+  // What does survive it: comparing the dangerous pattern against an
+  // equivalent *safe* one (same idea, no nested quantifier - linear, not
+  // exponential) timed on the exact same input in the exact same run.
+  // Both measurements land on the same loaded-or-idle machine at the same
+  // moment, so their ratio cancels the machine's current speed out
+  // entirely; only the difference in algorithmic complexity remains. A
+  // throwaway warm-up call keeps one-time JIT compilation cost out of
+  // both measurements.
   const DANGEROUS_PATTERN = "(a+)+$";
-  const input = "a".repeat(24) + "!";
+  const SAFE_COMPARISON_PATTERN = "a+$"; // same idea, no nested quantifier
+  const input = "a".repeat(22) + "!";
 
-  it("the raw, unguarded RegExp is measurably slow on this input", () => {
+  function timeMatch(pattern: string): { matched: boolean; elapsedMs: number } {
+    new RegExp(pattern).test("a"); // warm up JIT compilation of this pattern first
     const start = performance.now();
-    const matched = new RegExp(DANGEROUS_PATTERN).test(input);
-    const elapsed = performance.now() - start;
-    expect(matched).toBe(false);
-    // 50ms is roughly two orders of magnitude above what any ordinary,
-    // non-catastrophic regex match costs, and comfortably below every
-    // measurement taken while calibrating this (250ms standalone, ~5s
-    // under this suite's runner).
-    expect(elapsed).toBeGreaterThan(50);
-  }, 30_000);
+    const matched = new RegExp(pattern).test(input);
+    return { matched, elapsedMs: performance.now() - start };
+  }
+
+  it("the raw, unguarded catastrophic RegExp is dramatically slower than an equivalent safe one on the same input, on the same run", () => {
+    const safe = timeMatch(SAFE_COMPARISON_PATTERN);
+    const dangerous = timeMatch(DANGEROUS_PATTERN);
+    expect(safe.matched).toBe(false);
+    expect(dangerous.matched).toBe(false);
+    // A linear match on a 23-character string is O(n): cheap regardless of
+    // machine load. The nested-quantifier version is O(2^n) in the same n,
+    // so it costs orders of magnitude more no matter how fast or slow
+    // "orders of magnitude more" happens to be measured as on this run.
+    expect(dangerous.elapsedMs).toBeGreaterThan(safe.elapsedMs * 50);
+  }, 60_000);
 
   it("assertSafePattern rejects the same pattern near-instantly, never reaching the regex engine", () => {
     const start = performance.now();
