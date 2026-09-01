@@ -408,9 +408,23 @@ export const ruleMetrics = pgTable("rule_metrics", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => ({ uniq: uniqueIndex("rule_metrics_uniq").on(t.ruleSlug, t.ruleVersion, t.day) }));
 
+// `kind` extends §6.2's literal list with one value not in the PRD's prose:
+// `promote_rule`. RF-126 promotes a `shadow` rule to `active` once its
+// dismissed/fired ratio clears the bar, but RF-304 puts exactly that
+// transition ("regra nova ... exige aprovação" — a rule's findings reaching
+// a real user for the first time) in the approval band, not the automatic
+// one. None of the five kinds §6.2 already lists fit: `promote_variant` is
+// RF-304's *other*, actually-automatic promotion (an A/B arm at n ≥ 100)
+// and reusing it here would make an approval-gated transition look
+// automatic on every dashboard that groups by kind; `new_rule_draft` is
+// RF-305's brand-new `RuleSpec` proposed from unmatched "não contratei"
+// items, not a status change to a rule that already exists. `promote_rule`
+// names the actual action (mirrors the existing `pause_rule`, which is RF-127's
+// symmetric — but still fully automatic — transition) without colliding
+// with either.
 export const agentProposals = pgTable("agent_proposals", {
   id: text("id").primaryKey(),
-  kind: text("kind").notNull(), // adjust_confidence|pause_rule|promote_variant|new_rule_draft|prompt_edit
+  kind: text("kind").notNull(), // adjust_confidence|pause_rule|promote_variant|new_rule_draft|prompt_edit|promote_rule
   target: text("target").notNull(),
   payload: jsonb("payload").notNull(),
   evidence: jsonb("evidence").$type<string[]>().notNull(),
@@ -422,7 +436,7 @@ export const agentProposals = pgTable("agent_proposals", {
 }, (t) => ({
   kindValues: check(
     "agent_proposals_kind_values",
-    sql`${t.kind} in ('adjust_confidence','pause_rule','promote_variant','new_rule_draft','prompt_edit')`,
+    sql`${t.kind} in ('adjust_confidence','pause_rule','promote_variant','new_rule_draft','prompt_edit','promote_rule')`,
   ),
   statusValues: check("agent_proposals_status_values", sql`${t.status} in ('pending','approved','rejected')`),
 }));

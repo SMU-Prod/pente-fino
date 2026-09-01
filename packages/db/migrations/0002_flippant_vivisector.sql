@@ -1,0 +1,2 @@
+ALTER TABLE "agent_proposals" DROP CONSTRAINT "agent_proposals_kind_values";--> statement-breakpoint
+ALTER TABLE "agent_proposals" ADD CONSTRAINT "agent_proposals_kind_values" CHECK ("agent_proposals"."kind" in ('adjust_confidence','pause_rule','promote_variant','new_rule_draft','prompt_edit','promote_rule'));
