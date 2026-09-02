@@ -1,7 +1,10 @@
 import { buildAdapters, createUnpdfReader, type TaskHandler } from "@pentefino/adapters";
 // eslint-disable-next-line pentefino/require-with-user -- the ingest job runs system-wide, with no user session
 import { getUnscopedDb, type Database } from "@pentefino/db";
-import { createExpireFilesTask, createIngestTask, createRuleLifecycleTask, createRuleMetricsTask } from "@pentefino/jobs";
+import {
+  createDossierTask, createExpireFilesTask, createIngestTask,
+  createRuleLifecycleTask, createRuleMetricsTask,
+} from "@pentefino/jobs";
 
 export type ContainerOverrides = {
   /**
@@ -42,6 +45,11 @@ function buildContainer(overrides: ContainerOverrides): Container {
   // enforces on its own.
   handlers.ruleMetrics = createRuleMetricsTask({ db });
   handlers.ruleLifecycle = createRuleLifecycleTask({ db });
+  // RF-187 (Task 7, E5): produces the JEC dossier for every case that has
+  // reached `jec_ready` and does not have one yet. Same story again - no
+  // scheduler enqueues it in this slice, and it is registered here anyway so
+  // there is no task in this process whose name this map does not know.
+  handlers.dossier = createDossierTask({ db, storage: adapters.storage });
   return { db, ...adapters };
 }
 

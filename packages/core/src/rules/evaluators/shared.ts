@@ -1,20 +1,10 @@
 import type { LegalRef } from "../spec.js";
 
-/**
- * Formats integer cents as a pt-BR money string ("R$ 1.234,56") without
- * `Intl`/locale support, whose availability differs between the Windows
- * dev machine and Linux CI this project targets. Pure integer arithmetic
- * throughout - never divides by 100 into a float before formatting - so
- * there is no floating-point rounding risk here either.
- */
-export function formatCentsBRL(cents: number): string {
-  const sign = cents < 0 ? "-" : "";
-  const abs = Math.abs(Math.trunc(cents));
-  const reais = Math.trunc(abs / 100);
-  const centavos = abs % 100;
-  const reaisWithSeparators = reais.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ".");
-  return `${sign}R$ ${reaisWithSeparators},${centavos.toString().padStart(2, "0")}`;
-}
+// `formatCentsBRL` now lives in `packages/core/src/format.ts`, the single
+// home for money and date formatting in this monorepo — RF-187 found two
+// private copies of it disagreeing about the same number on the same page.
+// Re-exported here so every existing caller of this module is unaffected.
+export { formatCentsBRL } from "../../format.js";
 
 /**
  * RF-129: `doubledCents` is derived from the rule's own `legalBasis`, never
