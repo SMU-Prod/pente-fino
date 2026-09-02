@@ -2,6 +2,10 @@ export {
   createIngestTask, ingestErrorReason, type IngestDeps, type IngestErrorReason,
 } from "./tasks/ingest.js";
 export { createExpireFilesTask, type ExpireFilesDeps } from "./tasks/expire-files.js";
+export {
+  createCaseDeadlinesTask, ABANDONMENT_WINDOW_DAYS, USER_ACTION_EVENTS,
+  type CaseDeadlinesDeps,
+} from "./tasks/case-deadlines.js";
 export { createRuleMetricsTask, type RuleMetricsDeps } from "./tasks/rule-metrics.js";
 export { createRuleLifecycleTask, type RuleLifecycleDeps } from "./tasks/rule-lifecycle.js";
 // `renderDossierPdf` is deliberately NOT re-exported here. Its only
