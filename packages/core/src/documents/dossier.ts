@@ -71,8 +71,12 @@ export type BuildDossierInput = {
   };
   issuer: { displayName: string; cnpj: string | null; category: Category };
   invoice: {
-    id: string; periodStart: string | null; periodEnd: string | null;
-    dueDate: string | null; totalCents: number | null; createdAt: Date;
+    id: string;
+    periodStart: string | null; // ISO date as stored ("2026-07-01")
+    periodEnd: string | null; // ISO date as stored
+    dueDate: string | null; // ISO date as stored
+    totalCents: number | null;
+    createdAt: Date;
     fileKey: string | null;
   };
   /** Only the items a finding fired on; the caller has already joined. */
@@ -114,7 +118,7 @@ const STAGE_LABELS: Record<Stage, string> = {
 };
 
 // `case_documents.kind` is a free string in the row this module receives
-// (checked at the database boundary, not in this type). A stage this
+// (checked at the database boundary, not in this type). A kind this
 // module doesn't recognise must still produce a readable line rather than
 // `undefined` — hence the fallback in `labelForDocumentKind` below.
 const DOCUMENT_KIND_LABELS: Record<string, string> = {
@@ -207,6 +211,14 @@ function formatUtcDate(date: Date): string {
 // through `Date` and back.
 function formatIsoDate(iso: string): string {
   const [year, month, day] = iso.split("-");
+  // The DB column is `date`, so in practice this always has exactly three
+  // parts — but the value still crosses a boundary TypeScript does not check
+  // here (`noUncheckedIndexedAccess` types the destructured parts as
+  // `string | undefined`). A malformed value falls back to the raw string
+  // rather than silently rendering `undefined/undefined/2026`.
+  if (year === undefined || month === undefined || day === undefined) {
+    return iso;
+  }
   return `${day}/${month}/${year}`;
 }
 
@@ -273,12 +285,17 @@ function buildDocumentEntries(documents: BuildDossierInput["documents"]): Dossie
     const editedLine = doc.userEdited
       ? "Editado pelo usuário antes do uso"
       : "Gerado automaticamente, sem edição do usuário";
+    // The dossier previously recorded that a document existed and its
+    // subject, but not what was actually asked for — thin for a reader
+    // deciding whether the company was given a fair chance to fix this.
+    // One masked line per request, beneath the subject.
+    const requestLines = body.requests.map((request) => `Pedido: ${maskText(request)}`);
 
     entries.push({
       at: doc.createdAt,
       kind: "document",
       title: `Documento gerado — ${stageLabel} · ${kindLabel}`,
-      details: [`Assunto: ${subject}`, editedLine],
+      details: [`Assunto: ${subject}`, ...requestLines, editedLine],
       sourceId: doc.id,
     });
 
@@ -287,7 +304,7 @@ function buildDocumentEntries(documents: BuildDossierInput["documents"]): Dossie
         at: doc.sentAt,
         kind: "document",
         title: `Documento enviado — ${stageLabel} · ${kindLabel}`,
-        details: [`Assunto: ${subject}`],
+        details: [`Assunto: ${subject}`, ...requestLines],
         sourceId: doc.id,
       });
     }
@@ -305,10 +322,9 @@ function buildProtocolEntries(protocols: BuildDossierInput["protocols"]): Dossie
     const stageLabel = STAGE_LABELS[protocol.stage];
 
     // `protocolNumber` and `channel` are structured identifiers, never
-    // routed through `maskText` (see the module doc comment on
-    // `buildAttachments` for why that matters: a protocol number is
-    // commonly an 11-digit run, exactly the shape `maskText` looks for when
-    // deciding whether something is a CPF).
+    // routed through `maskText` — a protocol number is commonly an
+    // 11-digit run, exactly the shape `maskText` looks for when deciding
+    // whether something is a CPF.
     entries.push({
       at: protocol.registeredAt,
       kind: "protocol",
@@ -390,6 +406,110 @@ function isAnnouncementMatched(event: EventRow, ctx: AnnouncementContext): boole
   return typeof documentId === "string" && ctx.documentIds.has(documentId);
 }
 
+// --- events: best-effort payload enrichment ---------------------------------
+//
+// A `stage_advanced` event carried nothing about which stages in its
+// `details` — the payload holds the substance and the dossier dropped it.
+// This is best-effort enrichment of a payload another module writes: E5
+// Tasks 3, 4 and 5 are writing these payloads in parallel branches and the
+// exact key names were not settled when this module was written, hence the
+// generous aliases below. Absence of a recognised key is not an error — an
+// event this table cannot enrich still exists in the timeline via its
+// title; a key not on this allow-list is NEVER rendered, because an English
+// identifier leaking into a pt-BR document is worse than a thin entry.
+
+type PayloadPrimitive = string | number | boolean;
+
+function isPayloadPrimitive(value: unknown): value is PayloadPrimitive {
+  const t = typeof value;
+  return t === "string" || t === "number" || t === "boolean";
+}
+
+function isKnownStage(value: string): value is Stage {
+  return Object.prototype.hasOwnProperty.call(STAGE_LABELS, value);
+}
+
+// Loose on purpose: a date-ish payload value may arrive as an ISO string or
+// as an epoch number from a branch this module doesn't control. A boolean
+// is never a meaningful date, so it is rejected before `Date` gets a chance
+// to coerce it into something misleadingly "valid" (`new Date(true)`).
+function parseDateValue(value: PayloadPrimitive): Date | null {
+  if (typeof value === "boolean") return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+const MAX_DETAIL_LINE_LENGTH = 200;
+
+function capLine(line: string): string {
+  return line.length > MAX_DETAIL_LINE_LENGTH ? `${line.slice(0, MAX_DETAIL_LINE_LENGTH - 1)}…` : line;
+}
+
+type PayloadFieldKind = "stage" | "date" | "text";
+
+type PayloadField = { aliases: string[]; label: string; kind: PayloadFieldKind };
+
+// Order here is the order lines are rendered in — deliberately not
+// `Object.keys(payload)`, so the output never depends on the order a
+// parallel branch happened to write its payload fields in. `fromStage` and
+// `toStage` (and their aliases) are kept as two separate fields, not one,
+// because a stage transition's whole point is showing *which* stages —
+// collapsing them into a single line would silently drop the other end of
+// the transition.
+const PAYLOAD_FIELDS: PayloadField[] = [
+  { aliases: ["fromStage", "previousStage"], label: "Etapa anterior", kind: "stage" },
+  { aliases: ["toStage", "newStage"], label: "Nova etapa", kind: "stage" },
+  { aliases: ["stage"], label: "Etapa", kind: "stage" },
+  { aliases: ["channel"], label: "Canal", kind: "text" },
+  { aliases: ["protocolNumber"], label: "Número do protocolo", kind: "text" },
+  { aliases: ["deadlineAt", "expiredAt", "dueAt", "at"], label: "Data", kind: "date" },
+  { aliases: ["reason"], label: "Motivo", kind: "text" },
+  { aliases: ["outcome"], label: "Desfecho", kind: "text" },
+];
+
+function renderPayloadValue(kind: PayloadFieldKind, value: PayloadPrimitive): string {
+  if (kind === "stage" && typeof value === "string" && isKnownStage(value)) {
+    return STAGE_LABELS[value];
+  }
+  if (kind === "date") {
+    const date = parseDateValue(value);
+    if (date !== null) return formatUtcDate(date);
+  }
+  return String(value);
+}
+
+function findPayloadValue(
+  payload: Record<string, unknown>,
+  aliases: string[],
+): { alias: string; value: PayloadPrimitive } | null {
+  for (const alias of aliases) {
+    const value = payload[alias];
+    if (isPayloadPrimitive(value)) return { alias, value };
+  }
+  return null;
+}
+
+/**
+ * Renders the allow-listed subset of an event's payload as pt-BR detail
+ * lines. Every rendered value is masked with `maskText` — except
+ * `protocolNumber`, a structured identifier, same reasoning as everywhere
+ * else in this module.
+ */
+function renderEventPayloadDetails(payload: Record<string, unknown>): string[] {
+  const details: string[] = [];
+
+  for (const field of PAYLOAD_FIELDS) {
+    const found = findPayloadValue(payload, field.aliases);
+    if (found === null) continue;
+
+    const rendered = renderPayloadValue(field.kind, found.value);
+    const value = found.alias === "protocolNumber" ? rendered : maskText(rendered);
+    details.push(capLine(`${field.label}: ${value}`));
+  }
+
+  return details;
+}
+
 function buildEventEntries(events: BuildDossierInput["events"], ctx: AnnouncementContext): DossierEntry[] {
   const entries: DossierEntry[] = [];
 
@@ -401,7 +521,7 @@ function buildEventEntries(events: BuildDossierInput["events"], ctx: Announcemen
       at: event.occurredAt,
       kind: meta?.kind ?? "other",
       title: meta?.label ?? `Evento do caso: ${event.type}`,
-      details: [],
+      details: renderEventPayloadDetails(event.payload),
       sourceId: event.id,
     });
   }

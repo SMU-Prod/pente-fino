@@ -110,16 +110,25 @@ describe("buildDossier · timeline ordering", () => {
   });
 
   it("breaks same-instant ties the same way regardless of input array order", () => {
+    // Object-literal property order (`{ documents, protocols }` vs
+    // `{ protocols, documents }`) is NOT input array order — `buildDossier`
+    // reads `input.documents` and `input.protocols` by name regardless of
+    // where they sit in the literal, so swapping those two properties
+    // proves nothing. The real risk is *within* one array: two same-instant
+    // rows passed as `[a, b]` vs `[b, a]`. Deleting `.sort(compareEntries)`
+    // from `buildDossier` makes this test fail (the entries would then come
+    // out in whatever order `documents` was iterated in, which flips
+    // between the two calls below).
     const tie = new Date("2026-06-10T12:00:00Z");
-    const doc = document({ id: "doc_a", createdAt: tie });
-    const proto = protocol({ id: "proto_a", registeredAt: tie });
+    const docA = document({ id: "doc_a", createdAt: tie });
+    const docB = document({ id: "doc_b", createdAt: tie });
 
-    const a = buildDossier(baseInput({ documents: [doc], protocols: [proto] }))
-      .entries.map((e) => `${e.kind}:${e.sourceId}`);
-    const b = buildDossier(baseInput({ protocols: [proto], documents: [doc] }))
-      .entries.map((e) => `${e.kind}:${e.sourceId}`);
+    const forward = buildDossier(baseInput({ documents: [docA, docB] }))
+      .entries.map((e) => e.sourceId);
+    const reversed = buildDossier(baseInput({ documents: [docB, docA] }))
+      .entries.map((e) => e.sourceId);
 
-    expect(a).toEqual(b);
+    expect(forward).toEqual(reversed);
   });
 
   it("falls back to a title comparison when kind and sourceId also tie", () => {
@@ -238,13 +247,25 @@ describe("buildDossier · masking (INV-007)", () => {
 });
 
 describe("buildDossier · parties (no PII the system does not hold)", () => {
-  it("never invents consumidor data and lists the fields the person must fill by hand", () => {
+  it("never invents consumidor data and lists the exact fields the person must fill by hand", () => {
     const dossier = buildDossier(baseInput());
     const consumidor = dossier.parties.find((p) => p.role === "consumidor");
     expect(consumidor?.name).toBeNull();
     expect(consumidor?.document).toBeNull();
-    expect(consumidor?.fields.length).toBeGreaterThan(0);
-    expect(dossier.notes.join(" ")).not.toContain("@");
+    // Exact content, not just "some fields exist" — replacing the five
+    // labels with a single placeholder must fail this test.
+    expect(consumidor?.fields).toEqual([
+      "Nome completo", "CPF", "Endereço completo", "Telefone", "E-mail",
+    ]);
+    // `BuildDossierInput` has no field carrying the user's email anywhere
+    // (`users` isn't part of this input at all) — the type itself is what
+    // guarantees the dossier can't contain it, not a runtime scan of the
+    // notes text, so there is nothing meaningful left to assert here.
+    expect(dossier.notes).toContain(
+      "Os dados do(a) consumidor(a) (nome completo, CPF, endereço e telefone) não são " +
+      "mantidos pelo sistema e precisam ser preenchidos manualmente antes de protocolar " +
+      "no Juizado Especial Cível.",
+    );
   });
 });
 
@@ -275,6 +296,16 @@ describe("buildDossier · RF-110 invoice file expiry", () => {
     const attachment = dossier.attachments.find((a) => a.label === "Fatura do período contestado");
     expect(attachment?.status).toBe("available");
     expect(attachment?.note).toBeUndefined();
+  });
+
+  it("never claims the invoice file is gone when fileKey is present", () => {
+    // The dossier must not pretend the invoice is unavailable when it is
+    // in fact still held — a false "arquivo não está mais disponível" line
+    // would mislead the reader about their own case's evidence.
+    const dossier = buildDossier(baseInput());
+    const notesText = dossier.notes.join(" ").toLowerCase();
+    expect(notesText).not.toContain("não está mais disponível");
+    expect(notesText).not.toContain("removid");
   });
 
   it("uses the latest invoice_file_expired event when more than one is present", () => {
@@ -331,6 +362,34 @@ describe("buildDossier · attachments", () => {
     const proof = dossier.attachments.find((a) => a.label.includes("9988776"));
     expect(proof?.status).toBe("user_provided");
     expect(proof?.label).toContain("Procon");
+  });
+
+  it("masks a CPF planted in a checklist entry (INV-007, on model-written prose)", () => {
+    const input = baseInput({
+      documents: [document({
+        body: contestDocument({
+          attachmentsChecklist: [`Comprovante em nome do titular CPF ${VALID_CPF}`],
+        }),
+      })],
+    });
+    const dossier = buildDossier(input);
+    const entry = dossier.attachments.find((a) => a.status === "user_provided" && a.label.includes("[CPF]"));
+    expect(entry).toBeDefined();
+    expect(dossier.attachments.some((a) => a.label.includes(VALID_CPF))).toBe(false);
+  });
+
+  it("uses the edited checklist over the original when the document was edited (RF-164)", () => {
+    const input = baseInput({
+      documents: [document({
+        body: contestDocument({ attachmentsChecklist: ["Fatura do período contestado", "Checklist original"] }),
+        editedBody: contestDocument({ attachmentsChecklist: ["Fatura do período contestado", "Checklist editado"] }),
+        userEdited: true,
+      })],
+    });
+    const dossier = buildDossier(input);
+    const labels = dossier.attachments.map((a) => a.label);
+    expect(labels).toContain("Checklist editado");
+    expect(labels).not.toContain("Checklist original");
   });
 });
 
@@ -550,6 +609,20 @@ describe("buildDossier · invoice fields with missing data", () => {
     const entry = dossier.entries.find((e) => e.kind === "invoice");
     expect(entry?.details.join(" ")).toContain("não informado");
   });
+
+  it("falls back to the raw string instead of emitting 'undefined' for a malformed ISO date", () => {
+    // `noUncheckedIndexedAccess` types the destructured [year, month, day]
+    // as `string | undefined` — a value with a missing segment must not
+    // silently render "undefined/06/2026".
+    const input = baseInput({
+      invoice: { ...baseInput().invoice, periodStart: "2026-06" },
+    });
+    const dossier = buildDossier(input);
+    const entry = dossier.entries.find((e) => e.kind === "invoice");
+    const text = entry?.details.join(" ") ?? "";
+    expect(text).not.toContain("undefined");
+    expect(text).toContain("2026-06");
+  });
 });
 
 describe("buildDossier · empty case", () => {
@@ -577,5 +650,274 @@ describe("buildDossier · contestedTotalCents", () => {
   it("is zero when there are no contested items", () => {
     const dossier = buildDossier(baseInput());
     expect(dossier.contestedTotalCents).toBe(0);
+  });
+});
+
+describe("buildDossier · display formatting (dates and money actually shown to a person)", () => {
+  it("renders known ISO dates as dd/MM/yyyy and a known amount in reais", () => {
+    const input = baseInput({
+      invoice: {
+        ...baseInput().invoice,
+        periodStart: "2026-06-01",
+        periodEnd: "2026-06-30",
+        dueDate: "2026-07-10",
+        totalCents: 15000,
+      },
+      protocols: [protocol({
+        registeredAt: new Date("2026-06-05T12:00:00Z"),
+        responseDueAt: new Date("2026-06-12T12:00:00Z"),
+      })],
+    });
+    const dossier = buildDossier(input);
+
+    const invoiceText = dossier.entries.find((e) => e.kind === "invoice")?.details.join(" ") ?? "";
+    expect(invoiceText).toContain("01/06/2026");
+    expect(invoiceText).toContain("30/06/2026");
+    expect(invoiceText).toContain("10/07/2026");
+    expect(invoiceText).toContain("R$ 150,00");
+
+    const protocolText = dossier.entries.find((e) => e.kind === "protocol")?.details.join(" ") ?? "";
+    expect(protocolText).toContain("12/06/2026");
+  });
+});
+
+describe("buildDossier · sourceId provenance (principle A3)", () => {
+  it("stamps each entry's sourceId with the id of the row it actually came from", () => {
+    const input = baseInput({
+      documents: [document({ id: "doc_x" })],
+      protocols: [protocol({ id: "proto_x" })],
+    });
+    const dossier = buildDossier(input);
+
+    expect(dossier.entries.find((e) => e.kind === "invoice")?.sourceId).toBe("invoice_1");
+    expect(dossier.entries.find((e) => e.kind === "document")?.sourceId).toBe("doc_x");
+    expect(dossier.entries.find((e) => e.kind === "protocol")?.sourceId).toBe("proto_x");
+  });
+});
+
+describe("buildDossier · invoice attachment label stays in sync with the contest letter (assemble.ts)", () => {
+  it("uses the exact same base attachment label assemble.ts tells the person to bring", () => {
+    // `assemble.ts`'s private `BASE_ATTACHMENT` constant, copied here
+    // deliberately — `assemble.ts` is out of scope for this module, so it
+    // isn't exported, and this literal is what catches the two drifting
+    // apart (which would otherwise list the invoice twice under two
+    // different labels with nothing failing).
+    const ASSEMBLE_BASE_ATTACHMENT = "Fatura do período contestado";
+    const dossier = buildDossier(baseInput());
+    const invoiceAttachment = dossier.attachments.find(
+      (a) => a.status === "available" || a.status === "expired",
+    );
+    expect(invoiceAttachment?.label).toBe(ASSEMBLE_BASE_ATTACHMENT);
+  });
+});
+
+describe("buildDossier · event payload enrichment (allow-listed details)", () => {
+  it("renders a stage transition as two lines — which stage it left and which it entered", () => {
+    const input = baseInput({
+      events: [{
+        id: "evt_1", type: "stage_advanced", occurredAt: new Date("2026-06-15T00:00:00Z"),
+        payload: { fromStage: "sac", toStage: "ombudsman" },
+      }],
+    });
+    const dossier = buildDossier(input);
+    const entry = dossier.entries.find((e) => e.sourceId === "evt_1");
+    expect(entry?.details).toEqual(["Etapa anterior: SAC", "Nova etapa: Ouvidoria"]);
+  });
+
+  it("renders an alias pair (previousStage/newStage) the same way as fromStage/toStage", () => {
+    const input = baseInput({
+      events: [{
+        id: "evt_1", type: "stage_advanced", occurredAt: new Date("2026-06-15T00:00:00Z"),
+        payload: { previousStage: "procon", newStage: "jec_ready" },
+      }],
+    });
+    const dossier = buildDossier(input);
+    const entry = dossier.entries.find((e) => e.sourceId === "evt_1");
+    expect(entry?.details).toEqual([
+      "Etapa anterior: Procon", "Nova etapa: Pronto para o Juizado Especial Cível",
+    ]);
+  });
+
+  it("renders a stage value that isn't a known Stage verbatim, without crashing", () => {
+    const input = baseInput({
+      events: [{
+        id: "evt_1", type: "stage_advanced", occurredAt: new Date("2026-06-15T00:00:00Z"),
+        payload: { newStage: "etapa_futura" },
+      }],
+    });
+    const dossier = buildDossier(input);
+    const entry = dossier.entries.find((e) => e.sourceId === "evt_1");
+    expect(entry?.details).toEqual(["Nova etapa: etapa_futura"]);
+  });
+
+  it("renders the bare 'stage' alias (no from/to pairing) under its own neutral label", () => {
+    const input = baseInput({
+      events: [{
+        id: "evt_1", type: "case_reopened", occurredAt: new Date("2026-06-15T00:00:00Z"),
+        payload: { stage: "procon" },
+      }],
+    });
+    const dossier = buildDossier(input);
+    const entry = dossier.entries.find((e) => e.sourceId === "evt_1");
+    expect(entry?.details).toEqual(["Etapa: Procon"]);
+  });
+
+  it("renders a non-string stage-ish value verbatim, without attempting a STAGE_LABELS lookup", () => {
+    const input = baseInput({
+      events: [{
+        id: "evt_1", type: "case_reopened", occurredAt: new Date("2026-06-15T00:00:00Z"),
+        payload: { stage: 7 },
+      }],
+    });
+    const dossier = buildDossier(input);
+    const entry = dossier.entries.find((e) => e.sourceId === "evt_1");
+    expect(entry?.details).toEqual(["Etapa: 7"]);
+  });
+
+  it("formats a date-ish payload value and leaves protocolNumber unmasked while masking reason", () => {
+    const input = baseInput({
+      events: [{
+        id: "evt_1", type: "deadline_expired", occurredAt: new Date("2026-06-15T00:00:00Z"),
+        payload: {
+          deadlineAt: "2026-06-20T00:00:00.000Z",
+          protocolNumber: VALID_CPF,
+          reason: `Prazo vencido para o titular do CPF ${VALID_CPF}`,
+        },
+      }],
+    });
+    const dossier = buildDossier(input);
+    const entry = dossier.entries.find((e) => e.sourceId === "evt_1");
+    expect(entry?.details).toContain("Data: 20/06/2026");
+    expect(entry?.details).toContain(`Número do protocolo: ${VALID_CPF}`);
+    const reasonLine = entry?.details.find((d) => d.startsWith("Motivo:"));
+    expect(reasonLine).toContain("[CPF]");
+    expect(reasonLine).not.toContain(VALID_CPF);
+  });
+
+  it("renders a date-ish value verbatim (masked) when it does not parse as a date", () => {
+    const input = baseInput({
+      events: [{
+        id: "evt_1", type: "deadline_expired", occurredAt: new Date("2026-06-15T00:00:00Z"),
+        payload: { at: "not-a-date" },
+      }],
+    });
+    const dossier = buildDossier(input);
+    const entry = dossier.entries.find((e) => e.sourceId === "evt_1");
+    expect(entry?.details).toEqual(["Data: not-a-date"]);
+  });
+
+  it("accepts boolean and number primitive values under an allow-listed key", () => {
+    const input = baseInput({
+      events: [{
+        id: "evt_1", type: "diff_run", occurredAt: new Date("2026-06-15T00:00:00Z"),
+        payload: { reason: true, outcome: 42 },
+      }],
+    });
+    const dossier = buildDossier(input);
+    const entry = dossier.entries.find((e) => e.sourceId === "evt_1");
+    expect(entry?.details).toEqual(["Motivo: true", "Desfecho: 42"]);
+  });
+
+  it("never renders a key that is not on the allow-list, and never leaks the raw key name", () => {
+    const input = baseInput({
+      events: [{
+        id: "evt_1", type: "diff_run", occurredAt: new Date("2026-06-15T00:00:00Z"),
+        payload: { someInternalFieldName: "should never appear", reason: "Motivo legítimo" },
+      }],
+    });
+    const dossier = buildDossier(input);
+    const entry = dossier.entries.find((e) => e.sourceId === "evt_1");
+    expect(entry?.details).toEqual(["Motivo: Motivo legítimo"]);
+    expect(entry?.details.join(" ")).not.toContain("someInternalFieldName");
+  });
+
+  it("ignores a non-primitive value even under an allow-listed key", () => {
+    const input = baseInput({
+      events: [{
+        id: "evt_1", type: "diff_run", occurredAt: new Date("2026-06-15T00:00:00Z"),
+        payload: { reason: { nested: true }, channel: "SAC" },
+      }],
+    });
+    const dossier = buildDossier(input);
+    const entry = dossier.entries.find((e) => e.sourceId === "evt_1");
+    expect(entry?.details).toEqual(["Canal: SAC"]);
+  });
+
+  it("orders rendered lines by the allow-list's own order, not by the payload's own key order", () => {
+    const input = baseInput({
+      events: [{
+        id: "evt_1", type: "outcome_confirmed", occurredAt: new Date("2026-06-15T00:00:00Z"),
+        // Deliberately inserted in reverse of the allow-list's order.
+        payload: { outcome: "resolved_like", reason: "Motivo", channel: "SAC" },
+      }],
+    });
+    const dossier = buildDossier(input);
+    const entry = dossier.entries.find((e) => e.sourceId === "evt_1");
+    expect(entry?.details).toEqual(["Canal: SAC", "Motivo: Motivo", "Desfecho: resolved_like"]);
+  });
+
+  it("caps a very long rendered detail line at a sane length", () => {
+    const longReason = "x".repeat(500);
+    const input = baseInput({
+      events: [{
+        id: "evt_1", type: "diff_run", occurredAt: new Date("2026-06-15T00:00:00Z"),
+        payload: { reason: longReason },
+      }],
+    });
+    const dossier = buildDossier(input);
+    const entry = dossier.entries.find((e) => e.sourceId === "evt_1");
+    expect(entry?.details[0]?.length).toBeLessThan(210);
+  });
+
+  it("renders no details for an event whose payload has nothing on the allow-list", () => {
+    const input = baseInput({
+      events: [{ id: "evt_1", type: "diff_run", occurredAt: new Date("2026-06-15T00:00:00Z"), payload: {} }],
+    });
+    const dossier = buildDossier(input);
+    expect(dossier.entries.find((e) => e.sourceId === "evt_1")?.details).toEqual([]);
+  });
+});
+
+describe("buildDossier · document requests reach the dossier (RF-187 completeness)", () => {
+  it("adds each request as a masked details line beneath the subject", () => {
+    const requests = [`Estorno do valor referente ao CPF ${VALID_CPF}`, "Correção da fatura"];
+    const input = baseInput({
+      documents: [document({ body: contestDocument({ subject: "Assunto X", requests }) })],
+    });
+    const dossier = buildDossier(input);
+    const entry = dossier.entries.find((e) => e.title.startsWith("Documento gerado"));
+    const details = entry?.details ?? [];
+
+    expect(details[0]).toBe("Assunto: Assunto X");
+    expect(details).toContain("Pedido: Correção da fatura");
+    const cpfLine = details.find((d) => d.startsWith("Pedido:") && d.includes("[CPF]"));
+    expect(cpfLine).toBeDefined();
+    expect(details.some((d) => d.includes(VALID_CPF))).toBe(false);
+  });
+
+  it("uses editedBody's requests over body's when the document was edited (RF-164)", () => {
+    const input = baseInput({
+      documents: [document({
+        body: contestDocument({ requests: ["Pedido original"] }),
+        editedBody: contestDocument({ requests: ["Pedido editado pelo usuário"] }),
+        userEdited: true,
+      })],
+    });
+    const dossier = buildDossier(input);
+    const entry = dossier.entries.find((e) => e.kind === "document" && e.title.startsWith("Documento gerado"));
+    expect(entry?.details.join(" ")).toContain("Pedido editado pelo usuário");
+    expect(entry?.details.join(" ")).not.toContain("Pedido original");
+  });
+
+  it("also carries the request lines on the 'sent' entry", () => {
+    const input = baseInput({
+      documents: [document({
+        body: contestDocument({ requests: ["Pedido a repetir"] }),
+        sentAt: new Date("2026-06-12T09:00:00Z"),
+      })],
+    });
+    const dossier = buildDossier(input);
+    const sentEntry = dossier.entries.find((e) => e.title.startsWith("Documento enviado"));
+    expect(sentEntry?.details).toContain("Pedido: Pedido a repetir");
   });
 });
