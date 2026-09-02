@@ -9,6 +9,11 @@ export {
   assembleContest, MANDATORY_SCRIPT_ITEMS,
   type AssembleContestInput, type AssembledContest, type RecordedProtocol,
 } from "./documents/assemble.js";
+export {
+  buildDossier,
+  type BuildDossierInput, type Dossier, type DossierEntry, type DossierEntryKind,
+  type DossierAttachment, type DossierAttachmentStatus, type DossierParty,
+} from "./documents/dossier.js";
 export { normalizeDescription } from "./invoice/normalize.js";
 export { validateInvoice, type ValidationResult, type ValidationFailure } from "./invoice/validate.js";
 export { maskCanonical, maskText, containsPii, CNPJ_SHAPE_SOURCE } from "./invoice/mask.js";
