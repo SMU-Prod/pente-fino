@@ -60,6 +60,18 @@ export const EVENTS = [
   "monitor_email_received", "monthly_digest_sent",
   "session_claimed", "subscription_started", "subscription_failed",
   "rule_promoted", "rule_paused", "proposal_created", "proposal_decided",
+  // RF-187's dossier job (Task 7, E5), for the same A3 reason as the pair
+  // above: producing the JEC dossier is a real transition on the case - the
+  // moment it becomes something a person can take to a Juizado - and it has
+  // to be readable from `events` alone, not inferred from an object sitting
+  // in storage. It is also the job's own idempotency guard: the absence of a
+  // `dossier_generated` row for a case is what makes it eligible, so a
+  // second run can neither produce a second PDF nor a second event.
+  // `dossier_generation_failed` exists for exactly the reason
+  // `invoice_file_expiry_failed` does: a per-case failure is isolated and
+  // retried on the next run, and a failure that silently repeats forever
+  // must still be visible to anyone reading the event stream.
+  "dossier_generated", "dossier_generation_failed",
 ] as const;
 
 export type EventType = (typeof EVENTS)[number];

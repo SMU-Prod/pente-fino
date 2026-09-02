@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest";
 import { EVENTS } from "./events.js";
 
 describe("EVENTS", () => {
-  it("carries every event named in PRD §15.1, plus the ingest, expiry and finding terminals Tasks 13, 9 and 8 (E1/E2) added, plus invoice_processing_started (Task 2, E3)", () => {
-    expect(EVENTS).toHaveLength(33);
+  it("carries every event named in PRD §15.1, plus the ingest, expiry and finding terminals Tasks 13, 9 and 8 (E1/E2) added, plus invoice_processing_started (Task 2, E3) and RF-187's dossier pair (Task 7, E5)", () => {
+    expect(EVENTS).toHaveLength(35);
   });
 
   it("has no duplicates, because names are a contract", () => {
@@ -35,5 +35,10 @@ describe("EVENTS", () => {
 
   it("names the rule-firing event RF-302's rule_metrics job and RF-126/RF-127's promotion/pause read", () => {
     expect(EVENTS).toContain("finding_created");
+  });
+
+  it("names both outcomes of RF-187's jec_ready dossier job", () => {
+    expect(EVENTS).toContain("dossier_generated");
+    expect(EVENTS).toContain("dossier_generation_failed");
   });
 });

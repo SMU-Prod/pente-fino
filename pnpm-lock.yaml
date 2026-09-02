@@ -63,6 +63,9 @@ importers:
         specifier: ^1.17.1
         version: 1.17.1
     devDependencies:
+      '@pentefino/ai':
+        specifier: workspace:*
+        version: link:../../packages/ai
       '@pentefino/config':
         specifier: workspace:*
         version: link:../../packages/config

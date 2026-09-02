@@ -5,3 +5,4 @@ export { createExpireFilesTask, type ExpireFilesDeps } from "./tasks/expire-file
 export { createRuleMetricsTask, type RuleMetricsDeps } from "./tasks/rule-metrics.js";
 export { createRuleLifecycleTask, type RuleLifecycleDeps } from "./tasks/rule-lifecycle.js";
 export { renderDossierPdf } from "./pdf/render-dossier.js";
+export { createDossierTask, type DossierDeps } from "./tasks/dossier.js";
