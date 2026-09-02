@@ -82,7 +82,7 @@ This is `INV-003` in the data model, not just in the text: the record shows whet
 
 §20.4 gives the rubric: all the playbook's asks for the stage (weight 3), only the supplied legal bases (3), zero forbidden terms (2), protocols and expired deadlines mentioned when they exist (1), length and neutral tone (1). Approval is ≥ 8/10 over a sample of 20 cases per prompt version.
 
-Three of those five criteria are deterministic and can be scored today with no model: the asks, the legal bases, and the forbidden terms — seven of the ten points. Score them. The other two need generated text.
+Three of those five criteria are deterministic and can be scored today with no model: the asks, the legal bases, and the forbidden terms — eight of the ten points (3 + 3 + 2). Score them. The other two need generated text.
 
 **With no key it must say it measured nothing**, the way `golden:run` does, rather than reporting a vacuous pass. §18's own gate for this block is "eval com rubrica ≥ 8/10", so a harness that quietly passes an empty sample would fake the block's definition of done.
 
