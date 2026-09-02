@@ -172,6 +172,14 @@ const EVENT_META: Record<string, { kind: DossierEntryKind; label: string }> = {
   diff_run: { kind: "other", label: "Comparação com a fatura seguinte executada" },
   outcome_confirmed: { kind: "outcome", label: "Desfecho do caso confirmado" },
   case_reopened: { kind: "stage_change", label: "Caso reaberto" },
+  // RF-187's own job (Task 7, E5 — `apps/jobs`'s dossier task) writes these
+  // two types into `events` (see `packages/core/src/events.ts`; not
+  // imported here — this table only ever needs the raw string, same as
+  // every other entry above). Without an entry, a `dossier_generated` row
+  // on a regeneration would fall to the raw-type fallback below instead of
+  // a pt-BR label.
+  dossier_generated: { kind: "other", label: "Dossiê gerado" },
+  dossier_generation_failed: { kind: "other", label: "Falha ao gerar o dossiê" },
 };
 
 const DOSSIER_TITLE_SUFFIX = "Dossiê para o Juizado Especial Cível";
@@ -416,7 +424,14 @@ function isAnnouncementMatched(event: EventRow, ctx: AnnouncementContext): boole
 // generous aliases below. Absence of a recognised key is not an error — an
 // event this table cannot enrich still exists in the timeline via its
 // title; a key not on this allow-list is NEVER rendered, because an English
-// identifier leaking into a pt-BR document is worse than a thin entry.
+// identifier leaking into a pt-BR document is worse than a thin entry. The
+// same rule applies to *values*, not only keys: a `stage`-ish or
+// `outcome`-ish value that matches a known member of this module's own
+// label tables is translated the same way it would be anywhere else in the
+// dossier (`STAGE_LABELS` / `OUTCOME_LABELS`); only a value this module
+// cannot recognise falls through verbatim — at that point it is data from
+// another module, not a label, and inventing a pt-BR translation for it
+// would be worse than showing it as-is.
 
 type PayloadPrimitive = string | number | boolean;
 
@@ -429,12 +444,27 @@ function isKnownStage(value: string): value is Stage {
   return Object.prototype.hasOwnProperty.call(STAGE_LABELS, value);
 }
 
-// Loose on purpose: a date-ish payload value may arrive as an ISO string or
-// as an epoch number from a branch this module doesn't control. A boolean
-// is never a meaningful date, so it is rejected before `Date` gets a chance
-// to coerce it into something misleadingly "valid" (`new Date(true)`).
+// Same idea as `isKnownStage`, for the `outcome` payload field: `cases.outcome`
+// (RF-186) already has a pt-BR label table declared above, and a payload
+// carrying the identical enum value deserves the identical translation, not
+// the raw English string.
+function isKnownOutcome(value: string): boolean {
+  return Object.prototype.hasOwnProperty.call(OUTCOME_LABELS, value);
+}
+
+// Strings only, deliberately. A bare number here could be epoch
+// milliseconds or epoch seconds — E5 Tasks 3/4/5 have not settled these
+// payload shapes, so this module has no way to tell which one a given
+// branch meant — and guessing wrong does not fail loudly, it prints a
+// confident, wrong date: epoch seconds fed to `new Date(seconds)` renders
+// 1970 on a document a person carries into a Juizado. A boolean is never a
+// meaningful date either. Both are rejected up front, before `Date` gets a
+// chance to coerce either into something misleadingly "valid" (`new
+// Date(true)`, `new Date(5)`). A rejected value is not lost — it still
+// reaches the page, verbatim, via `renderPayloadValue`'s `String(value)`
+// fallback — it is just never mistaken for a parsed date.
 function parseDateValue(value: PayloadPrimitive): Date | null {
-  if (typeof value === "boolean") return null;
+  if (typeof value !== "string") return null;
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? null : date;
 }
@@ -445,7 +475,7 @@ function capLine(line: string): string {
   return line.length > MAX_DETAIL_LINE_LENGTH ? `${line.slice(0, MAX_DETAIL_LINE_LENGTH - 1)}…` : line;
 }
 
-type PayloadFieldKind = "stage" | "date" | "text";
+type PayloadFieldKind = "stage" | "date" | "text" | "outcome";
 
 type PayloadField = { aliases: string[]; label: string; kind: PayloadFieldKind };
 
@@ -455,21 +485,33 @@ type PayloadField = { aliases: string[]; label: string; kind: PayloadFieldKind }
 // `toStage` (and their aliases) are kept as two separate fields, not one,
 // because a stage transition's whole point is showing *which* stages —
 // collapsing them into a single line would silently drop the other end of
-// the transition.
+// the transition. The bare `stage` field sits between them (not after
+// `toStage`) so that a payload carrying both `stage` and `toStage` reads
+// forward — "Etapa: X" then "Nova etapa: Y" — instead of announcing the
+// destination before the fact that it is one.
 const PAYLOAD_FIELDS: PayloadField[] = [
   { aliases: ["fromStage", "previousStage"], label: "Etapa anterior", kind: "stage" },
-  { aliases: ["toStage", "newStage"], label: "Nova etapa", kind: "stage" },
   { aliases: ["stage"], label: "Etapa", kind: "stage" },
+  { aliases: ["toStage", "newStage"], label: "Nova etapa", kind: "stage" },
   { aliases: ["channel"], label: "Canal", kind: "text" },
   { aliases: ["protocolNumber"], label: "Número do protocolo", kind: "text" },
   { aliases: ["deadlineAt", "expiredAt", "dueAt", "at"], label: "Data", kind: "date" },
   { aliases: ["reason"], label: "Motivo", kind: "text" },
-  { aliases: ["outcome"], label: "Desfecho", kind: "text" },
+  { aliases: ["outcome"], label: "Desfecho", kind: "outcome" },
 ];
 
 function renderPayloadValue(kind: PayloadFieldKind, value: PayloadPrimitive): string {
   if (kind === "stage" && typeof value === "string" && isKnownStage(value)) {
     return STAGE_LABELS[value];
+  }
+  if (kind === "outcome" && typeof value === "string" && isKnownOutcome(value)) {
+    // `OUTCOME_LABELS` is keyed on a free `string` (RF-186's outcome column
+    // isn't a closed union the way `Stage` is), so `noUncheckedIndexedAccess`
+    // types this lookup as possibly `undefined` even though `isKnownOutcome`
+    // just confirmed the key exists — same situation as
+    // `labelForDocumentKind` above. The `?? value` fallback is unreachable
+    // in practice; it exists to satisfy the type, not to change behaviour.
+    return OUTCOME_LABELS[value] ?? value;
   }
   if (kind === "date") {
     const date = parseDateValue(value);
@@ -491,7 +533,9 @@ function findPayloadValue(
 
 /**
  * Renders the allow-listed subset of an event's payload as pt-BR detail
- * lines. Every rendered value is masked with `maskText` — except
+ * lines. A `stage`- or `outcome`-kind value that matches this module's own
+ * label tables is translated (`renderPayloadValue`); anything else renders
+ * verbatim. Every rendered value is masked with `maskText` — except
  * `protocolNumber`, a structured identifier, same reasoning as everywhere
  * else in this module.
  */
@@ -565,6 +609,15 @@ function compareEntries(a: DossierEntry, b: DossierEntry): number {
   if (a.sourceId !== b.sourceId) return a.sourceId < b.sourceId ? -1 : 1;
 
   if (a.title !== b.title) return a.title < b.title ? -1 : 1;
+  // Unreachable with well-formed input, not merely untested: two entries
+  // tie on `at` + `kind` + `sourceId` + `title` only if they came from the
+  // same row, and every same-`sourceId` pair this module emits differs in
+  // either kind (e.g. protocol vs. protocol_response) or title (e.g.
+  // "Documento gerado" vs. "Documento enviado"); ids are primary keys, so
+  // no two rows of a table collide. Still required — TypeScript demands a
+  // `number` return on every path out of a comparator — and confirmed on
+  // re-review as the right call to leave uncovered rather than engineer a
+  // synthetic input just to hit it.
   return 0;
 }
 

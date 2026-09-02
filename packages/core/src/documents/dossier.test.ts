@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { buildDossier, type BuildDossierInput } from "./dossier.js";
+import { assembleContest } from "./assemble.js";
 import type { ContestDocument } from "./contest.js";
-import type { Stage } from "../cases/playbook.js";
+import type { Playbook, Stage } from "../cases/playbook.js";
 
 // A real, mod-11-valid CNPJ — the same fixture `mask.test.ts` uses for
 // "Claro Móvel" — so the CNPJ-survives-unmasked test is meaningful: if this
@@ -58,6 +59,25 @@ function protocol(overrides: Partial<ProtocolRow> = {}): ProtocolRow {
     ...overrides,
   };
 }
+
+// `assemble.ts` is out of scope for this module (a sibling sub-task owns
+// it) and its `BASE_ATTACHMENT` constant isn't exported — but `assembleContest`
+// is, and returns it as `attachmentsChecklist[0]` whenever the stage doesn't
+// require a previous protocol. This lets the F9 test below read the real,
+// live value instead of hardcoding a second copy of it.
+const ASSEMBLE_PLAYBOOK: Playbook = {
+  stages: [
+    {
+      stage: "sac",
+      channel: "SAC da operadora",
+      responseDays: 7,
+      businessDays: false,
+      requiresPreviousProtocol: false,
+      asks: [],
+      legalRefs: [],
+    },
+  ],
+};
 
 function baseInput(overrides: Partial<BuildDossierInput> = {}): BuildDossierInput {
   return {
@@ -142,6 +162,27 @@ describe("buildDossier · timeline ordering", () => {
     expect(documentEntries.map((e) => e.title)).toEqual(
       [...documentEntries.map((e) => e.title)].sort(),
     );
+  });
+
+  it("breaks same-instant ties across different kinds by the fixed KIND_ORDER, not by discovery order", () => {
+    // Four different-kind entries, all landing on the exact same instant —
+    // the case's own row, the invoice, a document and a protocol. Nothing
+    // in `buildDossier` controls the order these four sources are iterated
+    // in other than `KIND_ORDER` itself, so this pins down that the choice
+    // of order (not just its existence) is real behaviour. Reversing
+    // `KIND_ORDER` in the source flips this list end to end.
+    const tie = new Date("2026-01-01T00:00:00Z");
+    const input = baseInput({
+      case: { ...baseInput().case, createdAt: tie },
+      invoice: { ...baseInput().invoice, createdAt: tie },
+      documents: [document({ createdAt: tie })],
+      protocols: [protocol({ registeredAt: tie })],
+    });
+    const dossier = buildDossier(input);
+    const kindsAtTie = dossier.entries
+      .filter((e) => e.at.getTime() === tie.getTime())
+      .map((e) => e.kind);
+    expect(kindsAtTie).toEqual(["case_opened", "invoice", "document", "protocol"]);
   });
 });
 
@@ -504,6 +545,8 @@ describe("buildDossier · event kinds and labels", () => {
     ["case_reopened", "stage_change"],
     ["diff_run", "other"],
     ["invoice_file_expiry_failed", "other"],
+    ["dossier_generated", "other"],
+    ["dossier_generation_failed", "other"],
   ] as const)("maps event type %s to kind %s", (type, kind) => {
     const input = baseInput({
       events: [{ id: "evt_1", type, occurredAt: new Date("2026-06-15T00:00:00Z"), payload: {} }],
@@ -512,6 +555,22 @@ describe("buildDossier · event kinds and labels", () => {
     const entry = dossier.entries.find((e) => e.sourceId === "evt_1");
     expect(entry?.kind).toBe(kind);
     expect(entry?.title.length).toBeGreaterThan(0);
+  });
+
+  it("gives dossier_generated and dossier_generation_failed their own pt-BR labels, not the raw-type fallback", () => {
+    // RF-187's own job (Task 7, sibling sub-task, in flight in this
+    // worktree) writes these two event types on every dossier run. Without
+    // an `EVENT_META` entry, a regeneration's `dossier_generated` row would
+    // fall through to `Evento do caso: dossier_generated`.
+    const input = baseInput({
+      events: [
+        { id: "evt_1", type: "dossier_generated", occurredAt: new Date("2026-06-15T00:00:00Z"), payload: {} },
+        { id: "evt_2", type: "dossier_generation_failed", occurredAt: new Date("2026-06-16T00:00:00Z"), payload: {} },
+      ],
+    });
+    const dossier = buildDossier(input);
+    expect(dossier.entries.find((e) => e.sourceId === "evt_1")?.title).toBe("Dossiê gerado");
+    expect(dossier.entries.find((e) => e.sourceId === "evt_2")?.title).toBe("Falha ao gerar o dossiê");
   });
 
   it("gives an unrecognised event type kind 'other' and a safe fallback title", () => {
@@ -697,17 +756,19 @@ describe("buildDossier · sourceId provenance (principle A3)", () => {
 
 describe("buildDossier · invoice attachment label stays in sync with the contest letter (assemble.ts)", () => {
   it("uses the exact same base attachment label assemble.ts tells the person to bring", () => {
-    // `assemble.ts`'s private `BASE_ATTACHMENT` constant, copied here
-    // deliberately — `assemble.ts` is out of scope for this module, so it
-    // isn't exported, and this literal is what catches the two drifting
-    // apart (which would otherwise list the invoice twice under two
-    // different labels with nothing failing).
-    const ASSEMBLE_BASE_ATTACHMENT = "Fatura do período contestado";
+    // Reads the real, live value through the public `assembleContest`
+    // function rather than a second hardcoded copy of `assemble.ts`'s
+    // private `BASE_ATTACHMENT` — a hardcoded copy pins this module's own
+    // label but cannot detect `assemble.ts`'s side drifting away from it,
+    // which is exactly the direction this test exists to catch (drift would
+    // otherwise list the invoice twice under two different labels with
+    // nothing failing).
+    const assembled = assembleContest({ findings: [], stage: "sac", playbook: ASSEMBLE_PLAYBOOK });
     const dossier = buildDossier(baseInput());
     const invoiceAttachment = dossier.attachments.find(
       (a) => a.status === "available" || a.status === "expired",
     );
-    expect(invoiceAttachment?.label).toBe(ASSEMBLE_BASE_ATTACHMENT);
+    expect(invoiceAttachment?.label).toBe(assembled.attachmentsChecklist[0]);
   });
 });
 
@@ -774,6 +835,67 @@ describe("buildDossier · event payload enrichment (allow-listed details)", () =
     expect(entry?.details).toEqual(["Etapa: 7"]);
   });
 
+  it("orders 'Etapa' before 'Nova etapa' when a payload carries both stage and toStage", () => {
+    // A payload with the bare `stage` alongside the directed `toStage`
+    // describes one transition, not two independent facts — "Etapa: SAC"
+    // (where things stand) has to read before "Nova etapa: Procon" (where
+    // they're going), not after it.
+    const input = baseInput({
+      events: [{
+        id: "evt_1", type: "stage_advanced", occurredAt: new Date("2026-06-15T00:00:00Z"),
+        payload: { stage: "sac", toStage: "procon" },
+      }],
+    });
+    const dossier = buildDossier(input);
+    const entry = dossier.entries.find((e) => e.sourceId === "evt_1");
+    expect(entry?.details).toEqual(["Etapa: SAC", "Nova etapa: Procon"]);
+  });
+
+  it("routes an allow-listed outcome value through OUTCOME_LABELS when it's a known member", () => {
+    // `cases.outcome` (RF-186) and an event payload's `outcome` field carry
+    // the identical enum — `resolved | partial | denied | abandoned` — so a
+    // recognised value here must get the same pt-BR translation this module
+    // already gives `cases.outcome` elsewhere, not the raw English word.
+    const input = baseInput({
+      events: [{
+        id: "evt_1", type: "outcome_confirmed", occurredAt: new Date("2026-06-15T00:00:00Z"),
+        payload: { outcome: "resolved" },
+      }],
+    });
+    const dossier = buildDossier(input);
+    const entry = dossier.entries.find((e) => e.sourceId === "evt_1");
+    expect(entry?.details).toEqual(["Desfecho: Resolvido integralmente"]);
+  });
+
+  it("renders an outcome value outside OUTCOME_LABELS verbatim, without inventing a translation", () => {
+    const input = baseInput({
+      events: [{
+        id: "evt_1", type: "outcome_confirmed", occurredAt: new Date("2026-06-15T00:00:00Z"),
+        payload: { outcome: "future_outcome_value" },
+      }],
+    });
+    const dossier = buildDossier(input);
+    const entry = dossier.entries.find((e) => e.sourceId === "evt_1");
+    expect(entry?.details).toEqual(["Desfecho: future_outcome_value"]);
+  });
+
+  it("does not treat a bare number under a date-ish key as an epoch timestamp", () => {
+    // `{ at: 5 }` must not become `01/01/1970` — a plausible-looking but
+    // silently wrong date on a document going to a Juizado. Only strings
+    // are accepted under `kind: "date"`; a bare number falls through to the
+    // verbatim fallback instead.
+    const input = baseInput({
+      events: [{
+        id: "evt_1", type: "deadline_expired", occurredAt: new Date("2026-06-15T00:00:00Z"),
+        payload: { at: 5 },
+      }],
+    });
+    const dossier = buildDossier(input);
+    const entry = dossier.entries.find((e) => e.sourceId === "evt_1");
+    expect(entry?.details).toEqual(["Data: 5"]);
+    expect(entry?.details?.join(" ")).not.toContain("1970");
+  });
+
   it("formats a date-ish payload value and leaves protocolNumber unmasked while masking reason", () => {
     const input = baseInput({
       events: [{
@@ -794,16 +916,20 @@ describe("buildDossier · event payload enrichment (allow-listed details)", () =
     expect(reasonLine).not.toContain(VALID_CPF);
   });
 
-  it("renders a date-ish value verbatim (masked) when it does not parse as a date", () => {
+  it("masks a date-ish value that doesn't parse as a date, instead of rendering it raw", () => {
+    // The previous version of this test used "not-a-date", a string with
+    // nothing maskable in it — it passed even if the masking step were
+    // skipped entirely on this branch. Planting a CPF in the unparseable
+    // value makes the "(masked)" half of the behaviour actually load-bearing.
     const input = baseInput({
       events: [{
         id: "evt_1", type: "deadline_expired", occurredAt: new Date("2026-06-15T00:00:00Z"),
-        payload: { at: "not-a-date" },
+        payload: { at: `Sem data definida, CPF ${VALID_CPF}` },
       }],
     });
     const dossier = buildDossier(input);
     const entry = dossier.entries.find((e) => e.sourceId === "evt_1");
-    expect(entry?.details).toEqual(["Data: not-a-date"]);
+    expect(entry?.details).toEqual(["Data: Sem data definida, CPF [CPF]"]);
   });
 
   it("accepts boolean and number primitive values under an allow-listed key", () => {
@@ -869,9 +995,15 @@ describe("buildDossier · event payload enrichment (allow-listed details)", () =
     expect(entry?.details[0]?.length).toBeLessThan(210);
   });
 
-  it("renders no details for an event whose payload has nothing on the allow-list", () => {
+  it("renders no details for a payload that has keys, but none of them on the allow-list", () => {
+    // An empty `{}` payload can't distinguish "correctly filtered everything
+    // out" from "never renders anything" — a payload that actually has keys,
+    // just none recognised, is the case worth pinning down.
     const input = baseInput({
-      events: [{ id: "evt_1", type: "diff_run", occurredAt: new Date("2026-06-15T00:00:00Z"), payload: {} }],
+      events: [{
+        id: "evt_1", type: "diff_run", occurredAt: new Date("2026-06-15T00:00:00Z"),
+        payload: { irrelevantKey: "x", anotherIrrelevantKey: 123 },
+      }],
     });
     const dossier = buildDossier(input);
     expect(dossier.entries.find((e) => e.sourceId === "evt_1")?.details).toEqual([]);
