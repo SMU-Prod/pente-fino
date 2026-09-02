@@ -7,7 +7,7 @@
 // `require-with-user` rule already blocks from the package entry.
 export * as schema from "./schema.js";
 export { getUnscopedDb, type Database } from "./client.js";
-export { withUser, ensureAnonymousSession, type Session, type ScopedDb } from "./with-user.js";
+export { withUser, ensureAnonymousSession, resolveSession, type Session, type ScopedDb } from "./with-user.js";
 export {
   requestClaimCode, confirmClaimCode,
   CLAIM_CODE_TTL_MS, CLAIM_CODE_MAX_ATTEMPTS, CLAIM_RATE_LIMIT_COUNT, CLAIM_RATE_LIMIT_WINDOW_MS,
