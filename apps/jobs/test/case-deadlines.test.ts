@@ -451,6 +451,40 @@ describe("case-deadlines task: RF-186's abandonment (§9.1's 60 days without use
     });
   });
 
+  // The product failure this guards: a person who opens their case every
+  // week is plainly not gone, and closing it behind their back is the one
+  // outcome this whole block exists to prevent. `case_viewed` (E5 Task 6A)
+  // is the weakest signal on the allowlist - reading is not doing - but it
+  // is at least as strong as `report_viewed`, which was already there and
+  // names the *laudo*, a different screen.
+  it("does not abandon a case its owner has opened recently", async () => {
+    const caseId = await insertCase({
+      stage: "sac",
+      nextDeadlineAt: null,
+      createdAt: new Date(NOW.getTime() - 90 * DAY_MS),
+    });
+    await insertEvent(caseId, "case_viewed", new Date(NOW.getTime() - 3 * DAY_MS));
+
+    await task()({ now: NOW.toISOString() });
+
+    const row = await caseRow(caseId);
+    expect(row.stage).toBe("sac");
+    expect(row.outcome).toBeNull();
+  });
+
+  it("still abandons a case whose owner last opened it more than 60 days ago", async () => {
+    const caseId = await insertCase({
+      stage: "sac",
+      nextDeadlineAt: null,
+      createdAt: new Date(NOW.getTime() - 90 * DAY_MS),
+    });
+    await insertEvent(caseId, "case_viewed", new Date(NOW.getTime() - 61 * DAY_MS));
+
+    await task()({ now: NOW.toISOString() });
+
+    expect((await caseRow(caseId)).outcome).toBe("abandoned");
+  });
+
   it("still abandons a case whose only recent events are the ones this job writes itself", async () => {
     const caseId = await insertCase({
       stage: "sac",

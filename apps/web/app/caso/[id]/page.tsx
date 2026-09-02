@@ -149,6 +149,12 @@ export default async function CasoPage({ params }: { params: Promise<{ id: strin
 
           <div className={styles.actionRow}>
             {stagePlaybook.deepLink ? (
+              // `noreferrer` is load-bearing, not boilerplate: this page's
+              // URL is `/caso/<caseId>`, so without it the `Referer` header
+              // hands the case id to consumidor.gov.br on the way out.
+              // `noopener` stops the opened page reaching back through
+              // `window.opener` — on a screen that has just put a
+              // contestation on the clipboard, that is not a formality.
               <a
                 className={styles.linkButton}
                 href={stagePlaybook.deepLink}

@@ -91,6 +91,20 @@ const ABANDONMENT_WINDOW_MS = ABANDONMENT_WINDOW_DAYS * DAY_MS;
 export const USER_ACTION_EVENTS: readonly EventType[] = [
   "case_created",
   "report_viewed",
+  // E5 Task 6A's addition. Without it the sweep below closes as
+  // `abandoned` a case whose owner opens it every single week: they are
+  // plainly not gone, and the one product outcome this block exists to
+  // prevent is closing a case on somebody who is still working it.
+  //
+  // `report_viewed` was already here and names the *laudo*, not the case,
+  // which is why the omission was easy to miss - the two look like the same
+  // thing from the outside and are two different screens. Opening the case
+  // is at least as strong a signal as opening the report.
+  //
+  // It is the weakest action on this list: reading is not doing, and a
+  // person who only ever looks is not escalating anything. That argues for
+  // a reminder, not for closing their case behind their back.
+  "case_viewed",
   "finding_dismissed",
   "finding_confirmed",
   "contest_generated",
