@@ -8,13 +8,14 @@
   },
   "scripts": {
     "build": "turbo run build",
-    "test": "turbo run test && node --test scripts/golden-anonymize.test.mjs scripts/golden-run.test.mjs scripts/check-bundle-budget.test.mjs scripts/check-a11y.test.mjs scripts/eval-contest.test.mjs",
+    "test": "turbo run test && node --test scripts/golden-anonymize.test.mjs scripts/golden-run.test.mjs scripts/check-bundle-budget.test.mjs scripts/check-a11y.test.mjs scripts/eval-contest.test.mjs scripts/proposals.test.mjs",
     "typecheck": "turbo run typecheck",
     "lint": "turbo run lint",
     "golden:count": "node -e \"const {readdirSync,existsSync}=require('fs');const d='fixtures/golden';const n=existsSync(d)?readdirSync(d,{withFileTypes:true}).filter(e=>e.isDirectory()).length:0;console.log(`golden set issuers: ${n}`);if(n===0)console.log('WARNING: empty golden set — RNF-16 is not being enforced');\"",
     "golden:anonymize": "node scripts/golden-anonymize.mjs",
     "golden:run": "node scripts/golden-run.mjs",
-    "eval:contest": "node scripts/eval-contest.mjs"
+    "eval:contest": "node scripts/eval-contest.mjs",
+    "proposals": "node scripts/proposals.mjs"
   },
   "devDependencies": {
     "@axe-core/playwright": "4.13.0",

@@ -218,8 +218,20 @@ const COMPARE_FUNCTIONS = new Set(["max", "min"]);
 
 class Parser {
   private pos = 0;
+  private readonly tokens: Token[];
 
-  constructor(private readonly tokens: Token[]) {}
+  // Written out rather than declared as a TypeScript parameter property
+  // (`constructor(private readonly tokens: Token[])`). A parameter property
+  // is not erasable-only syntax, so Node's strip-only type stripping — the
+  // mechanism every `scripts/*.mjs` here relies on to import a `.ts` source
+  // with no build step — refuses the whole module with
+  // ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX. That made this one line enough to
+  // make anything transitively importing `@pentefino/core`'s rule
+  // evaluators unreachable from a plain `node` script, which is how
+  // `scripts/proposals.mjs` found it.
+  constructor(tokens: Token[]) {
+    this.tokens = tokens;
+  }
 
   parse(): ExprNode {
     const node = this.parseExpr(0);
