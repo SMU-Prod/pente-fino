@@ -28,13 +28,24 @@ export type CivilDate = string;
  * `statutory` — a national holiday by federal law; nobody is expected to
  * be working, so it never counts as a business day.
  *
+ * `religious_municipal` — Lei 9.093/1995 art. 2º: a day of guard declared by
+ * *municipal* law, capped at four per municipality, with Sexta-Feira da
+ * Paixão named in the statute. No federal law puts it on a national
+ * calendar, so it is not `statutory` — but it is declared in practically
+ * every município and there is no banking expediente anywhere in the
+ * country on it, so it **is** counted by the deadline calculator.
+ *
  * `optional` — *ponto facultativo*: the federal executive suspends its own
  * expediente by annual decree, and nothing obliges anyone else to. Recorded
  * here because the fact is real and a caller may want to display it, but
  * **not** counted as a holiday by the deadline calculator. See
  * `CARNAVAL_AND_CORPUS_CHRISTI` below for the reasoning.
+ *
+ * `optional` is therefore the only value that does not stop a clock, which
+ * is how `isBusinessDay` reads it — a new observance added later counts
+ * unless it is deliberately made facultativo.
  */
-export type HolidayObservance = "statutory" | "optional";
+export type HolidayObservance = "statutory" | "religious_municipal" | "optional";
 
 export type NationalHoliday = {
   date: CivilDate;
@@ -263,13 +274,20 @@ const FIXED_HOLIDAYS: readonly FixedHoliday[] = [
  * says "o prazo venceu em X"; if X is late, X is disputable, and the
  * dispute is about our arithmetic rather than about their charge.
  *
- * Sexta-feira Santa is treated differently and counted as statutory: it is
- * observed nationwide without exception and appears on every national
- * holiday calendar, including the bank calendar that private deadlines are
- * in practice measured against. Its formal basis is weaker than Lei
- * 662/1949's dates (Lei 9.093/1995 art. 2º read with Decreto 27.048/1949
- * art. 11 places it among the religious days of guard), which is recorded
- * in its `source` rather than smoothed over.
+ * Sexta-feira Santa stops the clock, but it is not statutory and is not
+ * labelled as one. Lei 9.093/1995 art. 2º makes it a *municipal* religious
+ * holiday: up to four days of guard declared by municipal law, with a
+ * Sexta-Feira da Paixão named in the statute as one of them. So there is no
+ * federal law putting it on the national calendar, and calling it
+ * `statutory` would be a false claim in a product whose documents cite law
+ * at companies.
+ *
+ * It is counted anyway, on its real basis rather than a borrowed one: it is
+ * declared in practically every município and it is a day with no banking
+ * expediente anywhere in the country, which is the calendar a private
+ * deadline is measured against in practice. `religious_municipal` records
+ * exactly that - counted, and counted for a reason that is not Lei
+ * 662/1949's.
  *
  * Carnaval Monday is deliberately absent. It is facultativo like the
  * Tuesday, so recording it would change no deadline; the Tuesday is here
@@ -290,8 +308,11 @@ const MOVEABLE_HOLIDAYS: ReadonlyArray<{
   {
     name: "Sexta-feira Santa",
     offsetFromEaster: -2,
-    observance: "statutory",
-    source: "Lei 9.093/1995, art. 2º c/c Decreto 27.048/1949, art. 11",
+    observance: "religious_municipal",
+    source:
+      "Lei 9.093/1995, art. 2º - feriado religioso de lei municipal, máximo de quatro, "
+      + "a Sexta-Feira da Paixão nominalmente incluída; declarada em praticamente todo "
+      + "município e dia sem expediente bancário nacional",
   },
   {
     name: "Corpus Christi",
@@ -347,6 +368,6 @@ export function isBusinessDay(date: CivilDate): boolean {
 
   const year = Number(date.slice(0, 4));
   return !nationalHolidays(year).some(
-    (holiday) => holiday.date === date && holiday.observance === "statutory",
+    (holiday) => holiday.date === date && holiday.observance !== "optional",
   );
 }

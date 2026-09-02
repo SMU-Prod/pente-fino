@@ -186,15 +186,28 @@ describe("the national holiday calendar", () => {
       expect(optional.sort()).toEqual(["Carnaval", "Corpus Christi"]);
     });
 
-    it("marks Sexta-feira Santa statutory, unlike the other two moveable dates", () => {
+    // Lei 9.093/1995 art. 2º makes Sexta-feira Santa a *municipal*
+    // religious holiday, not a national one - no federal law puts it on this
+    // calendar. It stops the clock all the same (declared in practically
+    // every município, no banking expediente anywhere), so the label has to
+    // say both things at once: counted, and counted on a different basis
+    // from Lei 662/1949's dates. Calling it `statutory` would be a false
+    // claim about the law in a product that cites law at companies.
+    it("marks Sexta-feira Santa religious_municipal, not statutory", () => {
       const santa = nationalHolidays(2026).find((h) => h.name === "Sexta-feira Santa");
-      expect(santa?.observance).toBe("statutory");
+      expect(santa?.observance).toBe("religious_municipal");
+      expect(santa?.source).toContain("Lei 9.093/1995");
+    });
+
+    it("still counts Sexta-feira Santa as a non-business day", () => {
+      // 2026-04-03. The classification changed; the arithmetic must not.
+      expect(isBusinessDay("2026-04-03")).toBe(false);
     });
 
     it("marks every fixed date statutory", () => {
       const notStatutory = nationalHolidays(2026)
         .filter((h) => h.observance !== "statutory")
-        .filter((h) => !["Carnaval", "Corpus Christi"].includes(h.name));
+        .filter((h) => !["Carnaval", "Corpus Christi", "Sexta-feira Santa"].includes(h.name));
       expect(notStatutory).toEqual([]);
     });
   });

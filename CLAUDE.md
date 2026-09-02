@@ -316,3 +316,24 @@ Carnaval e Corpus Christi **não param o relógio**: ponto facultativo vincula
 o Executivo federal, não a empresa do outro lado. Estão registrados no
 calendário com `observance: "optional"` para que a política seja uma linha
 visível, e não uma ausência que ninguém sabe se foi decidida ou esquecida.
+
+**Sexta-feira Santa para o relógio, mas não é feriado nacional.** A Lei
+9.093/1995, art. 2º, faz dela feriado *religioso municipal* — dia de guarda
+declarado por lei do município, no máximo quatro, com a Sexta-Feira da
+Paixão nominalmente incluída. Nenhuma lei federal a coloca no calendário
+nacional. É contada mesmo assim, e pela razão verdadeira: é declarada em
+praticamente todo município e não há expediente bancário em lugar nenhum do
+país. Fica marcada como `religious_municipal`, que diz as duas coisas ao
+mesmo tempo — conta, e conta por um fundamento que não é o da Lei 662/1949.
+
+Isso importa mais do que parece: num produto cuja peça central é citar lei
+para uma empresa, chamar de "feriado nacional" o que a lei chama de feriado
+municipal é a mesma categoria de erro que o produto existe para denunciar.
+
+### 8.3 Citações legais do calendário — o que foi conferido
+
+Conferidas contra fonte primária ou oficial em 01/09/2026: Lei 662/1949 com
+a redação da Lei 10.607/2002 (1º/01, 21/04, 1º/05, 07/09, 02/11, 15/11,
+25/12), Lei 6.802/1980 (12/10), Lei 14.759/2023 (20/11) e Decreto
+9.772/2019 (fim do horário de verão). A única correção que a conferência
+produziu foi a da Sexta-feira Santa, acima.
