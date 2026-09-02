@@ -273,3 +273,46 @@ como estão, no português com acento, e a normalização é responsabilidade do
 motor, não deste léxico. Toda regra gerada a partir de um termo ✅
 confirmado ainda nasce `draft`→`shadow` (RF-125); um termo ⚠️/❔ não deve
 virar seed nenhum ainda.
+
+---
+
+## 8. Convenções de domínio que o PRD não fixou
+
+### 8.1 Fuso horário do cálculo de prazo
+
+**Toda aritmética de data civil deste produto acontece em `America/Sao_Paulo`,
+com deslocamento fixo de −180 minutos (UTC−3).**
+
+O `PRD.md` não diz isso em lugar nenhum — não há uma única ocorrência de
+`Sao_Paulo`, `fuso`, `timezone` ou `UTC` no documento. Ficou implícito, e
+implícito é como dois módulos acabam com duas respostas diferentes.
+
+Por que fixo e não `Intl`:
+
+- O Brasil não tem horário de verão desde o Decreto 9.772/2019, então o
+  deslocamento não varia dentro do horizonte que este produto enxerga.
+- Depender do tzdata do host faria a mesma conta dar resultados diferentes
+  no Windows do desenvolvimento e no Linux do CI — que é exatamente a classe
+  de defeito que só aparece depois de deployado.
+
+Onde isso vive: `SAO_PAULO_UTC_OFFSET_MINUTES`, em
+`packages/core/src/cases/deadline.ts`. É a única declaração do fuso no
+código; qualquer módulo novo que precise contar dias importa dela em vez de
+inventar a sua.
+
+Consequência que se vê no banco: `cases.next_deadline_at` é `timestamptz` e
+guarda o **último milissegundo do dia do vencimento em horário local**. Um
+prazo que vence dia 15 é armazenado como `2026-05-16T02:59:59.999Z` — a data
+certa, lida no fuso certo.
+
+### 8.2 Contagem de prazo: o dia do começo não conta
+
+Exclui-se o dia do começo, inclui-se o do vencimento (CPC art. 224; Lei
+9.784/1999 art. 66). Prazo em dias corridos que cai em fim de semana ou
+feriado **rola para o próximo dia útil** — vencimento carimbado num domingo é
+um argumento de graça para a empresa contestar a nossa aritmética.
+
+Carnaval e Corpus Christi **não param o relógio**: ponto facultativo vincula
+o Executivo federal, não a empresa do outro lado. Estão registrados no
+calendário com `observance: "optional"` para que a política seja uma linha
+visível, e não uma ausência que ninguém sabe se foi decidida ou esquecida.
