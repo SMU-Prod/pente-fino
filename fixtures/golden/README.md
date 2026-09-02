@@ -74,14 +74,21 @@ PDF anonimizado que o script produziu.
 `scripts/golden-anonymize.mjs`, com a lista completa de limitações no
 cabeçalho do arquivo):
 
-- entende exatamente a forma de PDF que
-  `fixtures/synthetic/pdfs/make-fixtures.mjs` produz — tabela de
-  cross-reference clássica, texto mostrado com o operador `Tj` de string
-  literal, filtro de stream `FlateDecode` ou nenhum, fonte simples (não
-  `Type0`/CID). Fora dessa forma, o script recusa o arquivo inteiro em vez
-  de mascarar só o que entende e devolver algo parcialmente anonimizado —
-  isso inclui o caso comum de um PDF real que mostra texto com arrays `TJ`
-  (o normal quando o gerador aplica kerning) ou com string em hexadecimal.
+- entende tabela de cross-reference clássica, filtro de stream
+  `FlateDecode` ou nenhum, fonte simples (não `Type0`/CID), e as quatro
+  formas de mostrar texto que um gerador de fatura de verdade emite:
+  `(lit) Tj`, `<hex> Tj`, os atalhos `'`/`"` e o **array `TJ`** com ajustes
+  de kerning entre os fragmentos. O array `TJ` é o caso normal numa fatura
+  real — gerador que aplica kerning parte uma linha visível em vários
+  fragmentos — e é lido como **uma linha lógica só**, porque um CPF
+  guardado como `(CPF: 111)` `-2` `(.444.777-35)` não casa com nenhum
+  detector que procura CPF inteiro. Fora dessas formas, o script recusa o
+  arquivo inteiro em vez de mascarar só o que entende e devolver algo
+  parcialmente anonimizado.
+- **linha não alterada sai byte a byte igual; linha redigida perde o
+  kerning interno** — e só ela, porque é justamente a linha cujo texto
+  está sendo trocado por um marcador. A posição de toda linha continua
+  intacta, que é o que o golden set mede.
 - CPF, endereço e CEP são detectados reaproveitando `maskText`/`containsPii`
   de `@pentefino/core` (o mesmo detector, com dígito verificador, que o
   pipeline de produção usa) — nunca um segundo detector.

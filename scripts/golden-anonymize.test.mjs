@@ -176,21 +176,99 @@ describe("text-pii-sample.pdf", () => {
 // Unsupported shapes: fail loudly, write nothing.
 // =====================================================================
 
-describe("refuses PDF shapes it cannot safely edit", () => {
-  test("a TJ array (kerned text split across string fragments) is rejected, not partially masked", async () => {
+async function readPdfText(bytes) {
+  const result = await createUnpdfReader().read(new Uint8Array(bytes));
+  return result.pages.join("\n");
+}
+
+describe("kerned and hex text: the shapes a real invoice generator emits", () => {
+  // The reason this matters: a generator that kerns glyphs splits one
+  // visible line across several string fragments, so a CPF can be stored
+  // as `(CPF: 111)` `-2` `(.444.777-35)` and matches no detector looking
+  // for a whole CPF. A script that read fragments one at a time would
+  // write out a file it believed was redacted and that still carried the
+  // number. 111.444.777-35 is check-digit valid, which is what makes
+  // `containsPii` willing to see it at all.
+  test("masks a CPF split across the fragments of a TJ array", async () => {
     const pdf = assembleMinimalPdf("BT\n/F1 14 Tf\n1 0 0 1 72 720 Tm\n[(CPF: 111)-2(.444.777-35)] TJ\nET");
+    const { bytes } = await anonymizePdf(pdf);
+    const text = await readPdfText(bytes);
+    assert.match(text, /\[CPF\]/);
+    assert.equal(containsPii(text), false);
+    assert.doesNotMatch(text, /111\.444\.777-35/);
+  });
+
+  test("masks a CPF in a hex string", async () => {
+    // "CPF: 111.444.777-35" in latin-1 hex.
+    const hex = Buffer.from("CPF: 111.444.777-35", "latin1").toString("hex").toUpperCase();
+    const pdf = assembleMinimalPdf(`BT\n/F1 14 Tf\n1 0 0 1 72 720 Tm\n<${hex}> Tj\nET`);
+    const { bytes } = await anonymizePdf(pdf);
+    const text = await readPdfText(bytes);
+    assert.match(text, /\[CPF\]/);
+    assert.doesNotMatch(text, /111\.444\.777-35/);
+  });
+
+  // A redacted TJ array has to be written back as an ARRAY - `[(x)] TJ`,
+  // never a bare `(x) TJ`, which is a string operand handed to an operator
+  // that takes an array. Reading the output back with unpdf does not catch
+  // that (unpdf is forgiving), so the check is that the script can re-parse
+  // its own output: this scanner rejects a literal in front of TJ, so a
+  // malformed rewrite fails here loudly instead of shipping a corrupt
+  // fixture into the golden set.
+  test("re-parses its own output for a redacted TJ array, so the rewrite stays well-formed", async () => {
+    const pdf = assembleMinimalPdf("BT\n/F1 14 Tf\n1 0 0 1 72 720 Tm\n[(CPF: 111)-2(.444.777-35)] TJ\nET");
+    const once = await anonymizePdf(pdf);
+    const twice = await anonymizePdf(new Uint8Array(once.bytes));
+    assert.equal(Buffer.compare(Buffer.from(once.bytes), Buffer.from(twice.bytes)), 0);
+  });
+
+  test("leaves a TJ array that needs no masking byte-identical, kerning included", async () => {
+    const content = "BT\n/F1 14 Tf\n1 0 0 1 72 720 Tm\n[(Total a )-250(pagar: R$ 159,90)] TJ\nET";
+    const pdf = assembleMinimalPdf(content);
+    const { bytes } = await anonymizePdf(pdf);
+    // The kerning adjustment survives untouched, because nothing on this
+    // line changed. Only a line that IS redacted loses its kerning.
+    assert.ok(Buffer.from(bytes).toString("latin1").includes("[(Total a )-250(pagar: R$ 159,90)] TJ"));
+  });
+
+  test("reads the next-line shorthand operators as text too", async () => {
+    const pdf = assembleMinimalPdf("BT\n/F1 14 Tf\n1 0 0 1 72 720 Tm\n(CPF: 111.444.777-35) '\nET");
+    const { bytes } = await anonymizePdf(pdf);
+    const text = await readPdfText(bytes);
+    assert.match(text, /\[CPF\]/);
+    assert.doesNotMatch(text, /111\.444\.777-35/);
+  });
+
+  test("a non-text array operand (a dash pattern) is left alone rather than mistaken for text", async () => {
+    const content = "0.5 w [3 3] 0 d\n72 700 m 540 700 l S\nBT\n/F1 14 Tf\n1 0 0 1 72 720 Tm\n(Fatura) Tj\nET";
+    const pdf = assembleMinimalPdf(content);
+    const { bytes } = await anonymizePdf(pdf);
+    assert.ok(Buffer.from(bytes).toString("latin1").includes("[3 3] 0 d"));
+  });
+});
+
+// =====================================================================
+// Unsupported shapes: fail loudly, write nothing.
+// =====================================================================
+
+describe("refuses PDF shapes it cannot safely edit", () => {
+  test("a string operand followed by an operator that does not show text is rejected", async () => {
+    // `Tz` sets horizontal scaling and takes a number, never a string.
+    // Meeting one here means the stream is not the shape this script
+    // believes it is parsing, so it stops instead of guessing.
+    const pdf = assembleMinimalPdf("BT\n/F1 14 Tf\n1 0 0 1 72 720 Tm\n(CPF: 111.444.777-35) Tz\nET");
     await assert.rejects(() => anonymizePdf(pdf), UnsupportedPdfError);
   });
 
-  test("a hex string used for text is rejected", async () => {
-    const pdf = assembleMinimalPdf("BT\n/F1 14 Tf\n1 0 0 1 72 720 Tm\n<48656C6C6F> Tj\nET");
+  test("an array of strings followed by something other than TJ is rejected", async () => {
+    const pdf = assembleMinimalPdf("BT\n/F1 14 Tf\n1 0 0 1 72 720 Tm\n[(CPF: 111)(.444.777-35)] Tw\nET");
     await assert.rejects(() => anonymizePdf(pdf), UnsupportedPdfError);
   });
 
   test("the CLI exits non-zero and writes nothing for an unsupported PDF", () => {
     const dir = tempDir();
     try {
-      const pdf = assembleMinimalPdf("BT\n/F1 14 Tf\n1 0 0 1 72 720 Tm\n[(x)] TJ\nET");
+      const pdf = assembleMinimalPdf("BT\n/F1 14 Tf\n1 0 0 1 72 720 Tm\n(x) Tz\nET");
       const inputPath = join(dir, "unsupported.pdf");
       writeFileSync(inputPath, pdf);
       assert.throws(() => execFileSync(process.execPath, [SCRIPT_PATH, inputPath, join(dir, "out")]));

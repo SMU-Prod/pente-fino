@@ -37,13 +37,23 @@
 //     reference.
 //  5. A page's content stream is either uncompressed or `FlateDecode`
 //     only — no `LZWDecode`, `ASCII85Decode`, `DCTDecode`, etc.
-//  6. Text is shown with the single-string `Tj` operator using PDF
-//     literal strings — `(like this)`. A `TJ` array (the common case
-//     when a generator kerns individual glyphs, which splits one line of
-//     text across several string fragments), the `'`/`"` shorthand
-//     operators, or a hex string (`<AABBCC> Tj`) are all UNSUPPORTED —
-//     the script refuses the whole file rather than silently masking
-//     only the fragments it understands and leaving the rest.
+//  6. Text is shown by one of four operations: `(lit) Tj`, `<hex> Tj`,
+//     the `'`/`"` next-line shorthands, or a `TJ` array of string
+//     fragments with kerning adjustments between them. The TJ array is
+//     the normal case for a real invoice — a generator that kerns glyphs
+//     splits one visible line across several fragments — and it is
+//     handled by reading the fragments as ONE logical line, because a CPF
+//     stored as `(CPF: 111)` `-2` `(.444.777-35)` matches no detector
+//     looking for a whole CPF. Anything else that shows text (an inline
+//     image operator, an unknown operator taking a string) makes the
+//     script refuse the whole file rather than silently masking only the
+//     parts it understands and leaving the rest.
+//
+//     A line whose text is NOT changed is emitted byte-for-byte. A line
+//     that IS redacted is rewritten as a single string, so intra-line
+//     kerning is lost on that line only — the line whose text is being
+//     replaced by a marker anyway. See the scanner's own header for the
+//     reasoning.
 //  7. Every font a processed page's `/Resources` names is a simple font
 //     (`/Type1`, `/TrueType`, …), not a composite `/Type0` (CID) font,
 //     and carries no `/Differences` re-encoding. A `Tj` string's bytes
@@ -522,59 +532,209 @@ function encodePdfLiteralString(text) {
 }
 
 // =====================================================================
-// Content-stream text scanning: find every `(...) Tj` and reject any
-// other text-showing shape (TJ arrays, hex strings, '/").
+// Content-stream text scanning
 // =====================================================================
+//
+// Finds every text-showing operation and returns it as a "run": the
+// logical line of text it draws, plus the byte span that has to be
+// rewritten if that text changes.
+//
+// Four shapes are understood, which between them cover what real invoice
+// generators emit:
+//
+//   (lit) Tj                      one literal string
+//   <48656C> Tj                   one hex string
+//   (lit) '        (lit) "        the next-line shorthands (for `"` the
+//                                 word/char spacing operands precede the
+//                                 string, so scanning from the string is
+//                                 still correct)
+//   [ (a) -250 (b) ] TJ           an array of string fragments with
+//                                 kerning adjustments between them
+//
+// The TJ array is the case that matters: it is what a generator produces
+// as soon as it kerns individual glyphs, which is the normal case for a
+// real invoice, and it splits one visible line across several fragments.
+// The kerning numbers are horizontal spacing adjustments, not characters,
+// so the LOGICAL line is the concatenation of the fragments, and that is
+// what the masking pipeline sees. Otherwise a CPF split across
+// `(123.456.)` `(789-01)` would never match a detector looking for a
+// whole CPF - the redaction would silently miss exactly the documents it
+// exists for.
+//
+// How a changed line is written back, and what that costs:
+//
+//   - A run whose text the masking pipeline did not change is emitted
+//     byte-for-byte, untouched. That is the overwhelming majority of an
+//     invoice, and it is why the layout survives.
+//   - A run whose text DID change is replaced by a single literal string
+//     (for TJ, the whole `[...]` array becomes `[(masked)]`). Intra-line
+//     kerning is therefore lost - but only on the lines whose text is
+//     being replaced by a marker anyway, where the original glyph spacing
+//     is not something the golden set can measure. Every other line, and
+//     every line's POSITION, is unaffected.
+//
+// Anything outside these four shapes still makes the script refuse the
+// whole file rather than half-redact it.
 
-function scanTjStrings(streamText) {
-  const matches = [];
+const TEXT_SHOWING_OPS = ["Tj", "'", '"'];
+
+function skipWhitespace(text, i) {
+  while (i < text.length && /\s/.test(text[i])) i++;
+  return i;
+}
+
+/** Reads the operator token starting at `i` (already past whitespace). */
+function readOperator(text, i) {
+  if (text[i] === "'" || text[i] === '"') return text[i];
+  let j = i;
+  while (j < text.length && /[A-Za-z*]/.test(text[j])) j++;
+  return text.slice(i, j);
+}
+
+/** Parses a literal `(...)` string starting at `i`. Returns its end index (exclusive). */
+function endOfLiteralString(text, i) {
+  let depth = 1;
+  let j = i + 1;
+  while (j < text.length && depth > 0) {
+    const c = text[j];
+    if (c === "\\") {
+      j += 2;
+      continue;
+    }
+    if (c === "(") depth++;
+    else if (c === ")") depth--;
+    j++;
+  }
+  if (depth !== 0) throw new UnsupportedPdfError("unterminated literal string in content stream");
+  return j;
+}
+
+/**
+ * Parses a content-stream array operand starting at `[`. Returns the index
+ * just past `]` and the string fragments it contains (kerning numbers are
+ * spacing, not text, and are dropped from the logical line).
+ */
+function parseArrayOperand(text, start) {
+  const fragments = [];
+  let i = start + 1;
+  while (i < text.length) {
+    const ch = text[i];
+    if (ch === "]") return { end: i + 1, fragments };
+    if (/\s/.test(ch)) {
+      i++;
+      continue;
+    }
+    if (ch === "(") {
+      const stringEnd = endOfLiteralString(text, i);
+      fragments.push({ kind: "literal", raw: text.slice(i + 1, stringEnd - 1) });
+      i = stringEnd;
+      continue;
+    }
+    if (ch === "<") {
+      const hexEnd = text.indexOf(">", i);
+      if (hexEnd === -1) throw new UnsupportedPdfError("unterminated hex string in content stream");
+      fragments.push({ kind: "hex", raw: text.slice(i + 1, hexEnd) });
+      i = hexEnd + 1;
+      continue;
+    }
+    if (/[-+.0-9]/.test(ch)) {
+      while (i < text.length && /[-+.0-9]/.test(text[i])) i++;
+      continue;
+    }
+    throw new UnsupportedPdfError(`unsupported content stream: unexpected "${ch}" inside an array operand`);
+  }
+  throw new UnsupportedPdfError("unterminated array operand in content stream");
+}
+
+function scanTextRuns(streamText) {
+  const runs = [];
   let i = 0;
   const n = streamText.length;
-  while (i < n) {
-    const ch = streamText[i];
-    if (ch === "(") {
-      const literalStart = i;
-      let depth = 1;
-      let j = i + 1;
-      while (j < n && depth > 0) {
-        const c = streamText[j];
-        if (c === "\\") {
-          j += 2;
-          continue;
-        }
-        if (c === "(") depth++;
-        else if (c === ")") depth--;
-        j++;
-      }
-      if (depth !== 0) throw new UnsupportedPdfError("unterminated literal string in content stream");
-      const rawInner = streamText.slice(literalStart + 1, j - 1);
-      let k = j;
-      while (k < n && /\s/.test(streamText[k])) k++;
-      if (streamText.startsWith("Tj", k) && !/[A-Za-z0-9]/.test(streamText[k + 2] ?? "")) {
-        matches.push({ literalStart, literalEnd: j, opEnd: k + 2, raw: rawInner });
-        i = k + 2;
-        continue;
-      }
+
+  const finishSimpleRun = (fragment, stringStart, stringEnd) => {
+    const k = skipWhitespace(streamText, stringEnd);
+    const op = readOperator(streamText, k);
+    if (!TEXT_SHOWING_OPS.includes(op)) {
       const upcoming = streamText.slice(k, k + 12).trim();
       throw new UnsupportedPdfError(
-        `unsupported content stream: a literal string is not immediately followed by Tj ` +
-          `(found "${upcoming}") — TJ arrays and the '/" operators are not supported`,
+        `unsupported content stream: a string operand is followed by "${upcoming}", ` +
+          `which is not a text-showing operator this script understands`,
       );
     }
-    if (ch === "<" && streamText[i + 1] !== "<") {
-      const hexEnd = streamText.indexOf(">", i);
-      if (hexEnd === -1) throw new UnsupportedPdfError("unterminated hex string in content stream");
-      throw new UnsupportedPdfError("unsupported content stream: hex strings (<...>) are not supported for text");
+    runs.push({ kind: "simple", replaceStart: stringStart, replaceEnd: stringEnd, fragments: [fragment] });
+    return k + op.length;
+  };
+
+  while (i < n) {
+    const ch = streamText[i];
+
+    if (ch === "(") {
+      const stringEnd = endOfLiteralString(streamText, i);
+      i = finishSimpleRun({ kind: "literal", raw: streamText.slice(i + 1, stringEnd - 1) }, i, stringEnd);
+      continue;
     }
+
     if (ch === "<" && streamText[i + 1] === "<") {
       // An inline dictionary (marked-content property list, etc). Skip
-      // it wholesale — nothing inside it is a text-showing operand.
+      // it wholesale - nothing inside it is a text-showing operand.
       i = findMatchingDictEnd(streamText, i);
       continue;
     }
+
+    if (ch === "<") {
+      const hexEnd = streamText.indexOf(">", i);
+      if (hexEnd === -1) throw new UnsupportedPdfError("unterminated hex string in content stream");
+      i = finishSimpleRun({ kind: "hex", raw: streamText.slice(i + 1, hexEnd) }, i, hexEnd + 1);
+      continue;
+    }
+
+    if (ch === "[") {
+      const { end, fragments } = parseArrayOperand(streamText, i);
+      if (fragments.length === 0) {
+        // Not a text array - a dash pattern (`[3 3] 0 d`) or similar.
+        i = end;
+        continue;
+      }
+      const k = skipWhitespace(streamText, end);
+      const op = readOperator(streamText, k);
+      if (op !== "TJ") {
+        const upcoming = streamText.slice(k, k + 12).trim();
+        throw new UnsupportedPdfError(
+          `unsupported content stream: an array of strings is followed by "${upcoming}" instead of TJ`,
+        );
+      }
+      runs.push({ kind: "array", replaceStart: i, replaceEnd: end, fragments });
+      i = k + op.length;
+      continue;
+    }
+
     i++;
   }
-  return matches;
+  return runs;
+}
+
+/** Decodes a hex string's inner text (`<48656C6C6F>` becomes `Hello`). */
+function decodePdfHexString(raw) {
+  const digits = raw.replace(/\s+/g, "");
+  if (!/^[0-9A-Fa-f]*$/.test(digits)) {
+    throw new UnsupportedPdfError("malformed hex string in content stream");
+  }
+  // An odd number of digits is padded with a trailing zero (PDF 32000-1 7.3.4.3).
+  const padded = digits.length % 2 === 1 ? digits + "0" : digits;
+  let out = "";
+  for (let i = 0; i < padded.length; i += 2) {
+    out += String.fromCharCode(parseInt(padded.slice(i, i + 2), 16));
+  }
+  return out;
+}
+
+/** The logical line a run draws: its fragments decoded and concatenated. */
+function decodeRun(run) {
+  let out = "";
+  for (const fragment of run.fragments) {
+    out += fragment.kind === "hex" ? decodePdfHexString(fragment.raw) : decodePdfLiteralString(fragment.raw);
+  }
+  return out;
 }
 
 // =====================================================================
@@ -663,21 +823,25 @@ function maskLine(originalLine, report, preservedCnpjs) {
 // =====================================================================
 
 function anonymizeContentStreamText(streamText, report, preservedCnpjs) {
-  const matches = scanTjStrings(streamText);
+  const runs = scanTextRuns(streamText);
   let out = "";
   let cursor = 0;
   let changed = false;
-  for (const match of matches) {
-    const decoded = decodePdfLiteralString(match.raw);
+  for (const run of runs) {
+    const decoded = decodeRun(run);
     const masked = maskLine(decoded, report, preservedCnpjs);
-    out += streamText.slice(cursor, match.literalStart);
+    out += streamText.slice(cursor, run.replaceStart);
     if (masked !== decoded) {
       changed = true;
-      out += "(" + encodePdfLiteralString(masked) + ")";
+      const literal = "(" + encodePdfLiteralString(masked) + ")";
+      // A changed TJ array collapses to a single fragment: the kerning
+      // adjustments described spacing between glyphs that are no longer
+      // there. See the scanner's header for why that is the right trade.
+      out += run.kind === "array" ? "[" + literal + "]" : literal;
     } else {
-      out += streamText.slice(match.literalStart, match.literalEnd);
+      out += streamText.slice(run.replaceStart, run.replaceEnd);
     }
-    cursor = match.literalEnd;
+    cursor = run.replaceEnd;
   }
   out += streamText.slice(cursor);
   return { text: out, changed };
