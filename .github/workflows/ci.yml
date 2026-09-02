@@ -38,6 +38,14 @@ jobs:
       - name: Golden set accuracy (RNF-16)
         run: pnpm golden:run
 
+      # E4 Task 5: the §20.4 rubric harness for a generated contestation.
+      # §18's own definition of done for this block is "eval com rubrica
+      # >= 8/10" — same posture as the golden set above: passes vacuously
+      # (and says so loudly) until AI_GATEWAY_API_KEY exists and Task 2's
+      # generator has actually produced a sample to score.
+      - name: Contest eval rubric (§20.4)
+        run: pnpm eval:contest
+
       - name: Build
         run: pnpm build
 
