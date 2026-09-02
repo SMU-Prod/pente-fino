@@ -42,6 +42,26 @@
  * persistence run after extraction returns, so it has to be built on the
  * second kind of read — which meant this transition needed the row
  * `invoice_uploaded`/`invoice_extracted`/`invoice_analyzed` already had.
+ *
+ * `case_stalled` is a fifth addition, for Task 3 (E5), RF-186's first
+ * window. It exists because §9.1's `stalled` is the one state in this
+ * system that has nowhere else to be recorded. §9.1 calls it a *sub-estado*
+ * that "volta a sac"; `STAGES` does not contain it and the
+ * `cases_stage_values` CHECK constraint rejects it, so it can never be a
+ * `cases.stage` value — and in the common case it is reached from (`sac`
+ * with no protocol after 30 days) the stage does not change at all, so no
+ * `stage_advanced` is written either. Without this name, "30 days passed
+ * and nobody ever wrote to the channel" leaves *zero* trace: A3 ("toda
+ * transição grava events") would not hold for it, and neither the case
+ * timeline (`GET /api/cases/:id`) nor RF-185's final reminder could tell a
+ * stalled case from one nothing has happened to yet.
+ *
+ * Its sibling `abandoned` deliberately did **not** get a name of its own.
+ * An abandonment closes the case, so it already writes a `stage_advanced`
+ * to `closed` carrying `outcome: "abandoned"`, plus `cases.outcome` and
+ * `cases.closed_at`. A `case_abandoned` event would be a second, redundant
+ * record of a transition that is already fully readable — and renaming is
+ * what costs, so a name that adds nothing should not be added.
  */
 export const EVENTS = [
   "invoice_uploaded", "invoice_processing_started", "invoice_extracted", "invoice_analyzed",
@@ -66,6 +86,7 @@ export const EVENTS = [
   // `protocol_entered` (the person wrote to the channel) and this (the
   // channel wrote back).
   "protocol_entered", "response_received", "stage_advanced", "deadline_expired",
+  "case_stalled",
   "diff_run", "outcome_confirmed", "case_reopened",
   "monitor_email_received", "monthly_digest_sent",
   "session_claimed", "subscription_started", "subscription_failed",

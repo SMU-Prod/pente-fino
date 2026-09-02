@@ -2,6 +2,7 @@ import { and, eq, inArray, isNotNull } from "drizzle-orm";
 import { maskText, newId, type EventType } from "@pentefino/core";
 import type { Storage } from "@pentefino/core/ports";
 import type { TaskHandler } from "@pentefino/adapters";
+import { resolveNow } from "../clock.js";
 // eslint-disable-next-line pentefino/require-with-user -- system job with no user session; writes go through the caller-injected `Database` (deps.db), not a client this module creates itself
 import { schema, type Database } from "@pentefino/db";
 
@@ -39,22 +40,6 @@ function effectiveExpiry(invoice: { createdAt: Date }, earliestClosure: Date | u
   if (!earliestClosure) return uploadExpiry;
   const closureExpiry = addDays(earliestClosure, POST_CLOSURE_TTL_DAYS);
   return closureExpiry < uploadExpiry ? closureExpiry : uploadExpiry;
-}
-
-/**
- * `createExpireFilesTask`'s own deps are fixed to `{ db, storage }` - no
- * clock lives there - so a test that needs a deterministic "today" (the
- * brief is explicit: no wall-clock time in a test) has one place left to
- * inject one: the payload every `TaskHandler` already accepts, the same way
- * `{ invoiceId }` rides `ingest`'s payload. Production's own scheduler call
- * passes no `now` at all and gets the real clock.
- */
-function resolveNow(payload: Record<string, unknown>): Date {
-  const raw = payload.now;
-  if (raw === undefined) return new Date();
-  if (raw instanceof Date) return raw;
-  if (typeof raw === "string" || typeof raw === "number") return new Date(raw);
-  throw new Error(`expire-files: payload.now must be a Date, string or number, got ${typeof raw}`);
 }
 
 /**
@@ -114,7 +99,7 @@ export function createExpireFilesTask(deps: ExpireFilesDeps): TaskHandler {
   }
 
   return async function expireFiles(payload: Record<string, unknown>): Promise<void> {
-    const now = resolveNow(payload);
+    const now = resolveNow(payload, "expire-files");
 
     const pending = await db.select().from(invoices).where(isNotNull(invoices.fileKey));
     if (pending.length === 0) return;
