@@ -25,7 +25,7 @@ export {
 } from "./rules/evaluators/safe-regex.js";
 export { TARIFF_FLAGS, type TariffFlag, type ReferenceTariff, type ReferenceFlag } from "./rules/references.js";
 export {
-  nextStage, CASE_OUTCOMES,
+  nextStage, CASE_OUTCOMES, STAGE_EVENT_TYPES,
   type StageEvent, type StageTransition, type CaseOutcome,
 } from "./cases/next-stage.js";
 export {
@@ -37,6 +37,16 @@ export {
   computeDeadline, toCivilDate, SAO_PAULO_UTC_OFFSET_MINUTES,
   type Deadline, type DeadlineInput,
 } from "./cases/deadline.js";
+// RF-186's 30-day window, exported because E5 Task 3's deadline job is what
+// has to tell the first window from the second (`nextStage` is not given the
+// case's age) and must not restate the number. `decideTransition` and the
+// rest of the table stay internal — `nextStage` is the machine's entry.
+export { PROTOCOL_WINDOW_DAYS } from "./cases/next-stage.table.js";
+// PRD §20.2's reference playbook. Exported because the row it belongs in
+// lives outside this package: `packages/db/src/seeds/playbooks.ts` writes it
+// onto `issuers.playbook`, the same way `packages/db/src/seeds/prompts.ts`
+// writes `@pentefino/ai`'s versioned prompt constants into `prompts`.
+export { TELECOM_PLAYBOOK_V1 } from "./cases/telecom-playbook.js";
 export { pairInvoiceItems, type InvoiceDiff, type PairedItem } from "./diff/index.js";
 export {
   extractionQuality, VISION_THRESHOLD,

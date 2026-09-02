@@ -1,16 +1,15 @@
 import type { Category } from "../invoice/canonical.js";
 import type { Playbook, Stage } from "./playbook.js";
+import { computeDeadline } from "./deadline.js";
+import { STAGE_EVENT_TYPES, decideTransition, type DeadlineRule } from "./next-stage.table.js";
+
+// The event vocabulary is declared beside the table that validates against
+// it (`next-stage.table.ts`), so the two cannot drift, and re-exported here
+// because `StageEvent` is what the rest of the system imports.
+export { STAGE_EVENT_TYPES };
 
 export type StageEvent = {
-  type:
-    | "protocol_entered"
-    | "deadline_expired"
-    | "response_received"
-    | "resolved"
-    | "user_abandon"
-    // RF-203: the contested item comes back on invoice N+2. Reopens a
-    // closed case, with the reopening stamped into its history.
-    | "item_reappeared";
+  type: (typeof STAGE_EVENT_TYPES)[number];
   at: Date;
 };
 
@@ -29,20 +28,53 @@ export type StageTransition = {
 };
 
 /**
+ * The instant a `wait` rule ends, via E5 Task 1's calendar (RF-181).
+ *
+ * `from` is `event.at`, the instant the wait starts. `computeDeadline`
+ * throws a `RangeError` for a negative or fractional `days`;
+ * `next-stage.table.ts`'s `responseWait` already answers `clear` rather than
+ * a wait for `responseDays <= 0`, so no rule reaching here carries one.
+ *
+ * `computeDeadline` also returns `deadlineDate`, the São Paulo civil date
+ * the deadline falls on. `StageTransition` has no field for it, so RF-182's
+ * document — which has to print that date — should call `computeDeadline`
+ * itself rather than re-deriving the date from `expiresAt` in some other
+ * timezone, which is the off-by-a-day bug that module's third decision
+ * exists to prevent.
+ */
+function deadlineInstant(rule: DeadlineRule, from: Date): Date | null {
+  if (rule.kind !== "wait") return null;
+  return computeDeadline({
+    startedAt: from,
+    days: rule.days,
+    businessDays: rule.businessDays,
+  }).expiresAt;
+}
+
+/**
  * Pure transition of the case state machine (§9.1).
  *
- * E0 ships the signature. The full decision table — every combination of
- * stage × event × category — arrives in E5, with the test that covers all
- * of them. Until then an unmapped combination throws, because a wrong stage
- * would silently lose someone's case.
+ * Total over `stage × event × category × hasProtocol`: every combination has
+ * a mapped answer, and `next-stage.test.ts` enumerates the whole product to
+ * prove it. `next-stage.table.ts` holds the table and the reasoning behind
+ * each branch.
+ *
+ * `stampDeadline` says whether the caller must write `nextDeadlineAt` to
+ * `cases.next_deadline_at`; `false` means leave the column exactly as it is.
+ * A `stampDeadline: true` with a null `nextDeadlineAt` clears the column,
+ * and is only ever returned for a transition that genuinely has nothing
+ * pending on a clock — a closed case, or a channel that has answered.
  */
 export function nextStage(
   current: { stage: Stage; category: Category; hasProtocol: boolean },
   playbook: Playbook,
   event: StageEvent,
 ): StageTransition {
-  void playbook;
-  throw new Error(
-    `transition not mapped: stage=${current.stage} event=${event.type} category=${current.category} hasProtocol=${current.hasProtocol} (E5)`,
-  );
+  const decision = decideTransition(current, playbook, event);
+  return {
+    stage: decision.stage,
+    outcome: decision.outcome,
+    stampDeadline: decision.deadline.kind !== "keep",
+    nextDeadlineAt: deadlineInstant(decision.deadline, event.at),
+  };
 }
