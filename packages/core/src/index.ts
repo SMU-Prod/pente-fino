@@ -10,10 +10,15 @@ export {
   type AssembleContestInput, type AssembledContest, type RecordedProtocol,
 } from "./documents/assemble.js";
 export {
-  buildDossier,
+  buildDossier, DOSSIER_FIXED_STRINGS,
   type BuildDossierInput, type Dossier, type DossierEntry, type DossierEntryKind,
   type DossierAttachment, type DossierAttachmentStatus, type DossierParty,
 } from "./documents/dossier.js";
+// Exported for `apps/jobs`'s PDF renderer, which prints the same invoice
+// total and the same dates this package's dossier model already formatted -
+// on the same page. A private second copy there is what made `R$ 1189,90`
+// and `R$ 1.189,90` appear on one document (RF-187 review, I5).
+export { formatCentsBRL, formatIsoDateOrUnknown, formatUtcDate } from "./format.js";
 export { normalizeDescription } from "./invoice/normalize.js";
 export { validateInvoice, type ValidationResult, type ValidationFailure } from "./invoice/validate.js";
 export { maskCanonical, maskText, containsPii, CNPJ_SHAPE_SOURCE } from "./invoice/mask.js";

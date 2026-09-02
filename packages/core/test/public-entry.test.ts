@@ -39,6 +39,16 @@ describe("the public entry point", () => {
       "CNPJ_SHAPE_SOURCE",
       "sniffMimeType",
       "MAX_PAGES",
+      // RF-187: `apps/jobs` builds the dossier through the barrel, lints
+      // `DOSSIER_FIXED_STRINGS` against §14.3, and formats the money and
+      // dates it prints with the same helpers this package uses — so a
+      // dropped re-export of any of these is a broken consumer, not a
+      // cosmetic barrel edit.
+      "buildDossier",
+      "DOSSIER_FIXED_STRINGS",
+      "formatCentsBRL",
+      "formatUtcDate",
+      "formatIsoDateOrUnknown",
     ];
     const missing = expected.filter((name) => !(name in core));
     expect(missing).toEqual([]);

@@ -2,6 +2,7 @@ import type { Category } from "../invoice/canonical.js";
 import type { Stage } from "../cases/playbook.js";
 import type { ContestDocument } from "./contest.js";
 import { maskText } from "../invoice/mask.js";
+import { formatCentsBRL, formatIsoDateOrUnknown, formatUtcDate } from "../format.js";
 
 /**
  * RF-187's dossier — the pure model. When a case reaches `jec_ready`, the
@@ -65,8 +66,17 @@ export type Dossier = {
 };
 
 export type BuildDossierInput = {
+  /**
+   * Deliberately not the whole `cases` row: `stage` and `stageEnteredAt`
+   * used to be declared here, selected by the job and never read by
+   * anything below — dead input on both sides of the boundary. The
+   * dossier is a chronology of what happened, and the case's stage history
+   * is already in it, with its dates, through the `stage_advanced` entries
+   * of the timeline; `closedAt`/`outcome` carry the end of the story. A
+   * "current stage" line would restate that without a date attached.
+   */
   case: {
-    id: string; stage: Stage; createdAt: Date; stageEnteredAt: Date;
+    id: string; createdAt: Date;
     outcome: string | null; closedAt: Date | null;
   };
   issuer: { displayName: string; cnpj: string | null; category: Category };
@@ -133,6 +143,12 @@ function labelForDocumentKind(kind: string): string {
   return DOCUMENT_KIND_LABELS[kind] ?? `Documento (${kind})`;
 }
 
+// Fed to the two template fallbacks below when `DOSSIER_FIXED_STRINGS`
+// collects them, so the vocabulary gate lints the wording that actually
+// surrounds an unrecognised value rather than a second hand-written copy of
+// it. Never rendered on a real dossier.
+const FALLBACK_SAMPLE = "exemplo";
+
 // `cases.outcome` (RF-186): resolved | partial | denied | abandoned, or
 // null while still open or not yet confirmed. Same free-string situation as
 // above — a value this table doesn't carry still gets a readable line.
@@ -143,13 +159,20 @@ const OUTCOME_LABELS: Record<string, string> = {
   abandoned: "Encerrado sem resposta da empresa",
 };
 
-// Every case-scoped type in the `events.ts` catalogue (the PRD's
-// §15.1 list, filtered to the ones a case's own timeline can carry — the
-// invoice-ingestion, rule-engine and billing types never reach a
-// per-case `events` join and are deliberately absent here), mapped to the
+// The types a case's own timeline can carry, mapped to the
 // `DossierEntryKind` closest to what actually happened and a pt-BR title.
 // `deadline_expired` / `stage_advanced` / `invoice_file_expired` are the
 // three the brief pins down explicitly; the rest follow the same idea.
+//
+// "Case-scoped" is not the same as "carries a `caseId`". RF-187's job
+// (`apps/jobs/src/tasks/dossier.ts`) deliberately joins four
+// *invoice*-scoped types into the timeline as well — `invoice_uploaded`,
+// `invoice_analyzed`, `invoice_file_expired` and `invoice_file_expiry_failed`,
+// none of which carries a `caseId` — because a case's story starts before
+// the case row does. All four are labelled here for exactly that reason:
+// without an entry they fall to the raw-type fallback below and put an
+// English snake_case identifier on a document a judge reads. The
+// rule-engine and billing types are the ones genuinely absent.
 //
 // This table only ever supplies the title for an event that survives the
 // drop-matching pass below (`isAnnouncementMatched`) — i.e. one that either
@@ -167,6 +190,8 @@ const EVENT_META: Record<string, { kind: DossierEntryKind; label: string }> = {
   protocol_entered: { kind: "protocol", label: "Protocolo registrado" },
   stage_advanced: { kind: "stage_change", label: "Etapa do caso avançada" },
   deadline_expired: { kind: "deadline", label: "Prazo de resposta esgotado" },
+  invoice_uploaded: { kind: "invoice", label: "Fatura enviada ao sistema" },
+  invoice_analyzed: { kind: "invoice", label: "Fatura analisada pelo sistema" },
   invoice_file_expired: { kind: "invoice", label: "Arquivo da fatura removido do armazenamento" },
   invoice_file_expiry_failed: { kind: "other", label: "Falha ao remover o arquivo da fatura" },
   diff_run: { kind: "other", label: "Comparação com a fatura seguinte executada" },
@@ -191,52 +216,48 @@ const CONSUMER_DATA_NOTE =
   "mantidos pelo sistema e precisam ser preenchidos manualmente antes de protocolar " +
   "no Juizado Especial Cível.";
 
+// The wordings for data the case simply does not hold, and for the two
+// halves of RF-110's "the file is gone" story. Named rather than inline so
+// `DOSSIER_FIXED_STRINGS` below can collect every one of them — several are
+// unreachable from any realistic fixture, which is exactly why linting them
+// through a rendered document was never going to be enough.
+const NO_OUTCOME_LABEL = "sem desfecho registrado";
+const NO_RESPONSE_SUMMARY_LABEL = "Resumo não informado";
+const NO_DESCRIPTION_LABEL = "Item sem descrição";
+const USER_EDITED_LINE = "Editado pelo usuário antes do uso";
+const NOT_USER_EDITED_LINE = "Gerado automaticamente, sem edição do usuário";
+
+const FILE_EXPIRED_ATTACHMENT_NOTE_UNDATED =
+  "Arquivo não está mais disponível no armazenamento; os dados da fatura seguem " +
+  "reproduzidos neste dossiê.";
+
+const FILE_EXPIRED_NOTE_UNDATED =
+  "A fatura original não está mais disponível no armazenamento. Os dados extraídos " +
+  "da fatura — período, vencimento, valor e itens contestados — continuam " +
+  "reproduzidos neste dossiê.";
+
+function fileExpiredAttachmentNote(at: Date): string {
+  return `Arquivo removido do armazenamento em ${formatUtcDate(at)}; os dados da fatura seguem reproduzidos neste dossiê.`;
+}
+
+function fileExpiredNote(at: Date): string {
+  return `A fatura original foi removida do armazenamento em ${formatUtcDate(at)} (retenção temporária). Os dados extraídos da fatura — período, vencimento, valor e itens contestados — continuam reproduzidos neste dossiê.`;
+}
+
+function fallbackEventTitle(type: string): string {
+  return `Evento do caso: ${type}`;
+}
+
 // --- date/money formatting --------------------------------------------------
-
-function pad2(n: number): string {
-  return n < 10 ? `0${n}` : `${n}`;
-}
-
-/**
- * `entries[].at` stays a `Date` — the renderer sub-task formats it for
- * display. This helper exists only for the dates this module itself
- * interpolates into a title or detail *string* (a response deadline, a
- * file-expiry date): `dd/MM/yyyy` built from UTC getters, so it is
- * deterministic and needs no timezone database. A civil date shown to a
- * Brazilian reader is, strictly, a function of their local timezone, not of
- * UTC — reading a UTC instant's date fields can be off by one day right
- * around midnight in some timezones. That is a known simplification this
- * task does not solve; it is confined to this one function.
- */
-function formatUtcDate(date: Date): string {
-  return `${pad2(date.getUTCDate())}/${pad2(date.getUTCMonth() + 1)}/${date.getUTCFullYear()}`;
-}
-
-// `invoice.periodStart` / `periodEnd` / `dueDate` are stored as plain
-// `YYYY-MM-DD` strings with no time component at all (see the type's own
-// comment), so there is no instant-to-civil-date conversion to worry about
-// here — splitting the string is both simpler and stricter than routing it
-// through `Date` and back.
-function formatIsoDate(iso: string): string {
-  const [year, month, day] = iso.split("-");
-  // The DB column is `date`, so in practice this always has exactly three
-  // parts — but the value still crosses a boundary TypeScript does not check
-  // here (`noUncheckedIndexedAccess` types the destructured parts as
-  // `string | undefined`). A malformed value falls back to the raw string
-  // rather than silently rendering `undefined/undefined/2026`.
-  if (year === undefined || month === undefined || day === undefined) {
-    return iso;
-  }
-  return `${day}/${month}/${year}`;
-}
-
-function formatIsoDateOrUnknown(iso: string | null): string {
-  return iso !== null ? formatIsoDate(iso) : "não informado";
-}
-
-function formatCents(cents: number): string {
-  return `R$ ${(cents / 100).toFixed(2).replace(".", ",")}`;
-}
+//
+// `entries[].at` stays a `Date` — the renderer formats it for display. The
+// helpers imported from `../format.js` are for the dates and amounts this
+// module itself interpolates into a title or detail *string* (a response
+// deadline, a file-expiry date, the invoice total). They are the same
+// functions the PDF renderer uses, deliberately: the invoice total is
+// printed twice on the same page, once from here and once from the
+// renderer's own invoice section, and two private copies of `formatCents`
+// is exactly how those two came to disagree above R$ 1.000,00.
 
 // --- timeline: case -----------------------------------------------------
 
@@ -247,7 +268,7 @@ function buildCaseEntries(caseRow: BuildDossierInput["case"]): DossierEntry[] {
 
   if (caseRow.closedAt !== null) {
     const outcomeLabel = caseRow.outcome === null
-      ? "sem desfecho registrado"
+      ? NO_OUTCOME_LABEL
       : (OUTCOME_LABELS[caseRow.outcome] ?? caseRow.outcome);
     entries.push({
       at: caseRow.closedAt,
@@ -266,7 +287,7 @@ function buildCaseEntries(caseRow: BuildDossierInput["case"]): DossierEntry[] {
 function buildInvoiceEntry(invoice: BuildDossierInput["invoice"]): DossierEntry {
   const period = `Período: ${formatIsoDateOrUnknown(invoice.periodStart)} a ${formatIsoDateOrUnknown(invoice.periodEnd)}`;
   const due = `Vencimento: ${formatIsoDateOrUnknown(invoice.dueDate)}`;
-  const total = `Valor total: ${invoice.totalCents !== null ? formatCents(invoice.totalCents) : "não informado"}`;
+  const total = `Valor total: ${invoice.totalCents !== null ? formatCentsBRL(invoice.totalCents) : "não informado"}`;
 
   return {
     at: invoice.createdAt,
@@ -290,9 +311,7 @@ function buildDocumentEntries(documents: BuildDossierInput["documents"]): Dossie
     const subject = maskText(body.subject);
     const stageLabel = STAGE_LABELS[doc.stage];
     const kindLabel = labelForDocumentKind(doc.kind);
-    const editedLine = doc.userEdited
-      ? "Editado pelo usuário antes do uso"
-      : "Gerado automaticamente, sem edição do usuário";
+    const editedLine = doc.userEdited ? USER_EDITED_LINE : NOT_USER_EDITED_LINE;
     // The dossier previously recorded that a document existed and its
     // subject, but not what was actually asked for — thin for a reader
     // deciding whether the company was given a fair chance to fix this.
@@ -328,15 +347,25 @@ function buildProtocolEntries(protocols: BuildDossierInput["protocols"]): Dossie
 
   for (const protocol of protocols) {
     const stageLabel = STAGE_LABELS[protocol.stage];
+    // `channel` is grouped with this module's free text, not with
+    // `protocolNumber`: `case_protocols.channel` is a `text` column with no
+    // check constraint and no enum, so whatever a person typed when
+    // recording the protocol lands here and then reaches two entry titles
+    // and an attachment label. Masking a channel name costs nothing — "SAC",
+    // "consumidor.gov.br" and "Procon presencial" carry no CPF/CNPJ/address
+    // shape for `maskText` to touch — whereas leaving it raw is the one
+    // unmasked free-text path onto the page.
+    const channel = maskText(protocol.channel);
 
-    // `protocolNumber` and `channel` are structured identifiers, never
-    // routed through `maskText` — a protocol number is commonly an
+    // `protocolNumber`, by contrast, is a structured identifier and is
+    // never routed through `maskText`: a protocol number is commonly an
     // 11-digit run, exactly the shape `maskText` looks for when deciding
-    // whether something is a CPF.
+    // whether something is a CPF, and masking the single most important
+    // fact on the page would destroy the document's point.
     entries.push({
       at: protocol.registeredAt,
       kind: "protocol",
-      title: `Protocolo registrado — ${protocol.channel}`,
+      title: `Protocolo registrado — ${channel}`,
       details: [
         `Número: ${protocol.protocolNumber}`,
         `Etapa: ${stageLabel}`,
@@ -349,12 +378,12 @@ function buildProtocolEntries(protocols: BuildDossierInput["protocols"]): Dossie
       entries.push({
         at: protocol.responseReceivedAt,
         kind: "protocol_response",
-        title: `Resposta do protocolo recebida — ${protocol.channel}`,
+        title: `Resposta do protocolo recebida — ${channel}`,
         details: [
           `Número: ${protocol.protocolNumber}`,
           protocol.responseSummary !== null
             ? `Resumo: ${maskText(protocol.responseSummary)}`
-            : "Resumo não informado",
+            : NO_RESPONSE_SUMMARY_LABEL,
         ],
         sourceId: protocol.id,
       });
@@ -564,7 +593,7 @@ function buildEventEntries(events: BuildDossierInput["events"], ctx: Announcemen
     entries.push({
       at: event.occurredAt,
       kind: meta?.kind ?? "other",
-      title: meta?.label ?? `Evento do caso: ${event.type}`,
+      title: meta?.label ?? fallbackEventTitle(event.type),
       details: renderEventPayloadDetails(event.payload),
       sourceId: event.id,
     });
@@ -637,8 +666,8 @@ function invoiceAttachment(fileAvailable: boolean, fileExpiredAt: Date | null): 
   // them — this note exists so the dossier neither claims to attach a file
   // it no longer has, nor implies the underlying data went with it.
   const note = fileExpiredAt !== null
-    ? `Arquivo removido do armazenamento em ${formatUtcDate(fileExpiredAt)}; os dados da fatura seguem reproduzidos neste dossiê.`
-    : "Arquivo não está mais disponível no armazenamento; os dados da fatura seguem reproduzidos neste dossiê.";
+    ? fileExpiredAttachmentNote(fileExpiredAt)
+    : FILE_EXPIRED_ATTACHMENT_NOTE_UNDATED;
 
   return { label: INVOICE_ATTACHMENT_LABEL, status: "expired", note };
 }
@@ -651,8 +680,10 @@ function buildAttachments(
   const attachments: DossierAttachment[] = [invoiceAttachment(fileAvailable, fileExpiredAt)];
 
   for (const protocol of input.protocols) {
+    // Same split as `buildProtocolEntries`: the number verbatim (masking it
+    // would destroy the point of the line), the free-text channel masked.
     attachments.push({
-      label: `Comprovante do protocolo ${protocol.protocolNumber} — ${protocol.channel}, ${formatUtcDate(protocol.registeredAt)}`,
+      label: `Comprovante do protocolo ${protocol.protocolNumber} — ${maskText(protocol.channel)}, ${formatUtcDate(protocol.registeredAt)}`,
       status: "user_provided",
     });
   }
@@ -675,6 +706,52 @@ function buildAttachments(
   return attachments;
 }
 
+// The fields a human fills in by hand, because `users` holds only an email
+// (see `buildDossier`'s own comment where these are attached to the party).
+const CONSUMER_FIELDS = ["Nome completo", "CPF", "Endereço completo", "Telefone", "E-mail"];
+
+/**
+ * Every fixed pt-BR string this module can put on a dossier that is NOT
+ * guaranteed to appear on any one rendered document — every entry of every
+ * label table, plus the notes and fallback wordings that only a particular
+ * shape of case reaches.
+ *
+ * It exists so `apps/jobs`'s INV-004/INV-005 vocabulary gate can lint each
+ * string directly instead of hoping a fixture happens to render it. Driving
+ * all of them through `buildDossier` would take a fixture per stage, per
+ * document kind, per outcome and per event type — and would still silently
+ * stop covering whatever a later task adds. Every element here is derived
+ * from the tables and constants above, never re-typed, so this list cannot
+ * drift from what the code actually emits.
+ *
+ * The assembled sentences a real dossier always carries (entry titles,
+ * detail labels, the section text) are gated end-to-end by that suite's two
+ * rendered fixtures instead — this list is the half a fixture cannot reach.
+ */
+export const DOSSIER_FIXED_STRINGS: readonly string[] = [
+  DOSSIER_TITLE_SUFFIX,
+  INVOICE_ATTACHMENT_LABEL,
+  CONSUMER_DATA_NOTE,
+  ...CONSUMER_FIELDS,
+  ...Object.values(STAGE_LABELS),
+  ...Object.values(DOCUMENT_KIND_LABELS),
+  labelForDocumentKind(FALLBACK_SAMPLE),
+  ...Object.values(OUTCOME_LABELS),
+  NO_OUTCOME_LABEL,
+  ...Object.values(EVENT_META).map((meta) => meta.label),
+  fallbackEventTitle(FALLBACK_SAMPLE),
+  ...PAYLOAD_FIELDS.map((field) => field.label),
+  NO_RESPONSE_SUMMARY_LABEL,
+  NO_DESCRIPTION_LABEL,
+  USER_EDITED_LINE,
+  NOT_USER_EDITED_LINE,
+  formatIsoDateOrUnknown(null),
+  FILE_EXPIRED_ATTACHMENT_NOTE_UNDATED,
+  FILE_EXPIRED_NOTE_UNDATED,
+  fileExpiredAttachmentNote(new Date(0)),
+  fileExpiredNote(new Date(0)),
+];
+
 // --- main --------------------------------------------------------------
 
 export function buildDossier(input: BuildDossierInput): Dossier {
@@ -694,7 +771,7 @@ export function buildDossier(input: BuildDossierInput): Dossier {
   const fileExpiredAt = latestInvoiceFileExpiredAt(input.events);
 
   const contestedItems = input.contested.map((item) => ({
-    description: maskText(item.description ?? "Item sem descrição"),
+    description: maskText(item.description ?? NO_DESCRIPTION_LABEL),
     amountCents: item.amountCents,
     evidence: item.evidence.map(maskText),
   }));
@@ -709,7 +786,10 @@ export function buildDossier(input: BuildDossierInput): Dossier {
       role: "consumidor",
       name: null,
       document: null,
-      fields: ["Nome completo", "CPF", "Endereço completo", "Telefone", "E-mail"],
+      // Copied, not shared: `fields` is a mutable array on the returned
+      // value, and handing every dossier the same instance would let a
+      // caller's edit reach into this module's constant.
+      fields: [...CONSUMER_FIELDS],
     },
     {
       // The issuer's CNPJ identifies a company, not a person — the same
@@ -724,11 +804,7 @@ export function buildDossier(input: BuildDossierInput): Dossier {
 
   const notes: string[] = [CONSUMER_DATA_NOTE];
   if (!fileAvailable) {
-    notes.push(
-      fileExpiredAt !== null
-        ? `A fatura original foi removida do armazenamento em ${formatUtcDate(fileExpiredAt)} (retenção temporária). Os dados extraídos da fatura — período, vencimento, valor e itens contestados — continuam reproduzidos neste dossiê.`
-        : "A fatura original não está mais disponível no armazenamento. Os dados extraídos da fatura — período, vencimento, valor e itens contestados — continuam reproduzidos neste dossiê.",
-    );
+    notes.push(fileExpiredAt !== null ? fileExpiredNote(fileExpiredAt) : FILE_EXPIRED_NOTE_UNDATED);
   }
 
   return {

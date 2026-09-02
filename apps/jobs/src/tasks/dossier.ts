@@ -23,7 +23,7 @@ export type DossierDeps = {
 const MAX_FAILURE_MESSAGE_LENGTH = 500;
 
 /**
- * The three `events` types that are written against the *invoice* and never
+ * The `events` types that are written against the *invoice* and never
  * against the case, but that still belong on the case's timeline.
  *
  * `invoice_file_expired` is the load-bearing one: `buildDossier` reads it to
@@ -33,11 +33,19 @@ const MAX_FAILURE_MESSAGE_LENGTH = 500;
  * `caseId` at all, so a timeline joined only on `caseId` would silently lose
  * it — and with it the difference between "the invoice is attached" and
  * "the invoice was deleted on 15/07/2026, here is its data anyway".
+ * `invoice_file_expiry_failed` is its sibling, written the same way by the
+ * same job, and belongs here for the same reason: it is the record of why a
+ * file that should be gone is not.
  * `invoice_uploaded` and `invoice_analyzed` are on the list for the plainer
  * reason that a case's story starts before the case row does.
+ *
+ * Every type named here needs an `EVENT_META` entry in
+ * `packages/core/src/documents/dossier.ts`. Without one it falls to that
+ * module's raw-type fallback and prints its own English identifier —
+ * `Evento do caso: invoice_uploaded` — on a document a judge reads.
  */
 const INVOICE_SCOPED_EVENT_TYPES: string[] = [
-  "invoice_uploaded", "invoice_analyzed", "invoice_file_expired",
+  "invoice_uploaded", "invoice_analyzed", "invoice_file_expired", "invoice_file_expiry_failed",
 ];
 
 /**
@@ -71,12 +79,27 @@ type CaseRow = typeof cases.$inferSelect;
  * it in the query itself — no second PDF, no second event, no read of the
  * case's rows at all.
  *
+ * That is sequential idempotency, and it is the only kind this guard buys.
+ * `notExists` is a filter, not a lock, and `events` has no uniqueness on
+ * `(case_id, type)`: two runs overlapping in time can both select the same
+ * case before either has recorded its event, and both then write a
+ * `dossier_generated` row and store a second PDF. Closing that window means
+ * a partial unique index on `events (case_id) WHERE type =
+ * 'dossier_generated'` — a schema change, and three other E5 tasks are in
+ * flight against this table — so the window is named here rather than
+ * silently implied away. Nothing enqueues this job concurrently today.
+ *
  * Error isolation (A8) follows `expire-files.ts` exactly: one case's failure
  * (a storage outage, an unreadable row, a renderer that throws) must not
  * sink the run for every other case, so each case's work sits in its own
  * try/catch. A failure records a `dossier_generation_failed` event with a
  * masked, length-capped message and the loop continues; no
  * `dossier_generated` is written, so the next run picks that case up again.
+ * One qualification, the same one `expire-files.ts` carries: the
+ * `dossier_generation_failed` insert is itself in the catch block, so if
+ * *that* write throws, the run aborts and the remaining cases are skipped
+ * until the next one. Isolation covers a case's own work, not the database
+ * being unreachable.
  *
  * Where the bytes land, said plainly rather than left to be discovered:
  * the `Storage` port's only key-minting path today is the upload flow
@@ -178,9 +201,12 @@ export function createDossierTask(deps: DossierDeps): TaskHandler {
       .orderBy(events.occurredAt, events.id);
 
     return {
+      // `stage`/`stageEnteredAt` are deliberately not passed: `buildDossier`
+      // does not take them (see `BuildDossierInput`'s own comment on why the
+      // timeline already carries the case's stage history, with dates).
       case: {
-        id: caseRow.id, stage: caseRow.stage, createdAt: caseRow.createdAt,
-        stageEnteredAt: caseRow.stageEnteredAt, outcome: caseRow.outcome, closedAt: caseRow.closedAt,
+        id: caseRow.id, createdAt: caseRow.createdAt,
+        outcome: caseRow.outcome, closedAt: caseRow.closedAt,
       },
       issuer,
       invoice,
@@ -214,8 +240,9 @@ export function createDossierTask(deps: DossierDeps): TaskHandler {
 
     // `notExists` rather than loading every jec_ready case and filtering in
     // memory: the guard belongs in the query, so a case that already has its
-    // dossier is never even read, and two runs overlapping in time cannot
-    // both see the same case as eligible after one of them has recorded it.
+    // dossier is never even read. It is a filter, not a lock — see the
+    // concurrency paragraph on `createDossierTask` for the window that
+    // leaves open, and what closing it would take.
     const eligible = await db
       .select()
       .from(cases)
@@ -262,10 +289,9 @@ export function createDossierTask(deps: DossierDeps): TaskHandler {
       } catch (error) {
         const message = maskText(error instanceof Error ? error.message : String(error))
           .slice(0, MAX_FAILURE_MESSAGE_LENGTH);
-        await record(caseRow, "dossier_generation_failed", { message });
         // No `dossier_generated` for this case, so the next run finds it
         // eligible again and retries it.
-        continue;
+        await record(caseRow, "dossier_generation_failed", { message });
       }
     }
   };

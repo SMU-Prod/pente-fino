@@ -408,6 +408,35 @@ describe("renderDossierPdf", () => {
     expect(text).toContain("R$ 0,00");
   });
 
+  it("falls back to the raw string instead of printing 'undefined' for a malformed ISO date", async () => {
+    // `invoice.dueDate` is a Postgres `date`, so three parts is what
+    // arrives in practice — but the value crosses a boundary TypeScript
+    // does not check here, and the failure mode is not a blank: it is
+    // `Vencimento: undefined/undefined/2026` on a court document. The core
+    // model has guarded this since its own review; the renderer's private
+    // copy of the helper did not.
+    const dossier = baseDossier({
+      invoice: { ...baseDossier().invoice, dueDate: "2026" },
+    });
+    const { text } = await renderAndExtract(dossier);
+    expect(text).toContain("Vencimento: 2026");
+    expect(text).not.toContain("undefined");
+  });
+
+  it("states the invoice file is gone without inventing a date when none was recorded", async () => {
+    // The third branch of `invoiceFileLine`: RF-110 deleted the file, but no
+    // `invoice_file_expired` event survives to say when. Saying "removido"
+    // with a made-up date would be worse than saying the date is not on
+    // record, so this wording exists — and until now nothing rendered it.
+    const dossier = baseDossier({
+      invoice: { ...baseDossier().invoice, fileAvailable: false, fileExpiredAt: null },
+      attachments: [],
+    });
+    const { text } = await renderAndExtract(dossier);
+    expect(text).toContain("Arquivo original da fatura: removido do armazenamento (data não registrada).");
+    expect(text).not.toContain("Arquivo original da fatura: disponível no sistema");
+  });
+
   it("sets the PDF's creation and modification dates from dossier.generatedAt, not the wall clock", async () => {
     const dossier = baseDossier();
     const bytes = await renderDossierPdf(dossier);

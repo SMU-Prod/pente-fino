@@ -3,24 +3,27 @@
 // Node-only job package, and `pdf-lib` is a dependency of `apps/jobs`
 // alone — never of `apps/web`.
 //
-// That is a packaging boundary, not structural isolation from the browser
-// bundle, and this comment should not claim otherwise: `apps/web` depends
-// on `@pentefino/jobs`, and `src/index.ts` re-exports `renderDossierPdf`,
-// so the barrel is reachable from web code. What keeps `pdf-lib` out of a
-// client bundle today is that every `@pentefino/jobs` import in `apps/web`
-// is server-side (`lib/container.ts` and the API route handlers).
+// `apps/web` does depend on `@pentefino/jobs` — `lib/container.ts` and the
+// API route handlers import it, all server-side. What the package's barrel
+// (`src/index.ts`) exposes therefore matters, and this module is
+// deliberately not on it: `renderDossierPdf`'s only production consumer is
+// `tasks/dossier.ts`, which imports it relatively, so `pdf-lib` is not
+// reachable from web code through the barrel at all. That is a structural
+// property now, not a "nobody has done it yet" one.
 //
-// Watch the asymmetry: the barrel already pulls `@pentefino/db` ->
-// `postgres`, a Node-only driver that would break a browser build loudly.
-// `pdf-lib` is browser-compatible pure JS, so an accidental client-side
-// import would bundle ~350 kB silently instead of failing. The real gate on
-// RNF-05's <=120 kB gzip initial-JS budget is
+// Why it is worth being structural — the asymmetry: the barrel already
+// pulls `@pentefino/db` -> `postgres`, a Node-only driver that would break a
+// browser build loudly. `pdf-lib` is browser-compatible pure JS, so an
+// accidental client-side import would bundle ~350 kB silently instead of
+// failing. The gate that would actually catch that is
 // `scripts/check-bundle-budget.mjs`, run in CI against `next build`'s own
-// First Load JS table.
+// First Load JS table — i.e. against RNF-05's <=120 kB gzip budget measured
+// on the number that really ships, not on a proxy for it.
 //
 // So: never import this module, or `pdf-lib`, from a client component.
 import { PDFDocument, PageSizes, StandardFonts, rgb } from "pdf-lib";
 import type { PDFFont, PDFPage } from "pdf-lib";
+import { formatCentsBRL, formatIsoDateOrUnknown, formatUtcDate } from "@pentefino/core";
 import type {
   Category, Dossier, DossierAttachmentStatus, DossierParty,
 } from "@pentefino/core";
@@ -82,58 +85,74 @@ const CATEGORY_LABELS: Record<Category, string> = {
   water: "Água",
 };
 
+const SECTION_HEADINGS = {
+  parties: "Qualificação das partes",
+  invoice: "A fatura",
+  contested: "Itens contestados",
+  timeline: "Linha do tempo",
+  attachments: "Lista de anexos",
+  notes: "Observações",
+} as const;
+
+// The three mutually exclusive things this renderer can say about the
+// original invoice file (RF-110). Named rather than inline so
+// `RENDERER_FIXED_STRINGS` can collect them: the third is reachable only
+// when the file is gone AND no `invoice_file_expired` event recorded when,
+// which no realistic fixture produces.
+const FILE_AVAILABLE_LINE = "Arquivo original da fatura: disponível no sistema.";
+const FILE_REMOVED_UNDATED_LINE = "Arquivo original da fatura: removido do armazenamento (data não registrada).";
+
+function fileRemovedLine(at: Date): string {
+  return `Arquivo original da fatura: removido do armazenamento em ${formatUtcDate(at)}.`;
+}
+
+// Checkbox-ish markers for the attachment list: what the system already
+// holds is ticked, everything the person still has to bring is not.
+const ATTACHMENT_MARKER_HELD = "[x]";
+const ATTACHMENT_MARKER_TO_BRING = "[ ]";
+
+const NO_VALUE_LABEL = "não informado";
+
+/**
+ * Every fixed pt-BR string this renderer adds on its own, flattened for the
+ * INV-004/INV-005 vocabulary suite to lint one by one. The counterpart of
+ * `@pentefino/core`'s `DOSSIER_FIXED_STRINGS`, and for the same reason:
+ * several of these (three of the four category labels, the undated
+ * file-removal wording) cannot be reached by any one rendered fixture, so
+ * driving them through a document was never going to gate them. Derived
+ * from the tables above, never re-typed.
+ *
+ * The label prefixes this module interpolates values into — `Prestadora:`,
+ * `Vencimento:`, `Total contestado:`, `Página X de Y` and the rest — are
+ * on every dossier it produces, so the suite's two rendered fixtures gate
+ * those end-to-end and they are deliberately not repeated here.
+ */
+export const RENDERER_FIXED_STRINGS: readonly string[] = [
+  ...Object.values(SECTION_HEADINGS),
+  ...Object.values(PARTY_ROLE_LABELS),
+  ...Object.values(ATTACHMENT_STATUS_LABELS),
+  ...Object.values(CATEGORY_LABELS),
+  FILE_AVAILABLE_LINE,
+  FILE_REMOVED_UNDATED_LINE,
+  fileRemovedLine(new Date(0)),
+  ATTACHMENT_MARKER_HELD,
+  ATTACHMENT_MARKER_TO_BRING,
+  NO_VALUE_LABEL,
+];
+
 // --- date/money formatting ---------------------------------------------------
-
-function pad2(n: number): string {
-  return n < 10 ? `0${n}` : `${n}`;
-}
-
-/**
- * `dd/MM/yyyy` from a `Date`'s own UTC getters — deterministic, no locale,
- * no timezone database. `dossier.ts` (sub-task A) has an identical private
- * helper for the strings it builds; it isn't exported, so this is a
- * separate small copy rather than a shared import, kept to the same
- * format on purpose.
- */
-function formatUtcDate(date: Date): string {
-  return `${pad2(date.getUTCDate())}/${pad2(date.getUTCMonth() + 1)}/${date.getUTCFullYear()}`;
-}
-
-// `periodStart`/`periodEnd`/`dueDate` on `dossier.invoice` are plain
-// `YYYY-MM-DD` strings with no time component (see the type's own
-// comment in dossier.ts) — splitting the string is simpler and stricter
-// than routing it through `Date` and back.
-function formatIsoDate(iso: string): string {
-  const [year, month, day] = iso.split("-");
-  return `${day}/${month}/${year}`;
-}
-
-function formatIsoDateOrUnknown(iso: string | null): string {
-  return iso !== null ? formatIsoDate(iso) : "não informado";
-}
-
-/**
- * Integer cents -> `R$ 1.234,56`, hand-rolled rather than `Intl` so the
- * output can never depend on the host's ICU data (a job runner is not
- * guaranteed to carry full ICU). Handles zero and negative values — a
- * credit line is a real thing on an invoice, rendered as `-R$ 1,50`.
- */
-function formatCents(cents: number): string {
-  const negative = cents < 0;
-  const abs = Math.abs(cents);
-  const reais = Math.floor(abs / 100);
-  const centavos = abs % 100;
-
-  const digits = String(reais);
-  let grouped = "";
-  for (let i = 0; i < digits.length; i++) {
-    const fromEnd = digits.length - i;
-    grouped += digits[i];
-    if (fromEnd > 1 && fromEnd % 3 === 1) grouped += ".";
-  }
-
-  return `${negative ? "-" : ""}R$ ${grouped},${pad2(centavos)}`;
-}
+//
+// `formatCentsBRL`, `formatUtcDate` and `formatIsoDateOrUnknown` are
+// imported from `@pentefino/core` above rather than re-implemented here.
+// This module used to carry private copies of all three, and they did not
+// agree with the ones `buildDossier` uses for the strings it hands over:
+// the invoice total is printed twice on the same page, once from each, so
+// a total of 118 990 cents came out as `R$ 1.189,90` in the invoice section
+// and `R$ 1189,90` in the timeline, and a credit as `-R$ 1,50` and
+// `R$ -1,50`. The date copy had drifted the other way — it lacked the
+// malformed-input guard and would print `undefined/undefined/2026`. One
+// implementation, in the package that already owns the model, is the only
+// arrangement in which those cannot diverge again.
 
 // --- WinAnsi sanitization ----------------------------------------------------
 
@@ -406,7 +425,7 @@ function formLine(font: PDFFont, label: string, size: number, availableWidth: nu
 }
 
 function drawParties(builder: PageBuilder, fonts: { regular: PDFFont; bold: PDFFont }, dossier: Dossier): void {
-  drawHeading(builder, fonts.bold, "Qualificação das partes");
+  drawHeading(builder, fonts.bold, SECTION_HEADINGS.parties);
 
   for (const party of dossier.parties) {
     builder.drawWrapped(PARTY_ROLE_LABELS[party.role], { font: fonts.bold, size: BODY_SIZE }, BODY_LINE_HEIGHT);
@@ -438,15 +457,13 @@ function drawParties(builder: PageBuilder, fonts: { regular: PDFFont; bold: PDFF
 }
 
 function invoiceFileLine(invoice: Dossier["invoice"]): string {
-  if (invoice.fileAvailable) return "Arquivo original da fatura: disponível no sistema.";
-  if (invoice.fileExpiredAt !== null) {
-    return `Arquivo original da fatura: removido do armazenamento em ${formatUtcDate(invoice.fileExpiredAt)}.`;
-  }
-  return "Arquivo original da fatura: removido do armazenamento (data não registrada).";
+  if (invoice.fileAvailable) return FILE_AVAILABLE_LINE;
+  if (invoice.fileExpiredAt !== null) return fileRemovedLine(invoice.fileExpiredAt);
+  return FILE_REMOVED_UNDATED_LINE;
 }
 
 function drawInvoiceSection(builder: PageBuilder, fonts: { regular: PDFFont; bold: PDFFont }, dossier: Dossier): void {
-  drawHeading(builder, fonts.bold, "A fatura");
+  drawHeading(builder, fonts.bold, SECTION_HEADINGS.invoice);
   const { invoice } = dossier;
   const style = { font: fonts.regular, size: BODY_SIZE };
 
@@ -459,7 +476,7 @@ function drawInvoiceSection(builder: PageBuilder, fonts: { regular: PDFFont; bol
   );
   builder.drawWrapped(`Vencimento: ${formatIsoDateOrUnknown(invoice.dueDate)}`, style, BODY_LINE_HEIGHT);
   builder.drawWrapped(
-    `Valor total: ${invoice.totalCents !== null ? formatCents(invoice.totalCents) : "não informado"}`,
+    `Valor total: ${invoice.totalCents !== null ? formatCentsBRL(invoice.totalCents) : NO_VALUE_LABEL}`,
     style,
     BODY_LINE_HEIGHT,
   );
@@ -467,12 +484,12 @@ function drawInvoiceSection(builder: PageBuilder, fonts: { regular: PDFFont; bol
 }
 
 function drawContestedItems(builder: PageBuilder, fonts: { regular: PDFFont; bold: PDFFont }, dossier: Dossier): void {
-  drawHeading(builder, fonts.bold, "Itens contestados");
+  drawHeading(builder, fonts.bold, SECTION_HEADINGS.contested);
 
   for (const item of dossier.contestedItems) {
     builder.drawLabelWithRightValue(
       item.description,
-      formatCents(item.amountCents),
+      formatCentsBRL(item.amountCents),
       { font: fonts.regular, size: BODY_SIZE },
       BODY_LINE_HEIGHT,
     );
@@ -486,14 +503,14 @@ function drawContestedItems(builder: PageBuilder, fonts: { regular: PDFFont; bol
   }
 
   builder.drawWrapped(
-    `Total contestado: ${formatCents(dossier.contestedTotalCents)}`,
+    `Total contestado: ${formatCentsBRL(dossier.contestedTotalCents)}`,
     { font: fonts.bold, size: BODY_SIZE },
     BODY_LINE_HEIGHT,
   );
 }
 
 function drawTimeline(builder: PageBuilder, fonts: { regular: PDFFont; bold: PDFFont }, dossier: Dossier): void {
-  drawHeading(builder, fonts.bold, "Linha do tempo");
+  drawHeading(builder, fonts.bold, SECTION_HEADINGS.timeline);
 
   // Rendered strictly in array order — `dossier.entries` arrives already
   // chronological (sub-task A's own sort, with a deterministic tie-break);
@@ -516,11 +533,11 @@ function drawTimeline(builder: PageBuilder, fonts: { regular: PDFFont; bold: PDF
 }
 
 function attachmentMarker(status: DossierAttachmentStatus): string {
-  return status === "available" ? "[x]" : "[ ]";
+  return status === "available" ? ATTACHMENT_MARKER_HELD : ATTACHMENT_MARKER_TO_BRING;
 }
 
 function drawAttachments(builder: PageBuilder, fonts: { regular: PDFFont; bold: PDFFont }, dossier: Dossier): void {
-  drawHeading(builder, fonts.bold, "Lista de anexos");
+  drawHeading(builder, fonts.bold, SECTION_HEADINGS.attachments);
 
   for (const attachment of dossier.attachments) {
     builder.drawWrapped(
@@ -541,7 +558,7 @@ function drawAttachments(builder: PageBuilder, fonts: { regular: PDFFont; bold: 
 function drawNotes(builder: PageBuilder, fonts: { regular: PDFFont; bold: PDFFont }, dossier: Dossier): void {
   if (dossier.notes.length === 0) return; // brief: omit the whole section when there are none
 
-  drawHeading(builder, fonts.bold, "Observações");
+  drawHeading(builder, fonts.bold, SECTION_HEADINGS.notes);
   for (const note of dossier.notes) {
     builder.drawWrapped(note, { font: fonts.regular, size: BODY_SIZE }, BODY_LINE_HEIGHT);
     builder.spacer(4);

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { and, eq } from "drizzle-orm";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import { mkdtempSync, readdirSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { extractText, getDocumentProxy } from "unpdf";
@@ -34,8 +34,11 @@ const NOW = new Date("2026-08-31T12:00:00.000Z");
 
 // A CPF with valid mod-11 check digits, so `maskText` really does recognise
 // it — a made-up 11-digit run would pass this test while masking nothing.
+// The bare-digit form is deliberately not asserted against: it is nowhere in
+// any fixture, so `not.toContain("11144477735")` could never have failed —
+// deleting masking surfaces the formatted `111.444.777-35`, which is what
+// the assertions below actually look for.
 const CPF = "111.444.777-35";
-const CPF_DIGITS = "11144477735";
 
 // Claro's real CNPJ, check digits and all. Seeded issuers carry `cnpj:
 // null`, so the fixture sets one: a CNPJ identifies a company, not a
@@ -43,7 +46,13 @@ const CPF_DIGITS = "11144477735";
 // nothing to assert on would be worthless.
 const ISSUER_CNPJ = "40.432.544/0001-47";
 
-const PROTOCOL_SAC = "20260415-000987654";
+// Deliberately an 11-digit run with valid mod-11 check digits — a different
+// person's CPF from the one above, and a perfectly ordinary shape for a
+// call-centre protocol number. This is the exact collision INV-007's
+// `protocolNumber` exemption exists for: with the fixture's earlier
+// `20260415-000987654`, `maskText` had nothing to bite on, so "verbatim and
+// unmasked" would have stayed green with the exemption deleted.
+const PROTOCOL_SAC = "52998224725";
 const PROTOCOL_PROCON = "PROCON/2026/06/0332";
 
 const EDITED_SUBJECT = "Contestacao revisada pelo titular da linha";
@@ -305,14 +314,52 @@ describe("dossier task (RF-187) — the produced PDF", () => {
 
     const { event, stored, totalPages, fileKey } = await readStoredDossier(caseId);
     expect(sniffMimeType(stored)).toBe("application/pdf");
-    expect(totalPages).toBeGreaterThanOrEqual(1);
+    // The exact page count for this fixture, not `>= 1`: `PageBuilder`'s
+    // constructor always adds a page and `getDocumentProxy` throws before it
+    // could return 0, so `>= 1` was incapable of failing. Deterministic for
+    // a fixed fixture and a fixed `now`.
+    expect(totalPages).toBe(2);
 
     expect(event.invoiceId).toBe(invoiceId);
-    expect(event.payload.fileKey).toBe(fileKey);
+    // The event must name the key the bytes are *actually* stored under.
+    // Comparing `event.payload.fileKey` to `fileKey` compared a value to
+    // itself (`readStoredDossier` derives one from the other) — so this
+    // reaches past both, to what is on disk.
+    expect(storedFiles()).toHaveLength(1);
+    expect(storedFiles()[0]).toContain(fileKey.replace(/\//g, sep));
     expect(event.payload.sizeBytes).toBe(stored.length);
-    expect(event.payload.entryCount).toBeGreaterThan(0);
-    expect(event.payload.attachmentCount).toBeGreaterThan(0);
+    // Exact counts, not `> 0`: `buildDossier` always emits at least the case
+    // entry, the invoice entry and the invoice attachment, so `> 0` could
+    // not fail either. 13 entries for this fixture — invoice uploaded,
+    // invoice received, invoice analyzed, case opened, two documents each
+    // generated and sent (4), two protocols registered, one response
+    // received, deadline expired, stage advanced — with the `case_created`
+    // and `protocol_entered` events dropped as announcements of rows the
+    // dossier already renders. 5 attachments: the invoice, one receipt per
+    // protocol, and the two documents' checklists unioned to two entries
+    // (both name the April payment receipt; it is listed once).
+    expect(event.payload.entryCount).toBe(13);
+    expect(event.payload.attachmentCount).toBe(5);
     expect(event.payload.invoiceFileAvailable).toBe(true);
+  });
+
+  it("titles every timeline entry in pt-BR, including the invoice-scoped ones", async () => {
+    const { caseId } = await seedRichCase();
+
+    await task()({ now: NOW.toISOString() });
+
+    const { text } = await readStoredDossier(caseId);
+    // `invoice_uploaded` and `invoice_analyzed` are joined into the timeline
+    // on purpose (a case's story starts before the case row does) and used
+    // to fall through to the raw-type fallback, printing
+    // `Evento do caso: invoice_uploaded` on a document handed to a judge.
+    expect(text).toContain("10/04/2026 — Fatura enviada ao sistema");
+    expect(text).toContain("11/04/2026 — Fatura analisada pelo sistema");
+    // No English identifier reaches the page from any of them.
+    expect(text).not.toContain("Evento do caso:");
+    for (const type of ["invoice_uploaded", "invoice_analyzed", "deadline_expired", "stage_advanced"]) {
+      expect(text, `expected no raw event identifier "${type}" on the page`).not.toContain(type);
+    }
   });
 
   it("carries every protocol number, verbatim and unmasked", async () => {
@@ -321,8 +368,17 @@ describe("dossier task (RF-187) — the produced PDF", () => {
     await task()({ now: NOW.toISOString() });
 
     const { text } = await readStoredDossier(caseId);
-    expect(text).toContain(PROTOCOL_SAC);
-    expect(text).toContain(PROTOCOL_PROCON);
+    // The SAC number is a valid CPF by shape and check digits, so this is a
+    // real gate on the exemption and not on a string `maskText` could never
+    // have touched: delete the exemption and these lines read
+    // `Número: [CPF]`.
+    //
+    // Counted, not merely present: the SAC protocol carries its number twice
+    // (the entry for registering it and the entry for the reply it got), the
+    // Procon one only once (no reply). A `toContain` would have stayed green
+    // with the number masked on one of the two SAC lines.
+    expect(text.split(`Número: ${PROTOCOL_SAC}`)).toHaveLength(3);
+    expect(text.split(`Número: ${PROTOCOL_PROCON}`)).toHaveLength(2);
     // Also as the attachment line, so the clerk knows which receipt to file.
     expect(text).toContain(`Comprovante do protocolo ${PROTOCOL_SAC} — SAC telefonico, 15/04/2026`);
   });
@@ -375,9 +431,11 @@ describe("dossier task (RF-187) — the produced PDF", () => {
     await task()({ now: NOW.toISOString() });
 
     const { text } = await readStoredDossier(caseId);
-    // Five entry titles, each appearing exactly once, listed here in the
-    // order their own timestamps put them. Presence alone is not a
-    // chronology, so this compares positions.
+    // Five entry titles, listed here in the order their own timestamps put
+    // them. Presence alone is not a chronology, so this compares positions —
+    // of the first occurrence of each, which is only a well-defined
+    // chronology if each really does occur once, so that is asserted rather
+    // than assumed.
     const inTimeOrder = [
       "Fatura recebida", // 10/04
       "Caso aberto", // 12/04
@@ -387,9 +445,8 @@ describe("dossier task (RF-187) — the produced PDF", () => {
     ];
 
     const positions = inTimeOrder.map((title) => {
-      const at = text.indexOf(title);
-      expect(at, `expected the timeline to carry "${title}"`).toBeGreaterThanOrEqual(0);
-      return at;
+      expect(text.split(title), `expected the timeline to carry "${title}" exactly once`).toHaveLength(2);
+      return text.indexOf(title);
     });
     for (let i = 1; i < positions.length; i++) {
       expect(positions[i], `"${inTimeOrder[i]}" must come after "${inTimeOrder[i - 1]}"`)
@@ -429,7 +486,28 @@ describe("dossier task (RF-187) — the produced PDF", () => {
     expect(text).toContain("Servico adicional vinculado ao CPF [CPF]");
     expect(text).toContain("Pedido: Cancelar o servico associado ao CPF [CPF]");
     expect(text).not.toContain(CPF);
-    expect(text).not.toContain(CPF_DIGITS);
+  });
+
+  it("masks a CPF typed into a protocol's channel, the one free-text field that reaches a title", async () => {
+    const { caseId } = await seedRichCase();
+    // `case_protocols.channel` is a free `text` column: whatever the person
+    // typed when recording the protocol lands in two timeline titles and in
+    // the attachment label, and used to reach all three unmasked.
+    await ctx.db.update(caseProtocols)
+      .set({ channel: `SAC ${CPF}` })
+      .where(eq(caseProtocols.protocolNumber, PROTOCOL_SAC));
+
+    await task()({ now: NOW.toISOString() });
+
+    const { text } = await readStoredDossier(caseId);
+    expect(text).toContain("Protocolo registrado — SAC [CPF]");
+    expect(text).toContain("Resposta do protocolo recebida — SAC [CPF]");
+    expect(text).toContain(`Comprovante do protocolo ${PROTOCOL_SAC} — SAC [CPF], 15/04/2026`);
+    expect(text).not.toContain(CPF);
+    // The protocol number on the very same lines still survives verbatim:
+    // masking free text must not become masking the identifier the dossier
+    // exists to carry.
+    expect(text).toContain(PROTOCOL_SAC);
   });
 
   it("prints the issuer's CNPJ unmasked — it identifies a company, not a person", async () => {
@@ -472,6 +550,26 @@ describe("dossier task (RF-187) — an invoice whose file RF-110 already deleted
     expect(text).toContain("Arquivo original da fatura: removido do armazenamento em 15/07/2026.");
     expect(text).not.toContain("Arquivo original da fatura: disponível no sistema");
     expect(event.payload.invoiceFileAvailable).toBe(false);
+  });
+
+  it("carries a failed expiry attempt too — it is a fact about the invoice's file", async () => {
+    // `expire-files.ts` writes `invoice_file_expiry_failed` against the
+    // invoice with no `caseId`, exactly like its successful sibling. Left
+    // off the invoice-scoped join, no join could ever reach it and the
+    // pt-BR label `EVENT_META` carries for it was dead code — while the
+    // timeline quietly lost the reason a file that should be gone is not.
+    const seeded = await seedRichCase();
+    await ctx.db.insert(events).values({
+      id: newId("evt"), invoiceId: seeded.invoiceId, userId: seeded.userId,
+      type: "invoice_file_expiry_failed", payload: { reason: "storage recusou a exclusao" },
+      occurredAt: new Date("2026-07-14T03:00:00.000Z"),
+    });
+
+    await task()({ now: NOW.toISOString() });
+
+    const { text } = await readStoredDossier(seeded.caseId);
+    expect(text).toContain("14/07/2026 — Falha ao remover o arquivo da fatura");
+    expect(text).toContain("Motivo: storage recusou a exclusao");
   });
 
   it("does not claim the invoice is attached, and still reproduces the invoice's own data", async () => {
@@ -539,8 +637,16 @@ describe("dossier task (RF-187) — eligibility and isolation", () => {
     // The whole point: the second case's outcome is untouched by the first's.
     const secondTypes = await eventTypes(second.caseId);
     expect(secondTypes).toContain("dossier_generated");
-    const { totalPages } = await readStoredDossier(second.caseId);
-    expect(totalPages).toBeGreaterThanOrEqual(1);
+    // The second case's PDF really is a whole dossier, not a stub the run
+    // wrote on its way out: same page count and the same timeline as the
+    // healthy fixture above (`>= 1` could not have failed — the builder
+    // always adds a page).
+    const { totalPages, text } = await readStoredDossier(second.caseId);
+    expect(totalPages).toBe(2);
+    expect(text).toContain("Linha do tempo");
+    expect(text).toContain("Fatura enviada ao sistema");
+    // And exactly one file reached storage: the first case's `put` threw.
+    expect(storedFiles()).toHaveLength(1);
   });
 
   it("retries a failed case on the next run, because no dossier_generated was written for it", async () => {

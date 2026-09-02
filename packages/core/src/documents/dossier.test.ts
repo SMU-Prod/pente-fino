@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { buildDossier, type BuildDossierInput } from "./dossier.js";
 import { assembleContest } from "./assemble.js";
 import type { ContestDocument } from "./contest.js";
-import type { Playbook, Stage } from "../cases/playbook.js";
+import type { Playbook } from "../cases/playbook.js";
 
 // A real, mod-11-valid CNPJ — the same fixture `mask.test.ts` uses for
 // "Claro Móvel" — so the CNPJ-survives-unmasked test is meaningful: if this
@@ -83,9 +83,7 @@ function baseInput(overrides: Partial<BuildDossierInput> = {}): BuildDossierInpu
   return {
     case: {
       id: "case_1",
-      stage: "jec_ready" as Stage,
       createdAt: new Date("2026-01-05T10:00:00Z"),
-      stageEnteredAt: new Date("2026-06-01T10:00:00Z"),
       outcome: null,
       closedAt: null,
     },
@@ -256,7 +254,7 @@ describe("buildDossier · masking (INV-007)", () => {
     expect(response?.details).toContain("Resumo não informado");
   });
 
-  it("masks a protocol's responseSummary but never its channel", () => {
+  it("masks a protocol's responseSummary and leaves an ordinary channel name untouched", () => {
     const input = baseInput({
       protocols: [protocol({
         channel: "consumidor.gov.br",
@@ -268,7 +266,40 @@ describe("buildDossier · masking (INV-007)", () => {
     const dossier = buildDossier(input);
     const response = dossier.entries.find((e) => e.kind === "protocol_response");
     expect(response?.details.join(" ")).toContain("[CPF]");
+    // `channel` goes through `maskText` too (see the test below), but no
+    // realistic channel name matches a CPF/CNPJ/address shape, so masking
+    // costs an ordinary one nothing.
     expect(response?.title).toContain("consumidor.gov.br");
+  });
+
+  it("masks a CPF typed into a protocol's channel — it is free text, not a structured identifier", () => {
+    // `case_protocols.channel` is a `text` column with no check constraint
+    // and no enum: whatever a person types when recording a protocol lands
+    // here verbatim and then reaches two entry titles and an attachment
+    // label. Unlike `protocolNumber` — which must survive byte-exact or the
+    // document loses its point — nothing about a channel name needs to.
+    const input = baseInput({
+      protocols: [protocol({
+        protocolNumber: "9988776",
+        channel: `SAC do titular ${VALID_CPF}`,
+        responseReceivedAt: new Date("2026-06-08T12:00:00Z"),
+        responseSummary: "A empresa respondeu dentro do prazo",
+      })],
+    });
+
+    const dossier = buildDossier(input);
+
+    expect(dossier.entries.find((e) => e.kind === "protocol")?.title)
+      .toBe("Protocolo registrado — SAC do titular [CPF]");
+    expect(dossier.entries.find((e) => e.kind === "protocol_response")?.title)
+      .toBe("Resposta do protocolo recebida — SAC do titular [CPF]");
+
+    const attachment = dossier.attachments.find((a) => a.label.includes("9988776"));
+    expect(attachment?.label).toBe("Comprovante do protocolo 9988776 — SAC do titular [CPF], 05/06/2026");
+
+    // The protocol number itself still survives verbatim on the same line —
+    // masking the channel must not be a back door to masking the number.
+    expect(dossier.entries.find((e) => e.kind === "protocol")?.details.join(" ")).toContain("9988776");
   });
 
   it("keeps the issuer CNPJ unmasked in the empresa party", () => {
@@ -541,6 +572,8 @@ describe("buildDossier · event kinds and labels", () => {
     ["stage_advanced", "stage_change"],
     ["deadline_expired", "deadline"],
     ["invoice_file_expired", "invoice"],
+    ["invoice_uploaded", "invoice"],
+    ["invoice_analyzed", "invoice"],
     ["outcome_confirmed", "outcome"],
     ["case_reopened", "stage_change"],
     ["diff_run", "other"],
@@ -571,6 +604,26 @@ describe("buildDossier · event kinds and labels", () => {
     const dossier = buildDossier(input);
     expect(dossier.entries.find((e) => e.sourceId === "evt_1")?.title).toBe("Dossiê gerado");
     expect(dossier.entries.find((e) => e.sourceId === "evt_2")?.title).toBe("Falha ao gerar o dossiê");
+  });
+
+  it("gives invoice_uploaded and invoice_analyzed pt-BR labels, not the raw English identifier", () => {
+    // RF-187's job joins these two invoice-scoped types into the case
+    // timeline on purpose (`INVOICE_SCOPED_EVENT_TYPES`, apps/jobs) — a
+    // case's story starts before the case row does. Without an `EVENT_META`
+    // entry they fell to the raw-type fallback, putting
+    // `Evento do caso: invoice_uploaded` on a document a judge reads.
+    const input = baseInput({
+      events: [
+        { id: "evt_1", type: "invoice_uploaded", occurredAt: new Date("2026-06-15T00:00:00Z"), payload: {} },
+        { id: "evt_2", type: "invoice_analyzed", occurredAt: new Date("2026-06-16T00:00:00Z"), payload: {} },
+      ],
+    });
+    const dossier = buildDossier(input);
+    expect(dossier.entries.find((e) => e.sourceId === "evt_1")?.title).toBe("Fatura enviada ao sistema");
+    expect(dossier.entries.find((e) => e.sourceId === "evt_2")?.title).toBe("Fatura analisada pelo sistema");
+    const titles = dossier.entries.map((e) => e.title).join(" ");
+    expect(titles).not.toContain("invoice_uploaded");
+    expect(titles).not.toContain("invoice_analyzed");
   });
 
   it("gives an unrecognised event type kind 'other' and a safe fallback title", () => {
@@ -737,6 +790,25 @@ describe("buildDossier · display formatting (dates and money actually shown to 
 
     const protocolText = dossier.entries.find((e) => e.kind === "protocol")?.details.join(" ") ?? "";
     expect(protocolText).toContain("12/06/2026");
+  });
+
+  it("groups thousands and puts a credit's sign before the R$, exactly as the PDF renderer does", () => {
+    // The invoice total is printed twice on the same page — once here, in
+    // the timeline's "Fatura recebida" entry, and once by the renderer's own
+    // "A fatura" section. Every other fixture in this branch stays under
+    // R$ 1.000,00 and non-negative, which is how two implementations
+    // disagreeing on both went unnoticed.
+    const grouped = buildDossier(baseInput({
+      invoice: { ...baseInput().invoice, totalCents: 118990 },
+    }));
+    expect(grouped.entries.find((e) => e.kind === "invoice")?.details)
+      .toContain("Valor total: R$ 1.189,90");
+
+    const credit = buildDossier(baseInput({
+      invoice: { ...baseInput().invoice, totalCents: -150 },
+    }));
+    expect(credit.entries.find((e) => e.kind === "invoice")?.details)
+      .toContain("Valor total: -R$ 1,50");
   });
 });
 
