@@ -55,7 +55,17 @@ export const EVENTS = [
   "report_viewed", "finding_created", "finding_dismissed", "finding_confirmed",
   "card_shared", "public_report_viewed",
   "case_created", "contest_generated", "contest_edited", "contest_marked_sent",
-  "protocol_entered", "stage_advanced", "deadline_expired",
+  // `response_received` is E5 Task 5's addition (§15.1: "Adicionar é
+  // livre"). §9.1's machine already answers to a `response_received`
+  // `StageEvent` - it is what clears the wait, because the wait existed to
+  // detect silence and the channel has now spoken - but the catalogue had no
+  // name for it, so nothing could record that it happened. Without the row,
+  // a case's trail shows a deadline that simply stops, with no way to tell
+  // "the company answered" from "somebody cleared the column", and E6's diff
+  // has no anchor for when the answer arrived. The pair it completes is
+  // `protocol_entered` (the person wrote to the channel) and this (the
+  // channel wrote back).
+  "protocol_entered", "response_received", "stage_advanced", "deadline_expired",
   "diff_run", "outcome_confirmed", "case_reopened",
   "monitor_email_received", "monthly_digest_sent",
   "session_claimed", "subscription_started", "subscription_failed",

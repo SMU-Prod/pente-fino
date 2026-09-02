@@ -153,6 +153,11 @@ function institutionalVoiceViolations(doc: ContestDocument): Array<{ field: stri
   doc.requests.forEach((request, i) => sweep(`requests[${i}]`, request));
   doc.scriptForCall.forEach((line, i) => sweep(`scriptForCall[${i}]`, line));
   doc.attachmentsChecklist.forEach((label, i) => sweep(`attachmentsChecklist[${i}]`, label));
+  // E5 Task 5's RF-182 field, swept because it is prose the document shows.
+  // `?? []` rather than a required read: the field is optional on purpose
+  // (see `contest.ts`), because a `case_documents.body` written before E5
+  // genuinely does not carry it.
+  (doc.escalationHistory ?? []).forEach((line, i) => sweep(`escalationHistory[${i}]`, line));
   return violations;
 }
 
@@ -242,6 +247,10 @@ describe("INV-003 · proof: an institutional-voice document is caught in every R
       "Fatura do mês em questão.",
       "Nosso escritório de advocacia anexará o protocolo anterior.",
     ],
+    escalationHistory: [
+      "Protocolo 2024123456, registrado no canal SAC da operadora em 05/08/2026.",
+      "Acompanhamos o seu caso desde que o prazo terminou em 12/08/2026.",
+    ],
   };
 
   it("fails: catches exactly the tainted field, in every field kind", () => {
@@ -251,6 +260,7 @@ describe("INV-003 · proof: an institutional-voice document is caught in every R
       { field: "requests[1]", term: "representamos você" },
       { field: "scriptForCall[1]", term: "nosso time cuidará do seu caso" },
       { field: "attachmentsChecklist[1]", term: "nosso escritório de advocacia" },
+      { field: "escalationHistory[1]", term: "acompanhamos o seu caso" },
     ]);
   });
 
@@ -272,6 +282,14 @@ describe("INV-003 · proof: an institutional-voice document is caught in every R
     attachmentsChecklist: [
       "Fatura do mês em questão.",
       "Protocolo do atendimento anterior.",
+    ],
+    // The real sentence `expiredDeadlineSentence` produces (RF-182). It
+    // states a fact about the person's own protocol and is not the system
+    // placing itself inside the procedure, so it must pass — this is the
+    // "not too tight" half of the proof for the new field.
+    escalationHistory: [
+      "Protocolo 2024123456, registrado no canal SAC da operadora em 05/08/2026: " +
+        "o prazo de resposta terminou em 12/08/2026 sem resposta dentro do prazo.",
     ],
   };
 

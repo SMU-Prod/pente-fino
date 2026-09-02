@@ -24,6 +24,14 @@ import { lintUserFacingText } from "./lint.js";
  *   - `attachmentsChecklist` is never here. RF-165 is derived purely from
  *     the stage (`assembleContest.attachmentsChecklist`) — the design's own
  *     dependency table marks it "não vem do modelo".
+ *   - `escalationHistory` is never here either, and for the sharpest version
+ *     of the same reason. RF-182's acceptance is that the document contains
+ *     a protocol number and two specific dates; a model asked to reproduce
+ *     those would sometimes transpose a digit or a month, and the result
+ *     would be a document making a checkable factual claim about a company's
+ *     silence with the wrong number on it. `assembleContest` writes those
+ *     sentences (`AssembledContest.escalationHistory`) and
+ *     `buildCandidateDocument` attaches them verbatim.
  *
  * `scriptForCall` here is only the model's OWN additional lines — RF-163's
  * two mandatory items (protocol number, call recording) are never left to
@@ -67,11 +75,18 @@ export type ContestFindingContext = {
  * never sees a legal citation to reach for.
  *
  * `deadlinesExpired` (RF-160's third structured-input element per the PRD's
- * literal wording) is deliberately absent: `assembleContest`'s own contract
- * (Task 1, already landed) carries no such field, computing it needs the
- * business-day calendar E5 owns (RF-181), and inventing a parallel field
- * here would either duplicate or contradict whatever shape E5 eventually
- * gives it. Left as a known, deliberate gap — see this task's final report.
+ * literal wording, and RF-182's own requirement that "o gerador recebe
+ * `deadlinesExpired`") arrives **inside `assembled`**, not as a fourth field
+ * here. E4 left it out rather than invent a shape that would collide with
+ * E5's; E5 Task 5 defined it on `AssembleContestInput`/`AssembledContest`
+ * (`packages/core/src/documents/assemble.ts`), which is where the deadline
+ * calendar and the case's recorded protocols already are.
+ *
+ * A second, top-level copy here would be strictly worse: `assembled` also
+ * carries `escalationHistory`, the finished sentences derived from exactly
+ * those entries, and two independently-settable fields is two ways for the
+ * structured facts and the printed sentence to disagree about the same
+ * protocol.
  */
 export type ContestPromptInput = {
   issuerName: string;
@@ -185,6 +200,10 @@ function buildCandidateDocument(assembled: AssembledContest, draft: ContestDraft
     legalRefs: assembled.legalRefs.map(({ law, article }) => ({ law, article })),
     scriptForCall: [...assembled.mandatoryScriptItems, ...draft.scriptForCall],
     attachmentsChecklist: assembled.attachmentsChecklist,
+    // RF-182, attached the same way and for the same reason as `legalRefs`:
+    // the protocol number and the two dates are recorded facts about this
+    // case, and the model is never given the chance to restate them.
+    escalationHistory: assembled.escalationHistory,
   };
 }
 
@@ -219,6 +238,13 @@ function findLintViolations(candidate: CandidateDocument): LintViolationSite[] {
   candidate.requests.forEach((request, i) => sweep(`requests[${i}]`, request));
   candidate.scriptForCall.forEach((line, i) => sweep(`scriptForCall[${i}]`, line));
   candidate.attachmentsChecklist.forEach((label, i) => sweep(`attachmentsChecklist[${i}]`, label));
+  // RF-182's sentences. Deterministic, like `requests` and
+  // `attachmentsChecklist` — and swept for the same reason those are: the
+  // gate runs on every string the document can show, not only the ones the
+  // model wrote. The variable parts here are a channel name and a protocol
+  // number that both come from a person typing into a form, so this is not
+  // a theoretical surface.
+  (candidate.escalationHistory ?? []).forEach((line, i) => sweep(`escalationHistory[${i}]`, line));
   return violations;
 }
 

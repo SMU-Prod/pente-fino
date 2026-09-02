@@ -56,8 +56,14 @@ const Body = z.object({
  * transition table moves a case out of `draft` on `protocol_entered`, which
  * is E5 Task 5's protocol route - the moment the person actually reports
  * having opened the SAC ticket. Creating the case is not that moment, so
- * there is no deadline to compute here and `nextStage` is not this route's
- * to call.
+ * `nextStage` is not this route's to call.
+ *
+ * The case does, however, open **with a deadline**: RF-186's 30-day
+ * protocol window, stamped by `createCase` itself. It is not a playbook
+ * deadline (§20.2 has no `draft` entry) but the window RF-186 counts a
+ * *person's* silence in, and without it the case is invisible to E5 Task
+ * 3's scan - which filters on `next_deadline_at IS NOT NULL` - so it would
+ * get no day-30 nudge and be abandoned at day 60 with nothing recorded.
  */
 export async function POST(request: Request) {
   const secret = getSessionSecret();

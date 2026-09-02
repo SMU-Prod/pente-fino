@@ -22,11 +22,14 @@
 //      gate (PRD §18) — mirroring golden-run.mjs's own empty-golden-set
 //      behaviour exactly.
 //
-// The other two rubric criteria (protocols/expired deadlines, length and
-// neutral tone) need either data this repo's `AssembledContest` does not
-// carry yet (no date on a recorded protocol) or a model's judgment of tone,
-// and are asserted below to come back explicitly unmeasured, never silently
-// scored as passing.
+// The other two rubric criteria come back explicitly unmeasured, never
+// silently scored as passing — but for two different reasons now. "Length
+// and neutral tone" needs a model's judgment of tone and always will.
+// "Protocols and expired deadlines" no longer needs anything: E5 Task 5
+// (RF-182) put the channel, the protocol number and both dates on
+// `AssembledContest.deadlinesExpired` and the finished sentences on
+// `ContestDocument.escalationHistory`, so it is an exact string check
+// waiting to be wired. See `eval-contest.mjs`'s own header.
 
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
@@ -35,8 +38,7 @@ import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
-
-import { assembleContest } from "../packages/core/src/documents/assemble.ts";
+import { register } from "node:module";
 
 import {
   runContestEval,
@@ -49,6 +51,21 @@ import {
   RUBRIC_MAX,
   DEFAULT_SAMPLE_DIR,
 } from "./eval-contest.mjs";
+
+// `assembleContest` is loaded dynamically, AFTER the resolve hook is
+// registered, and that ordering is load-bearing rather than stylistic.
+// Static imports are hoisted and evaluated before any statement in this
+// file runs, so a plain `import ... from ".../assemble.ts"` at the top would
+// be resolved before `register()` could take effect. It used to work anyway
+// only because every relative import in `assemble.ts` was an `import type`,
+// which Node's type-stripping erases before the resolver ever sees it — a
+// property of that file, not a guarantee of this one. E5 Task 5 gave it its
+// first value-level relative imports (`../cases/deadline.js` for RF-182's
+// São Paulo dates) and this file broke immediately, with an
+// ERR_MODULE_NOT_FOUND naming a `.js` file no build step ever produces. See
+// `ts-sibling-loader.mjs`'s own header for the mismatch it bridges.
+register("./ts-sibling-loader.mjs", import.meta.url);
+const { assembleContest } = await import("../packages/core/src/documents/assemble.ts");
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SCRIPT_PATH = join(HERE, "eval-contest.mjs");
