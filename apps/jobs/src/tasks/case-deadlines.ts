@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNotNull, isNull, lte, max, ne } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, isNull, lte, max, ne, sql } from "drizzle-orm";
 import {
   PROTOCOL_WINDOW_DAYS, newId, nextStage, toCivilDate,
   type CaseOutcome, type EventType, type Playbook, type Stage,
@@ -127,16 +127,32 @@ function playbookChannel(playbook: Playbook, stage: Stage): string | null {
  * `caseId`, `userId` and `invoiceId` are all set on every row this job
  * writes: an event nobody can correlate is worthless, and `cases.invoice_id`
  * is NOT NULL so there is never an excuse to leave it off.
+ *
+ * `occurredAt` is written explicitly from the injected clock rather than left
+ * to the column's `defaultNow()`. Letting the default fire would put the wall
+ * clock in `occurred_at` and the simulated instant in the same row's
+ * `observedAt` payload field — two timestamps that disagree, in the one job
+ * whose entire premise is that time is injected. RF-186's acceptance is a
+ * *simulação temporal*, and `case_stalled.occurred_at` is the only durable
+ * record of when a stall happened, which is exactly what the gentler reading
+ * of RF-186 (see `sweepAbandoned`) would have to count from. Inert in
+ * production, where `now` is the wall clock anyway.
+ *
+ * `expire-files.ts` omits this and takes the default. That is the precedent
+ * this departs from, deliberately: its events carry no simulated timestamp in
+ * their payload, so nothing there disagrees with anything, and fixing it is
+ * not this branch's to make.
  */
 async function record(
   row: { id: string; userId: string; invoiceId: string },
   tx: Database,
+  now: Date,
   type: EventType,
   payload: Record<string, unknown>,
 ): Promise<void> {
   await tx.insert(events).values({
     id: newId("evt"), caseId: row.id, userId: row.userId, invoiceId: row.invoiceId,
-    type, payload,
+    type, payload, occurredAt: now,
   });
 }
 
@@ -286,6 +302,7 @@ export function createCaseDeadlinesTask(deps: CaseDeadlinesDeps): TaskHandler {
    * ambiguity.
    */
   async function sweepAbandoned(now: Date): Promise<void> {
+    const cutoff = new Date(now.getTime() - ABANDONMENT_WINDOW_MS);
     const candidates = await db
       .select({
         id: cases.id,
@@ -311,11 +328,21 @@ export function createCaseDeadlinesTask(deps: CaseDeadlinesDeps): TaskHandler {
       // of that table") is per-table, so grouping by the case alone leaves
       // `issuers.category` and `issuers.playbook` ungrouped and the query is
       // rejected outright.
-      .groupBy(cases.id, issuers.id);
+      .groupBy(cases.id, issuers.id)
+      // The 60-day cutoff, pushed down to the database. Without it this
+      // materialises every open case in the system on every run, with a
+      // GROUP BY over each one's whole event history, and then throws almost
+      // all of it away in JS — a full scan of a set that only grows. The
+      // `coalesce` is the same fallback the loop applies: a case with no
+      // allowlisted event yet is measured from `created_at`.
+      .having(sql`coalesce(max(${events.occurredAt}), ${cases.createdAt}) <= ${cutoff}`);
 
     for (const row of candidates) {
       try {
         const lastActionAt = row.lastUserActionAt ?? row.createdAt;
+        // Belt and braces: the HAVING above has already excluded these, and
+        // this stays as the readable statement of the rule (and the guard if
+        // the two ever drift).
         if (now.getTime() - lastActionAt.getTime() < ABANDONMENT_WINDOW_MS) continue;
 
         const transition = nextStage(
@@ -364,7 +391,7 @@ export function createCaseDeadlinesTask(deps: CaseDeadlinesDeps): TaskHandler {
           // `stage_advanced` to `closed`, plus `cases.outcome` and
           // `cases.closed_at`, already record the whole thing.
           await record(
-            row, tx, "stage_advanced",
+            row, tx, now, "stage_advanced",
             {
               ...advancePayload(row.stage, transition.stage, "inactivity", transition.outcome),
               lastUserActionAt: lastActionAt.toISOString(),
@@ -480,9 +507,20 @@ export function createCaseDeadlinesTask(deps: CaseDeadlinesDeps): TaskHandler {
     // If one ever answered `keep` without moving the stage, the deadline
     // would stay in the past and this job would re-expire the same case, and
     // write another pair of events, on every run forever. Writing nothing is
-    // the safe failure: the case sits still and visibly does not advance,
-    // instead of filling `events` with an escalation that never happened.
-    if (!transition.stampDeadline && !stageChanged) return;
+    // the safe failure: the case sits still instead of filling `events` with
+    // an escalation that never happened.
+    //
+    // Reported rather than returned in silence, though. Skipping quietly
+    // would mean the case is re-selected by every later sweep and dropped
+    // again, forever, with nothing anywhere saying so — the failure mode is
+    // permanent, and a permanent one nobody can see is worse than a noisy one.
+    if (!transition.stampDeadline && !stageChanged) {
+      reportCaseFailure(row.id, new Error(
+        `transition from ${row.stage} neither moved the stage nor restamped the deadline; `
+        + "its expired deadline will be re-selected by every later sweep",
+      ));
+      return;
+    }
 
     const update: {
       stage: Stage; updatedAt: Date; stageEnteredAt?: Date; nextDeadlineAt?: Date | null;
@@ -515,7 +553,7 @@ export function createCaseDeadlinesTask(deps: CaseDeadlinesDeps): TaskHandler {
       // not re-derive a date from a `timestamptz` in some other zone, which
       // is the off-by-a-day `deadline.ts`'s third decision exists to
       // prevent.
-      await record(row, tx, "deadline_expired", {
+      await record(row, tx, now, "deadline_expired", {
         stage: row.stage,
         stageEnteredAt: row.stageEnteredAt.toISOString(),
         stageEnteredDate: toCivilDate(row.stageEnteredAt),
@@ -534,7 +572,7 @@ export function createCaseDeadlinesTask(deps: CaseDeadlinesDeps): TaskHandler {
         // `cases_stage_values` rejects it as a stage, so this row is the
         // only record that it happened. In the common `sac → sac` stall
         // there is no `stage_advanced` to infer it from either.
-        await record(row, tx, "case_stalled", {
+        await record(row, tx, now, "case_stalled", {
           stalledIn: row.stage,
           returnedTo: transition.stage,
           nextDeadlineAt: transition.nextDeadlineAt?.toISOString() ?? null,
@@ -547,7 +585,7 @@ export function createCaseDeadlinesTask(deps: CaseDeadlinesDeps): TaskHandler {
       // reads `from: "sac", to: "sac"` is a lie, and Task 4's case timeline
       // would render it as an advance that never happened.
       if (stageChanged) {
-        await record(row, tx, "stage_advanced", advancePayload(
+        await record(row, tx, now, "stage_advanced", advancePayload(
           row.stage, transition.stage, "deadline_expired", transition.outcome,
         ));
       }
@@ -556,6 +594,15 @@ export function createCaseDeadlinesTask(deps: CaseDeadlinesDeps): TaskHandler {
 
   return async function caseDeadlines(payload: Record<string, unknown>): Promise<void> {
     const now = resolveNow(payload, "case-deadlines");
+    // Not individually try/caught, and that coupling is deliberate: the
+    // ordering guarantee in the doc comment above — a case that is both
+    // expired and abandonment-eligible closes rather than escalating — only
+    // holds if the abandonment sweep actually finished. If its own query
+    // fails, running the expiry sweep anyway would escalate exactly the cases
+    // that should have closed, generating the next document for somebody who
+    // stopped reading two months ago. Failing the whole run instead leaves
+    // every case untouched and retries on the next tick. Per-*case* failures
+    // are still isolated inside each sweep; this is about a sweep-wide one.
     await sweepAbandoned(now);
     await sweepExpired(now);
   };

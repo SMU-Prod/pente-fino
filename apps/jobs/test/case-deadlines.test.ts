@@ -80,6 +80,31 @@ async function insertEvent(caseId: string, type: EventType, occurredAt: Date): P
   });
 }
 
+/**
+ * A `Database` that lets somebody else write between this run's scan and its
+ * update — the race the optimistic guard exists for.
+ *
+ * The interception point is `transaction`, because that is where the guarded
+ * `UPDATE` lives: by the time the callback runs, the competing write has
+ * already committed, so the guard's `WHERE` re-evaluates against a row that
+ * no longer matches what the scan saw. Methods are bound to the real
+ * database rather than the proxy so drizzle's internals are untouched.
+ */
+function racingDb(db: TestDb["db"], compete: () => Promise<void>): TestDb["db"] {
+  return new Proxy(db, {
+    get(target, prop, receiver) {
+      if (prop === "transaction") {
+        return async (...args: unknown[]) => {
+          await compete();
+          return (target.transaction as (...a: unknown[]) => unknown)(...args);
+        };
+      }
+      const value = Reflect.get(target, prop, receiver);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+}
+
 async function caseRow(id: string) {
   const [row] = await ctx.db.select().from(cases).where(eq(cases.id, id));
   if (!row) throw new Error(`case ${id} vanished`);
@@ -200,6 +225,56 @@ describe("case-deadlines task: an expired deadline (RF-180, §9.1)", () => {
     expect((await caseRow(brokenCaseId)).stage).toBe("regulator");
     expect((await caseRow(healthyCaseId)).stage).toBe("consumidor_gov");
   });
+
+  it("writes nothing when another writer moves the case between the scan and the update (A4)", async () => {
+    const caseId = await insertCase({ stage: "sac" });
+    await insertProtocol(caseId, "sac");
+
+    // A second job instance, or a user posting a protocol, lands first.
+    const db = racingDb(ctx.db, async () => {
+      await ctx.db.update(cases).set({ stage: "consumidor_gov" }).where(eq(cases.id, caseId));
+    });
+
+    await createCaseDeadlinesTask({ db })({ now: NOW.toISOString() });
+
+    // The winner's write stands untouched, and the loser wrote no events at
+    // all — not a second `deadline_expired`, not a `stage_advanced` claiming
+    // a move it did not make.
+    expect((await caseRow(caseId)).stage).toBe("consumidor_gov");
+    expect(await eventsFor(caseId)).toHaveLength(0);
+  });
+
+  it("rolls the stage change back when its event cannot be written, so the two can never disagree (A3)", async () => {
+    const caseId = await insertCase({ stage: "sac" });
+    await insertProtocol(caseId, "sac");
+    // Make the transaction's *last* write fail, after the case row has been
+    // updated and `deadline_expired` inserted. A real constraint rather than
+    // a stub, so what is exercised is the database's own rollback.
+    await ctx.db.execute(
+      sql`alter table events add constraint events_no_stage_advanced check (type <> 'stage_advanced')`,
+    );
+    const reported = vi.spyOn(console, "error").mockImplementation(() => {});
+    let failuresLogged = 0;
+
+    try {
+      await task()({ now: NOW.toISOString() });
+      // Read before restoring: `mockRestore` resets the call history as well
+      // as the implementation, so asserting on the spy afterwards asserts on
+      // an already-cleared record.
+      failuresLogged = reported.mock.calls.length;
+    } finally {
+      reported.mockRestore();
+    }
+
+    const row = await caseRow(caseId);
+    expect(row.stage).toBe("sac");
+    expect(row.nextDeadlineAt?.getTime()).toBe(NOW.getTime() - DAY_MS);
+    // No orphan `deadline_expired` either: a stage that advanced with no
+    // event, or an event for an advance that did not happen, are the same
+    // defect from two sides, and A3 forbids both.
+    expect(await eventsFor(caseId)).toHaveLength(0);
+    expect(failuresLogged).toBe(1); // and the run reported it rather than swallowing it
+  });
 });
 
 describe("case-deadlines task: RF-186's stall", () => {
@@ -219,7 +294,11 @@ describe("case-deadlines task: RF-186's stall", () => {
 
     await task()({ now: NOW.toISOString() });
 
-    expect(await typesFor(caseId)).not.toContain("stage_advanced");
+    // Asserted as the *whole* set, not just the absence: an assertion that
+    // only says `not.toContain` is one a do-nothing handler also satisfies,
+    // so it needs the two rows that prove the sweep actually ran beside it.
+    // Sorted because the query has no ORDER BY.
+    expect([...await typesFor(caseId)].sort()).toEqual(["case_stalled", "deadline_expired"]);
   });
 
   it("stalls a regulator case that has a sac protocol but none for regulator, since hasProtocol is per-stage", async () => {
@@ -270,6 +349,27 @@ describe("case-deadlines task: the deadline_expired payload (RF-182's raw materi
 
     const [expiry] = (await eventsFor(caseId)).filter((row) => row.type === "deadline_expired");
     expect(expiry?.payload).toMatchObject({ playbookMissing: true, channel: null });
+  });
+
+  it("stamps every event it writes with the injected clock, not the wall clock", async () => {
+    const escalating = await insertCase({ stage: "sac" });
+    await insertProtocol(escalating, "sac");
+    const abandoning = await insertCase({
+      stage: "sac", nextDeadlineAt: null, createdAt: new Date(NOW.getTime() - 61 * DAY_MS),
+    });
+
+    await task()({ now: NOW.toISOString() });
+
+    // Both sweeps, so neither can be the one that got it right by accident.
+    const written = [...await eventsFor(escalating), ...await eventsFor(abandoning)];
+    expect(written).toHaveLength(3);
+    for (const row of written) {
+      // `occurred_at` defaulting to now() would put the wall clock in the
+      // same row whose payload carries the simulated `observedAt` — two
+      // disagreeing timestamps, in the job whose whole point is that time is
+      // injected. RF-186's acceptance is a temporal simulation.
+      expect(row.occurredAt.getTime()).toBe(NOW.getTime());
+    }
   });
 
   it("correlates every event it writes: caseId, userId and invoiceId are all set", async () => {
@@ -362,6 +462,24 @@ describe("case-deadlines task: RF-186's abandonment (§9.1's 60 days without use
     expect(row.stage).toBe("sac");
     expect(row.outcome).toBeNull();
     expect(await eventsFor(caseId)).toHaveLength(1); // only the report_viewed we inserted
+  });
+
+  it("closes on the last allowlisted user action, not only on the created_at fallback", async () => {
+    // The mirror of the day-59 test, from the closing side. `createdAt` is
+    // deliberately *recent* so the fallback would keep this case open: the
+    // only thing that can close it is the `report_viewed` row. A case whose
+    // creation postdates its own events cannot happen in production; this is
+    // a fixture built to isolate which of the two the clock actually reads.
+    const caseId = await insertCase({
+      stage: "sac", nextDeadlineAt: null, createdAt: new Date(NOW.getTime() - DAY_MS),
+    });
+    await insertEvent(caseId, "report_viewed", new Date(NOW.getTime() - 61 * DAY_MS));
+
+    await task()({ now: NOW.toISOString() });
+
+    const row = await caseRow(caseId);
+    expect(row.stage).toBe("closed");
+    expect(row.outcome).toBe("abandoned");
   });
 
   it("closes rather than escalates a case that is both expired and abandonment-eligible", async () => {
