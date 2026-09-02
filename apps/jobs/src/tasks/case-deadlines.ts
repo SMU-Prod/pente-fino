@@ -7,6 +7,12 @@ import type { TaskHandler } from "@pentefino/adapters";
 import { resolveNow } from "../clock.js";
 // eslint-disable-next-line pentefino/require-with-user -- system job with no user session; writes go through the caller-injected `Database` (deps.db), not a client this module creates itself
 import { schema, type Database } from "@pentefino/db";
+// Not on the same disable line, and not needing one: `closeCaseAsSystem` is
+// on `require-with-user`'s allowlist. It hands out no raw data access - it
+// takes one case id this job already read out of `cases` - and it exists so
+// that a job cannot close a case its own way and forget to settle the
+// findings. See `packages/db/src/case-close.ts`.
+import { closeCaseAsSystem } from "@pentefino/db";
 
 const { caseProtocols, cases, events, issuers } = schema;
 
@@ -54,9 +60,9 @@ const ABANDONMENT_WINDOW_MS = ABANDONMENT_WINDOW_DAYS * DAY_MS;
  *
  * **Included** — every one of these is a human doing something about *this
  * case*: creating it, reading the laudo, triaging a finding, generating or
- * editing or sending the contest letter, pasting a protocol number,
- * confirming the outcome, reopening it, sharing the card, or claiming the
- * anonymous session it started in.
+ * editing or sending the contest letter, pasting a protocol number, telling
+ * us the channel answered, confirming the outcome, reopening it, sharing the
+ * card, or claiming the anonymous session it started in.
  *
  * **Excluded, and why**, since silence about an exclusion is how this kind
  * of list rots:
@@ -76,6 +82,11 @@ const ABANDONMENT_WINDOW_MS = ABANDONMENT_WINDOW_DAYS * DAY_MS;
  *    this case.
  *  - `subscription_started`, `subscription_failed` — billing, and not
  *    attached to a case at all.
+ *  - `dossier_generated`, `dossier_generation_failed` — E5 Task 7's addition.
+ *    Its job fires for *every* case that reaches `jec_ready` with no dossier
+ *    yet; nobody asks for one. A case whose owner has gone quiet still gets
+ *    its PDF, and counting that as the owner acting would hold open exactly
+ *    the cases this clock exists to close.
  */
 export const USER_ACTION_EVENTS: readonly EventType[] = [
   "case_created",
@@ -86,14 +97,27 @@ export const USER_ACTION_EVENTS: readonly EventType[] = [
   "contest_edited",
   "contest_marked_sent",
   "protocol_entered",
+  // E5 Task 5's addition to the catalogue, and a user action by the same
+  // test as `protocol_entered`: a person went to look at what the company
+  // said and came back to tell us. It is written by `advanceCase`, on a
+  // request that only a logged-in owner can make.
+  "response_received",
   "outcome_confirmed",
   "case_reopened",
   "card_shared",
   "session_claimed",
 ];
 
-/** The reason a `stage_advanced` row gives for the move it records. */
-type AdvanceReason = "deadline_expired" | "inactivity";
+/**
+ * The reason a `stage_advanced` row gives for the move it records.
+ *
+ * `inactivity` is §9.1's backstop — the person went quiet and the case never
+ * stalled. `stall_expired` is RF-186's own path — the case sat in a channel
+ * nobody ever wrote to, and the 30-day window it was given to fix that ran
+ * out. Both end as `abandoned`, and RF-187's dossier has to be able to say
+ * which, because they are different accounts of what happened.
+ */
+type AdvanceReason = "deadline_expired" | "inactivity" | "stall_expired";
 
 type CaseRow = {
   id: string;
@@ -108,6 +132,39 @@ type CaseRow = {
 };
 
 /**
+ * What `events` says about a case's stall, per case.
+ *
+ * `stalledAt` is the latest `case_stalled`; `lastUserActionAt` is the latest
+ * allowlisted user action. Read through the `events_case_time` index on
+ * `(case_id, occurred_at)`.
+ *
+ * Grouped by `(case_id, type)` and folded in JS rather than asking for two
+ * filtered aggregates in one row: it is the same single index scan, it uses
+ * the same `max()` helper whose driver mapping is already known to be right
+ * for a timestamp column, and it stays readable.
+ */
+type StallState = { stalledAt: Date | null; lastUserActionAt: Date | null };
+
+/**
+ * Is this case *currently* stalled — that is, does RF-186's post-stall clock
+ * own it rather than §9.1's 60-day one?
+ *
+ * A user action at or after the stall voids it. The person came back; the
+ * window they were being given to write to the channel is no longer the
+ * thing being measured, and if the deadline later expires with still no
+ * protocol the case stalls afresh and the 30 days restart from there.
+ *
+ * `>=` rather than `>` on purpose: a user action in the same millisecond as
+ * the stall is the person acting, and the tie should go to the case staying
+ * open.
+ */
+function stallIsCurrent(state: StallState | undefined): boolean {
+  if (!state?.stalledAt) return false;
+  if (!state.lastUserActionAt) return true;
+  return state.lastUserActionAt.getTime() < state.stalledAt.getTime();
+}
+
+/**
  * Half of the optimistic guard (A4, A8). `next_deadline_at` is nullable, and
  * `= NULL` is never true in SQL, so the null case has to be `IS NULL` or the
  * guard would silently match nothing and every abandonment would be dropped
@@ -115,6 +172,15 @@ type CaseRow = {
  */
 function deadlineGuard(observed: Date | null) {
   return observed === null ? isNull(cases.nextDeadlineAt) : eq(cases.nextDeadlineAt, observed);
+}
+
+/**
+ * Key of the per-stage protocol map. One place, so the write site and the
+ * read site cannot drift. NUL as the separator because neither a case id nor
+ * a stage can contain one, so no pair of values can collide on it.
+ */
+function protocolKey(caseId: string, stage: Stage): string {
+  return `${caseId} ${stage}`;
 }
 
 function playbookChannel(playbook: Playbook, stage: Stage): string | null {
@@ -256,6 +322,33 @@ function reportCaseFailure(caseId: string, error: unknown): void {
 export function createCaseDeadlinesTask(deps: CaseDeadlinesDeps): TaskHandler {
   const { db } = deps;
 
+  /** See `StallState`. Empty map for an empty input, with no query issued. */
+  async function loadStallState(caseIds: string[]): Promise<Map<string, StallState>> {
+    const state = new Map<string, StallState>();
+    if (caseIds.length === 0) return state;
+
+    const rows = await db
+      .select({ caseId: events.caseId, type: events.type, at: max(events.occurredAt) })
+      .from(events)
+      .where(and(
+        inArray(events.caseId, caseIds),
+        inArray(events.type, ["case_stalled", ...USER_ACTION_EVENTS]),
+      ))
+      .groupBy(events.caseId, events.type);
+
+    for (const row of rows) {
+      if (!row.caseId || !row.at) continue;
+      const current = state.get(row.caseId) ?? { stalledAt: null, lastUserActionAt: null };
+      if (row.type === "case_stalled") {
+        current.stalledAt = row.at;
+      } else if (!current.lastUserActionAt || current.lastUserActionAt < row.at) {
+        current.lastUserActionAt = row.at;
+      }
+      state.set(row.caseId, current);
+    }
+    return state;
+  }
+
   /**
    * §9.1's 60-day clock. Closes an open case whose user has done nothing —
    * see `USER_ACTION_EVENTS` for what "nothing" means — for
@@ -337,6 +430,12 @@ export function createCaseDeadlinesTask(deps: CaseDeadlinesDeps): TaskHandler {
       // allowlisted event yet is measured from `created_at`.
       .having(sql`coalesce(max(${events.occurredAt}), ${cases.createdAt}) <= ${cutoff}`);
 
+    if (candidates.length === 0) return;
+
+    // Only the cases that already cleared the 60-day cutoff, so this is a
+    // small set however large `cases` grows.
+    const stalls = await loadStallState(candidates.map((row) => row.id));
+
     for (const row of candidates) {
       try {
         const lastActionAt = row.lastUserActionAt ?? row.createdAt;
@@ -345,61 +444,24 @@ export function createCaseDeadlinesTask(deps: CaseDeadlinesDeps): TaskHandler {
         // the two ever drift).
         if (now.getTime() - lastActionAt.getTime() < ABANDONMENT_WINDOW_MS) continue;
 
-        const transition = nextStage(
-          {
-            stage: row.stage,
-            category: row.category,
-            // §9.1's table answers `user_abandon` with `closed{abandoned}`
-            // from every stage before it ever reads this flag, so filling it
-            // in honestly would mean a `case_protocols` read whose result is
-            // thrown away.
-            hasProtocol: false,
-          },
-          row.playbook ?? { stages: [] },
-          { type: "user_abandon", at: now },
-        );
+        // F1. A case with a current stall belongs to RF-186's post-stall
+        // window, which `sweepExpired` closes when the restamped protocol
+        // window runs out. The two clocks do not race: this one steps aside
+        // entirely rather than closing the case first and making RF-186's
+        // 30 days of grace unobservable. §9.1's 60 days stay in force for
+        // every case that never stalled, which is what they were written for.
+        if (stallIsCurrent(stalls.get(row.id))) continue;
 
-        await db.transaction(async (tx) => {
-          const updated = await tx
-            .update(cases)
-            .set({
-              stage: transition.stage,
-              stageEnteredAt: now,
-              outcome: transition.outcome,
-              closedAt: now,
-              // The enum member that exists for "nobody confirmed it".
-              // §1.4's north-star metric is *confirmed* recovered reais, and
-              // `recoveredCents` is deliberately left exactly as it was: a
-              // case that evaporated is not the same as a case that was
-              // denied, and it must not contribute a number nobody stood
-              // behind.
-              outcomeConfirmedBy: "none",
-              nextDeadlineAt: null,
-              updatedAt: now,
-            })
-            .where(and(
-              eq(cases.id, row.id),
-              eq(cases.stage, row.stage),
-              deadlineGuard(row.nextDeadlineAt),
-            ))
-            .returning({ id: cases.id });
-          if (updated.length === 0) return; // somebody else moved it; write nothing
-
-          // No `outcome_confirmed` event: §15.2's funnel ends with it and
-          // §1.4 counts it, and an abandonment is the opposite of a
-          // confirmed outcome. No `case_abandoned` event either — this
-          // `stage_advanced` to `closed`, plus `cases.outcome` and
-          // `cases.closed_at`, already record the whole thing.
-          await record(
-            row, tx, now, "stage_advanced",
-            {
-              ...advancePayload(row.stage, transition.stage, "inactivity", transition.outcome),
-              lastUserActionAt: lastActionAt.toISOString(),
-              observedAt: now.toISOString(),
-              windowDays: ABANDONMENT_WINDOW_DAYS,
-            },
-          );
+        const closed = await closeCaseAsSystem(db, row.id, {
+          outcome: "abandoned",
+          at: now,
+          reason: "inactivity",
         });
+        // `null` means it was already closed — its own one-shot guard
+        // (`closed_at IS NULL AND stage <> 'closed'`) fired, which is the
+        // same "somebody else got there first" this job used to answer with
+        // its own optimistic guard. Nothing more to write.
+        if (closed === null) continue;
       } catch (error) {
         reportCaseFailure(row.id, error);
       }
@@ -447,7 +509,7 @@ export function createCaseDeadlinesTask(deps: CaseDeadlinesDeps): TaskHandler {
       .where(inArray(caseProtocols.caseId, expired.map((row) => row.id)));
     const protocols = new Map<string, { protocolNumber: string; registeredAt: Date }>();
     for (const row of rows) {
-      const key = `${row.caseId} ${row.stage}`;
+      const key = protocolKey(row.caseId, row.stage);
       const current = protocols.get(key);
       // Nothing stops a stage carrying more than one protocol (a second call
       // to the same SAC). The most recently registered one is the number the
@@ -457,13 +519,57 @@ export function createCaseDeadlinesTask(deps: CaseDeadlinesDeps): TaskHandler {
       }
     }
 
+    const stalls = await loadStallState(expired.map((row) => row.id));
+
     for (const row of expired) {
       try {
-        await expireOne(row, protocols.get(`${row.id} ${row.stage}`), now);
+        if (stallIsCurrent(stalls.get(row.id))) {
+          await closeStalledOut(row, now);
+          continue;
+        }
+        await expireOne(row, protocols.get(protocolKey(row.id, row.stage)), now);
       } catch (error) {
         reportCaseFailure(row.id, error);
       }
     }
+  }
+
+  /**
+   * RF-186's second window closing: the case stalled, was given
+   * `PROTOCOL_WINDOW_DAYS` to write to a channel, and that window has now
+   * run out with the stall still current.
+   *
+   * The restamped `next_deadline_at` **is** the post-stall clock - there is
+   * no second timer, and nothing here recomputes `stalledAt + 30` by hand.
+   * That matters: `computeDeadline` rolls a deadline forward to a business
+   * day, so a hand-computed instant would disagree with the row the stall
+   * actually stamped, and the case would close on a date nothing recorded.
+   *
+   * The `StageEvent` is `user_abandon`, which is Task 2's designed hand-off -
+   * its table says the caller that knows the case's age is the one that
+   * decides silence means abandonment, "sem isso, um caso sem protocolo
+   * ficaria em stall para sempre". `hasProtocol` is never read on that path.
+   *
+   * **No `deadline_expired` row is written here.** RF-182 reads those to let
+   * a document state that a company let a deadline pass, and this deadline
+   * was the person's own window to make first contact - there is no protocol,
+   * no channel silence, nothing a company could be asked to answer for.
+   * Writing one would be the same false claim `advanceCase`'s doc comment
+   * refuses to make.
+   */
+  async function closeStalledOut(row: CaseRow, now: Date): Promise<void> {
+    const transition = nextStage(
+      // `hasProtocol` is not consulted for `user_abandon` - see the
+      // equivalent note in `sweepAbandoned`.
+      { stage: row.stage, category: row.category, hasProtocol: false },
+      row.playbook ?? { stages: [] },
+      { type: "user_abandon", at: now },
+    );
+    await closeCaseAsSystem(db, row.id, {
+      outcome: transition.outcome ?? "abandoned",
+      at: now,
+      reason: "stall_expired",
+    });
   }
 
   async function expireOne(

@@ -1479,6 +1479,55 @@ export function withUser(session: Session, db: Db = getUnscopedDb()) {
             },
           });
         }
+        // Added by E5 Task 3, and it lives here rather than in that task
+        // because this is the only place the stall happens.
+        //
+        // A `user_request` on a case with no protocol for its stage is
+        // §9.1's stall - this method's doc comment says so already - and the
+        // table sends `sac` back to `sac`, so `moved` is false and, before
+        // this, **no event was written at all**. The only trace was
+        // `next_deadline_at` moving thirty days, which is an A3 gap on its
+        // own ("toda transição grava events") and had three consequences
+        // that all land on the same person:
+        //
+        //  - somebody clicking "escalate" every twenty days left nothing in
+        //    `events`, so RF-186's day-60 sweep counted their silence from
+        //    `created_at` and closed their case as `abandoned` while they
+        //    were actively using the product;
+        //  - RF-186's post-stall close never fired either, because each
+        //    click pushed the deadline thirty days out and the sweeper never
+        //    saw an expiry;
+        //  - and the moment they stopped clicking, the backstop closed the
+        //    case counting from an action months old - instantly, with none
+        //    of RF-186's thirty days of grace.
+        //
+        // `case_stalled` is the event E5 Task 3 added for exactly this
+        // sub-state (§9.1 calls it a *sub-estado* that "volta a sac", and
+        // `cases_stage_values` rejects it as a stage). With the row written,
+        // the sweeper sees a current stall, skips the 60-day backstop, and
+        // lets the restamped window own the case - so it closes thirty days
+        // after the *last* click, which is RF-186 exactly. Payload shape
+        // matches the one `apps/jobs/src/tasks/case-deadlines.ts` writes, so
+        // a reader of the timeline cannot tell which side recorded it.
+        const stalled = !hasProtocol && transition.stage === "sac";
+        if (input.reason === "user_request" && stalled) {
+          await tx.insert(events).values({
+            id: newId("evt"),
+            userId,
+            invoiceId: current.invoiceId,
+            caseId,
+            type: "case_stalled" satisfies EventType,
+            occurredAt: now,
+            payload: {
+              stalledIn: current.stage,
+              returnedTo: transition.stage,
+              nextDeadlineAt: transition.nextDeadlineAt?.toISOString() ?? null,
+              windowDays: PROTOCOL_WINDOW_DAYS,
+              observedAt: now.toISOString(),
+              reason: "user_request",
+            },
+          });
+        }
         if (moved) {
           await recordStageAdvance(tx, {
             userId, invoiceId: current.invoiceId, caseId,

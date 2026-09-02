@@ -109,13 +109,29 @@ export async function settleCaseFindings(
  * `note` is masked here (INV-007) exactly as `closeCase` masks it: the event
  * payload is durable, and a masking step a caller can forget is one that
  * will be forgotten.
+ *
+ * **`at`** overrides the instant everything this writes is stamped with —
+ * `closed_at`, `stage_entered_at`, the settled findings' `updated_at` and
+ * both events' `occurred_at`. Added by E5 Task 3, whose sweeper carries an
+ * injected clock because RF-186's acceptance is a *simulação temporal*: a
+ * `closedAt` on the wall clock while the rest of the run counted from a
+ * simulated instant would make the acceptance test lie about what it proved.
+ * Defaults to `new Date()`, so no existing caller changes.
+ *
+ * **`reason`**, threaded into `stage_advanced`'s payload beside
+ * `{ from, to, by, outcome }`. There is more than one way for a case to end
+ * up `abandoned` — the person went quiet without the case ever stalling, and
+ * RF-186's stall window running out — and the two must stay tellable apart
+ * from `events` alone, because RF-187's dossier is a document a judge reads
+ * and "nobody replied to us" and "we never wrote to them" are not the same
+ * account of what happened. Omitted, the payload is byte-identical to before.
  */
 export async function closeCaseAsSystem(
   db: Db,
   caseId: string,
-  input: { outcome: CaseOutcome; note?: string },
+  input: { outcome: CaseOutcome; note?: string; at?: Date; reason?: string },
 ) {
-  const now = new Date();
+  const now = input.at ?? new Date();
   return db.transaction(async (tx) => {
     // Read under `FOR UPDATE` for `stage_advanced`'s `from` only — Postgres
     // before 18 cannot return a column's pre-UPDATE value, and the stage the
@@ -156,6 +172,7 @@ export async function closeCaseAsSystem(
       invoiceId: updated.invoiceId,
       caseId: updated.id,
       type: "outcome_confirmed" satisfies EventType,
+      occurredAt: now,
       payload: {
         outcome: updated.outcome,
         recoveredCents: updated.recoveredCents,
@@ -169,7 +186,11 @@ export async function closeCaseAsSystem(
       invoiceId: updated.invoiceId,
       caseId: updated.id,
       type: "stage_advanced" satisfies EventType,
-      payload: { from: before?.stage ?? null, to: "closed", by: "system", outcome: updated.outcome },
+      occurredAt: now,
+      payload: {
+        from: before?.stage ?? null, to: "closed", by: "system", outcome: updated.outcome,
+        ...(input.reason === undefined ? {} : { reason: input.reason }),
+      },
     });
     return updated;
   });

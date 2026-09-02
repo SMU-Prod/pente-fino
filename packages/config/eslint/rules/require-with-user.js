@@ -74,6 +74,14 @@ const ALLOWED_PACKAGE_EXPORTS = new Set([
   "CLAIM_CODE_MAX_ATTEMPTS",
   "CLAIM_RATE_LIMIT_COUNT",
   "CLAIM_RATE_LIMIT_WINDOW_MS",
+  // E5 Task 5's system close, called by E5 Task 3's deadline sweeper. It is
+  // the opposite of raw data access: it takes one case id that the caller
+  // already read out of `cases`, and it exists precisely so a job cannot
+  // close a case its own way and forget to settle the findings
+  // (`case-close.ts` spells out what that costs the person). There is no
+  // session to scope it to and nothing it can be pointed at that the caller
+  // did not already have.
+  "closeCaseAsSystem",
 ]);
 
 const PACKAGE_ENTRY = "@pentefino/db";
