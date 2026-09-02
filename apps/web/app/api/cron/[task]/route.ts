@@ -26,6 +26,13 @@ import { container } from "../../../../lib/container.js";
  *    promotion, and — worse — no rule is ever paused for firing badly.
  *  - **RF-180** the case-deadline sweep. Deadlines expire and nothing
  *    notices, which makes E5's whole point inert.
+ *  - **RF-187** the dossier sweep. A case reaches `jec_ready` and the
+ *    document it exists to produce is never produced.
+ *
+ * This list grows by merge, silently: a task registered in `container()`
+ * and not listed in `SCHEDULABLE` below is exactly as dead as it was
+ * before this route existed. `apps/web/test/routes/cron.test.ts` pins the
+ * two lists against each other for that reason.
  *
  * None of these fail loudly. They are jobs that do not run, and a job that
  * does not run looks exactly like a job with nothing to do.
@@ -67,7 +74,7 @@ export const dynamic = "force-dynamic";
  * to a user's upload — an allowlist keeps this route from becoming a way to
  * invoke arbitrary registered work by guessing its name.
  */
-const SCHEDULABLE = ["expireFiles", "ruleMetrics", "ruleLifecycle", "caseDeadlines"] as const;
+const SCHEDULABLE = ["expireFiles", "ruleMetrics", "ruleLifecycle", "caseDeadlines", "dossier"] as const;
 
 function isSchedulable(task: string): task is (typeof SCHEDULABLE)[number] {
   return (SCHEDULABLE as readonly string[]).includes(task);

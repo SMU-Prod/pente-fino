@@ -12,6 +12,7 @@ Cron da Vercel roda em **UTC**. São Paulo é UTC−3 o ano inteiro (ver
 | Tarefa | Cron (UTC) | Hora em SP | Por quê |
 |---|---|---|---|
 | `caseDeadlines` | `0 * * * *` | de hora em hora | RF-180. Um prazo que venceu às 9h não pode esperar até a manhã seguinte pra alguém saber — o bloco inteiro existe pra avisar no dia certo. |
+| `dossier` | `0 5 * * *` | 02:00 | RF-187. Antes do `expireFiles` de propósito: um caso que chegou ao `jec_ready` hoje ganha o dossiê enquanto o arquivo da fatura ainda existe. |
 | `expireFiles` | `0 6 * * *` | 03:00 | RF-110. Retenção; a hora exata não importa, madrugada é barata. |
 | `ruleMetrics` | `0 7 * * *` | 04:00 | RF-302. Materializa `rule_metrics` a partir de `events`. |
 | `ruleLifecycle` | `0 8 * * *` | 05:00 | RF-126/RF-127. Lê o que o `ruleMetrics` acabou de escrever. |
@@ -45,6 +46,18 @@ projeto**. O `caseDeadlines` de hora em hora exige plano Pro. Se isso for
 um problema antes da hora, o ajuste é o `schedule` do `caseDeadlines` — e
 o custo do ajuste é direto e mensurável: uma varredura diária atrasa cada
 escalada em até 24 horas.
+
+## A lista cresce por merge
+
+Um handler registrado no `container()` e ausente do `SCHEDULABLE` da rota
+fica **exatamente tão morto** quanto todos ficavam antes desta rota existir.
+Isso já aconteceu uma vez, no merge que trouxe o dossiê da RF-187.
+
+Por isso `apps/web/test/routes/cron.test.ts` lê o `container.ts` e falha se
+sobrar handler que não esteja agendado nem explicitamente dispensado (só o
+`ingest`, que é disparado pelo upload de uma pessoa e nunca por relógio).
+Quem adicionar um job novo descobre no teste, não em produção seis meses
+depois.
 
 ## O que ainda não está ligado
 

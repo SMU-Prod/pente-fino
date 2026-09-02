@@ -11,6 +11,11 @@ const { GET } = await import("../../app/api/cron/[task]/route.js");
 
 const SECRET = "cron-secret-for-tests";
 
+// Mirrors `SCHEDULABLE` in the route. Kept here rather than imported
+// because the route does not export it, and a test that imported it could
+// not notice the list being emptied.
+const SCHEDULABLE_NAMES = ["expireFiles", "ruleMetrics", "ruleLifecycle", "caseDeadlines", "dossier"];
+
 let enqueue: ReturnType<typeof vi.fn>;
 
 function request(authorization?: string) {
@@ -81,7 +86,7 @@ describe("GET /api/cron/:task — the door", () => {
 });
 
 describe("GET /api/cron/:task — the allowlist", () => {
-  it.each(["caseDeadlines", "expireFiles", "ruleMetrics", "ruleLifecycle"])(
+  it.each(SCHEDULABLE_NAMES)(
     "schedules %s",
     async (task) => {
       const response = await GET(request(`Bearer ${SECRET}`), params(task));
@@ -125,5 +130,49 @@ describe("GET /api/cron/:task — a failed job is visible (A8)", () => {
 
     expect(response.status).toBe(500);
     expect(await response.json()).toMatchObject({ message: expect.stringContaining("no handler registered") });
+  });
+});
+
+// =====================================================================
+// The list that grows by merge
+// =====================================================================
+
+describe("SCHEDULABLE and container()'s handler map cannot drift apart", () => {
+  // This guard exists because the drift already happened once, in the
+  // merge that landed RF-187: the dossier handler was registered in
+  // `container()` and not listed in `SCHEDULABLE`, which left it exactly
+  // as dead as every job was before this route existed - registered,
+  // tested, and never run by anything.
+  //
+  // Reading the source is deliberate. The handler map is local to
+  // `buildContainer` and the queue only answers about a name you already
+  // guessed, so there is no runtime way to ask "what is registered?".
+  // A future task that adds `handlers.somethingNew` and forgets the
+  // schedule fails here instead of shipping a job that never runs.
+  const NOT_SCHEDULED: Record<string, string> = {
+    // Enqueued by POST /api/invoices/:id/process, carries an invoiceId,
+    // belongs to one person's upload. Never a cron.
+    ingest: "started by a user's upload, not by a clock",
+  };
+
+  it("schedules, or explicitly excuses, every handler container() registers", async () => {
+    const { readFileSync } = await import("node:fs");
+    const source = readFileSync(new URL("../../lib/container.ts", import.meta.url), "utf8");
+    const registered = [...source.matchAll(/handlers\.(\w+)\s*=/g)].map((m) => m[1]);
+
+    expect(registered.length).toBeGreaterThan(0); // the regex still matches something
+
+    const unaccounted = registered.filter(
+      (name) => !SCHEDULABLE_NAMES.includes(name) && !(name in NOT_SCHEDULED),
+    );
+    expect(unaccounted).toEqual([]);
+  });
+
+  it("every scheduled name resolves to a handler, so no cron path hits nothing", async () => {
+    for (const task of SCHEDULABLE_NAMES) {
+      enqueue.mockClear();
+      const response = await GET(request(`Bearer ${SECRET}`), params(task));
+      expect(response.status, `${task} should be schedulable`).toBe(200);
+    }
   });
 });
