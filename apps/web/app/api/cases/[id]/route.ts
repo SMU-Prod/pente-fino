@@ -47,14 +47,32 @@ import { SESSION_COOKIE, getSessionSecret, readSession } from "@/lib/session.js"
  * masking a value that is already stored masked would only hide whether the
  * write path is still doing its job.
  *
- * **This route records no event, deliberately.** RF-185 wants reminders
- * suppressed when the person opened the case in the last 24 hours, which
- * needs a recorded "opened" fact to read - but `packages/core/src/events.ts`
- * has no such type in its catalogue, and event names are a contract there
- * ("adding is free, renaming requires migrating dashboards"). Inventing one
- * here would put a name into the trail that no dashboard, metric or job
- * agreed to; E5 Task 6 owns that decision, and RF-185 stays unserved until
- * it makes it.
+ * **This route records `case_viewed`, after ownership is proved.** RF-185
+ * wants reminders suppressed when the person opened the case in the last 24
+ * hours, which needs a recorded "opened" fact to read; `case_viewed`
+ * (`packages/core/src/events.ts`) is that fact, added by E5 Task 6 for
+ * exactly this. The call sits after the `!detail` check, never before, for
+ * two reasons. First, Task 4's report (risk R5) found that `recordEvent`'s
+ * `caseId` is caller-supplied and never ownership-checked on its own; a
+ * stranger probing `/api/cases/<guessed-id>` must not be able to inject a
+ * row into someone else's timeline, and `caseDetail` returning non-null is
+ * the ownership proof this route has. Second, INV-008: a `forbidden` or
+ * `not_found` response must leave no trace that differs from any other, and
+ * writing the row before either check would leave exactly such a trace. The
+ * write is awaited before the response is built, the same way
+ * `apps/web/app/laudo/[id]/page.tsx` awaits its own `report_viewed` write -
+ * a fire-and-forget write in a serverless function is a write that may not
+ * happen. Both ids are stamped (`detail.case.invoiceId` and `id`) so the
+ * event can be correlated with the invoice, not only the case (Task 15's
+ * finding in `.superpowers/sdd/progress.md`); the payload is `{}`, because
+ * there is nothing to put in it that is not already a column. This is not an
+ * A3 state transition - nothing about the case changes when someone looks at
+ * it - which is why the catalogue's own doc comment says so plainly rather
+ * than dressing it up as one; see `events.ts` for the full reasoning.
+ * `timeline` below still returns this row exactly as `caseDetail` produces
+ * it, same as every other row - a rendering decision to filter `case_viewed`
+ * out of what a screen displays belongs to that screen (E5 Task 6B), not to
+ * this data endpoint.
  *
  * **`protocolToken` is stripped from the serialised case.** It is the
  * workflow's `wait.forToken` handle (`packages/db/src/schema.ts`) - a
@@ -80,6 +98,8 @@ export async function GET(_request: Request, ctx: { params: Promise<{ id: string
 
   const detail = await scoped.caseDetail(id);
   if (!detail) return apiError("not_found");
+
+  await scoped.recordEvent("case_viewed", {}, detail.case.invoiceId, id);
 
   // Destructured away rather than rebuilt key by key: a column added to
   // `cases` later should reach this response by default, and only the one

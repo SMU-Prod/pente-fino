@@ -103,6 +103,20 @@ export const EVENTS = [
   // retried on the next run, and a failure that silently repeats forever
   // must still be visible to anyone reading the event stream.
   "dossier_generated", "dossier_generation_failed",
+  // RF-185 (Task 6, E5) wants reminders suppressed if the person opened the
+  // case in the last 24 hours, which needs a recorded "opened" fact to read.
+  // `report_viewed` was considered and cannot serve: it names the laudo, not
+  // the case - a person can read a laudo without ever opening the case
+  // screen, and can open a case screen for an invoice whose laudo they read
+  // months ago, so neither observation implies the other. Unlike every other
+  // addition in this file, `case_viewed` is honestly *not* an A3 state
+  // transition - nothing about the case changes when someone looks at it. It
+  // is admitted to the catalogue anyway because RF-185's suppression is a
+  // product requirement that can only be met by a durable record, and
+  // `events` is the only durable append-only record this system has;
+  // without this name, "was this case looked at recently" has no honest
+  // source to read it from, and the suppression stays unbuildable.
+  "case_viewed",
 ] as const;
 
 export type EventType = (typeof EVENTS)[number];

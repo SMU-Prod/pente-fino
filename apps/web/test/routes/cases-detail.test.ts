@@ -206,4 +206,55 @@ describe("GET /api/cases/[id]", () => {
     expect(raw).toContain("[CPF]"); // the note did arrive - masked, not dropped
     expect(containsPii(raw)).toBe(false);
   });
+
+  // --- RF-185. Reminder suppression needs a durable "this case was opened"
+  // fact to read; `case_viewed` (packages/core/src/events.ts) is that fact,
+  // and this route is where it must be recorded - see the route's doc
+  // comment for why report_viewed cannot serve the same purpose.
+
+  it("records exactly one case_viewed row, carrying this case's caseId and invoiceId, on a successful GET", async () => {
+    useCookies(createCookieStore({ pf_session: signSession(sessionA, SECRET) }));
+    const response = await GET(request(aliceCaseId), ctxFor(aliceCaseId));
+    expect(response.status).toBe(200);
+
+    // `createCase` (in beforeEach) already wrote a `case_created` row, so
+    // filter on type rather than asserting a bare row count for the case.
+    const rows = await ctx.db.select().from(events)
+      .where(and(eq(events.caseId, aliceCaseId), eq(events.type, "case_viewed")));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ caseId: aliceCaseId, invoiceId: aliceInvoice, payload: {} });
+  });
+
+  it("records a second case_viewed row on a second GET, because RF-185 reads the latest view and must not be deduplicated", async () => {
+    useCookies(createCookieStore({ pf_session: signSession(sessionA, SECRET) }));
+    await GET(request(aliceCaseId), ctxFor(aliceCaseId));
+    await GET(request(aliceCaseId), ctxFor(aliceCaseId));
+
+    const rows = await ctx.db.select().from(events)
+      .where(and(eq(events.caseId, aliceCaseId), eq(events.type, "case_viewed")));
+    expect(rows).toHaveLength(2);
+  });
+
+  it("records no case_viewed row for another user's case (404), and leaves the victim's timeline unchanged (INV-008)", async () => {
+    useCookies(createCookieStore({ pf_session: signSession(sessionB, SECRET) }));
+    const response = await GET(request(aliceCaseId), ctxFor(aliceCaseId));
+    expect(response.status).toBe(404);
+
+    const rows = await ctx.db.select().from(events)
+      .where(and(eq(events.caseId, aliceCaseId), eq(events.type, "case_viewed")));
+    expect(rows).toHaveLength(0);
+    const types = await ctx.db.select({ type: events.type }).from(events)
+      .where(eq(events.caseId, aliceCaseId));
+    expect(types.map((row) => row.type)).toEqual(["case_created"]);
+  });
+
+  it("records no case_viewed row with no session cookie (403)", async () => {
+    useCookies(createCookieStore());
+    const response = await GET(request(aliceCaseId), ctxFor(aliceCaseId));
+    expect(response.status).toBe(403);
+
+    const rows = await ctx.db.select().from(events)
+      .where(and(eq(events.caseId, aliceCaseId), eq(events.type, "case_viewed")));
+    expect(rows).toHaveLength(0);
+  });
 });
