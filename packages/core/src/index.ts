@@ -28,6 +28,15 @@ export {
   nextStage, CASE_OUTCOMES,
   type StageEvent, type StageTransition, type CaseOutcome,
 } from "./cases/next-stage.js";
+export {
+  easterSunday, nationalHolidays, isBusinessDay, addCivilDays, civilDayOfWeek,
+  HOLIDAY_CALENDAR_VERSION, HOLIDAY_CALENDAR_FIRST_YEAR, HOLIDAY_CALENDAR_LAST_YEAR,
+  type CivilDate, type NationalHoliday, type HolidayObservance,
+} from "./cases/holidays.js";
+export {
+  computeDeadline, toCivilDate, SAO_PAULO_UTC_OFFSET_MINUTES,
+  type Deadline, type DeadlineInput,
+} from "./cases/deadline.js";
 export { pairInvoiceItems, type InvoiceDiff, type PairedItem } from "./diff/index.js";
 export {
   extractionQuality, VISION_THRESHOLD,
