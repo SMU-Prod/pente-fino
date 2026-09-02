@@ -85,22 +85,25 @@ module.exports = {
         // ship. Falls back to Lighthouse's own auto-detection when unset
         // (e.g. a local run without that step).
         chromePath: process.env.CHROME_PATH || undefined,
+        // Chromium refuses to start on GitHub's ubuntu runners without
+        // this: Ubuntu 23.10+ restricts unprivileged user namespaces
+        // through AppArmor, so Chrome's sandbox has nothing to build on
+        // and aborts with "No usable sandbox!" before ever binding its
+        // debug port — surfacing as `ECONNREFUSED 127.0.0.1:<port>` and a
+        // stack trace, not as anything resembling a configuration error.
+        //
+        // It belongs HERE, inside `settings`, as a space-separated STRING.
+        // lhci reads `options.settings.chromeFlags` and concatenates it
+        // (see @lhci/cli/src/collect/node-runner.js); a `chromeFlags` array
+        // placed beside `settings` is silently ignored, which is exactly
+        // how the first attempt at this fix failed a second CI run with an
+        // identical stack trace.
+        //
+        // Defensible only because of what is rendered: a throwaway browser,
+        // in a throwaway container, loading this repository's own app from
+        // localhost. Scoped to CI, so a local run keeps its sandbox.
+        chromeFlags: process.env.CI ? "--no-sandbox --disable-dev-shm-usage" : undefined,
       },
-      // Chromium refuses to start on GitHub's ubuntu runners without this.
-      // Ubuntu 23.10+ restricts unprivileged user namespaces through
-      // AppArmor, so Chrome's sandbox has nothing to build on and it aborts
-      // with "No usable sandbox!" before ever binding its debug port —
-      // which surfaces as `ECONNREFUSED 127.0.0.1:<port>` and a stack
-      // trace, not as anything resembling a configuration error.
-      //
-      // This is only defensible because of what is being rendered: a
-      // throwaway browser, in a throwaway container, loading this
-      // repository's own app from localhost. It is not a general licence to
-      // disable the sandbox anywhere a page could be attacker-controlled.
-      //
-      // Scoped to CI on purpose — a developer's local run keeps the sandbox,
-      // since nothing forces it off there.
-      chromeFlags: process.env.CI ? ["--no-sandbox", "--disable-dev-shm-usage"] : [],
     },
     assert: {
       assertions: {
