@@ -1,11 +1,8 @@
 import { and, desc, eq, inArray, isNull } from "drizzle-orm";
-import {
-  newId, newPublicToken, type CaseOutcome, type ContestDocument, type EventType, type Stage,
-} from "@pentefino/core";
+import { maskText, newId, newPublicToken, type CaseOutcome, type ContestDocument, type EventType, type Stage } from "@pentefino/core";
 import { getUnscopedDb } from "./client.js";
 import {
-  anonymousSessions, caseDocuments, caseProtocols, cases, events, findings, invoiceItems, invoices, issuers,
-  rules,
+  anonymousSessions, caseDocuments, caseProtocols, cases, events, findings, invoiceItems, invoices, issuers, rules,
 } from "./schema.js";
 
 export type Session = { userId: string } | { sessionId: string };
@@ -512,11 +509,38 @@ export function withUser(session: Session, db: Db = getUnscopedDb()) {
      * never detected (RF-105/RF-106 leaves `invoices.issuerId` nullable)
      * yields `null` rather than a case that could never be escalated.
      *
+     * **Why the same predicate is repeated on the UPDATE.** The validating
+     * SELECT above runs outside the transaction, so on its own it settles
+     * nothing about two callers racing: both can read the same finding as
+     * contestable and both insert, leaving two live cases over the same
+     * money and `recoveredCents` counted twice into §1.4's north-star
+     * metric when both close. The invariant therefore lives in the *write*:
+     * the flip to `contested` carries `shadow = false` and the contestable
+     * status list in its own WHERE, and the case is only allowed to exist if
+     * that UPDATE touched every finding it names. Under READ COMMITTED the
+     * loser blocks on the row lock the winner already holds, re-reads the
+     * row after the winner commits, matches zero rows, and the count test
+     * rolls its whole transaction back - the insert, the flip and the event
+     * together. `FOR UPDATE` on the SELECT would serialise the two callers
+     * too, but it would put the lock in a statement that is not the one that
+     * has to hold it; keeping the test on the write means a future caller
+     * that skips the SELECT still cannot open a duplicate case.
+     *
      * Every rejection returns the same `null` - not owned, does not exist,
      * already contested, no issuer - so the caller (and therefore the HTTP
-     * response) can never learn which one it was (INV-008). The
-     * `case_created` event is the route's to record, the same division of
-     * labour `editCaseDocument` already follows with `contest_edited`.
+     * response) can never learn which one it was (INV-008). The lost race is
+     * the one case that throws rather than returning `null`: it is not a
+     * property of the request, and a caller that retries it will get a clean
+     * `null` from the SELECT on the next attempt.
+     *
+     * **Why this method records its own event**, when `editCaseDocument`
+     * leaves `contest_edited` to its route: A3 says every state transition
+     * writes an `events` row, and a case coming into existence is the first
+     * such transition there is. `apps/jobs/src/tasks/ingest.ts` sets the
+     * precedent - status and event land in the same transaction - and a
+     * crash between a committed case and a route-written event would leave
+     * a case whose creation the trail never recorded, with nothing left to
+     * tell a repair job that the row is the one missing its event.
      */
     async createCase(input: { invoiceId: string; findingIds: string[] }) {
       if (!userId) return null;
@@ -524,6 +548,12 @@ export function withUser(session: Session, db: Db = getUnscopedDb()) {
       // back by the dossier, so the order the person picked the charges in
       // is the order they get argued in.
       const findingIds = [...new Set(input.findingIds)];
+      // Legibility only: behaviour is identical without this line. Drizzle
+      // compiles `inArray(col, [])` to `false`, so an empty array falls
+      // through to a zero-row SELECT, the count test rejects it, and the
+      // `issuerId` test would reject it again. The test that covers it
+      // therefore proves the *outcome*, not this guard - nobody should read
+      // it as evidence the line is load-bearing.
       if (findingIds.length === 0) return null;
 
       const contestable = await db.select({ issuerId: invoices.issuerId })
@@ -542,10 +572,12 @@ export function withUser(session: Session, db: Db = getUnscopedDb()) {
       if (!issuerId) return null;
 
       const id = newId("cas");
-      // One transaction - `apps/jobs/src/tasks/ingest.ts`'s pattern. A case
-      // whose findings never flipped to `contested` would leave the same
-      // money open to a second case, which is exactly what
-      // `CONTESTABLE_FINDING_STATUSES` excluding `contested` prevents.
+      const now = new Date();
+      // One transaction - `apps/jobs/src/tasks/ingest.ts`'s pattern - holding
+      // the case row, the flip to `contested` and the `case_created` event,
+      // so all three commit or none do. A case whose findings never flipped
+      // would leave the same money open to a second case, which is exactly
+      // what `CONTESTABLE_FINDING_STATUSES` excluding `contested` prevents.
       await db.transaction(async (tx) => {
         await tx.insert(cases).values({
           id,
@@ -556,9 +588,32 @@ export function withUser(session: Session, db: Db = getUnscopedDb()) {
           stage: "draft",
           nextDeadlineAt: null,
         });
-        await tx.update(findings)
-          .set({ status: "contested", updatedAt: new Date() })
-          .where(inArray(findings.id, findingIds));
+        // The concurrency gate: the same contestability test the SELECT ran,
+        // re-applied by the statement that actually takes the rows. A loser
+        // racing for the same finding matches fewer rows than it named and
+        // rolls the whole transaction back.
+        const flipped = await tx.update(findings)
+          .set({ status: "contested", updatedAt: now })
+          .where(and(
+            inArray(findings.id, findingIds),
+            eq(findings.shadow, false),
+            inArray(findings.status, [...CONTESTABLE_FINDING_STATUSES]),
+          ))
+          .returning({ id: findings.id });
+        if (flipped.length !== findingIds.length) {
+          throw new Error(
+            `createCase lost a race for ${findingIds.length - flipped.length} finding(s): ` +
+            "another case took them between the check and the write",
+          );
+        }
+        await tx.insert(events).values({
+          id: newId("evt"),
+          userId,
+          invoiceId: input.invoiceId,
+          caseId: id,
+          type: "case_created",
+          payload: { invoiceId: input.invoiceId, findingIds, stage: "draft" },
+        });
       });
       return id;
     },
@@ -609,65 +664,71 @@ export function withUser(session: Session, db: Db = getUnscopedDb()) {
         .where(and(eq(cases.id, caseId), eq(cases.userId, userId)));
       if (!row) return null;
 
-      const documents = await db.select({
-        id: caseDocuments.id,
-        caseId: caseDocuments.caseId,
-        stage: caseDocuments.stage,
-        kind: caseDocuments.kind,
-        promptVersion: caseDocuments.promptVersion,
-        variant: caseDocuments.variant,
-        body: caseDocuments.body,
-        userEdited: caseDocuments.userEdited,
-        editedBody: caseDocuments.editedBody,
-        sentAt: caseDocuments.sentAt,
-        createdAt: caseDocuments.createdAt,
-        updatedAt: caseDocuments.updatedAt,
-      })
-        .from(caseDocuments)
-        .where(eq(caseDocuments.caseId, caseId))
-        .orderBy(caseDocuments.createdAt);
+      // One round trip for the three lists: nothing among them depends on
+      // anything but `caseId`, which the ownership query above already
+      // proved, so they are issued together rather than in sequence.
+      const [documents, protocols, timeline] = await Promise.all([
+        db.select({
+          id: caseDocuments.id,
+          caseId: caseDocuments.caseId,
+          stage: caseDocuments.stage,
+          kind: caseDocuments.kind,
+          promptVersion: caseDocuments.promptVersion,
+          variant: caseDocuments.variant,
+          body: caseDocuments.body,
+          userEdited: caseDocuments.userEdited,
+          editedBody: caseDocuments.editedBody,
+          sentAt: caseDocuments.sentAt,
+          createdAt: caseDocuments.createdAt,
+          updatedAt: caseDocuments.updatedAt,
+        })
+          .from(caseDocuments)
+          .where(eq(caseDocuments.caseId, caseId))
+          .orderBy(caseDocuments.createdAt),
 
-      const protocols = await db.select({
-        id: caseProtocols.id,
-        caseId: caseProtocols.caseId,
-        stage: caseProtocols.stage,
-        protocolNumber: caseProtocols.protocolNumber,
-        channel: caseProtocols.channel,
-        registeredAt: caseProtocols.registeredAt,
-        responseDueAt: caseProtocols.responseDueAt,
-        responseReceivedAt: caseProtocols.responseReceivedAt,
-        responseSummary: caseProtocols.responseSummary,
-        createdAt: caseProtocols.createdAt,
-        updatedAt: caseProtocols.updatedAt,
-      })
-        .from(caseProtocols)
-        .where(eq(caseProtocols.caseId, caseId))
-        // `registeredAt` is when the company actually recorded the protocol,
-        // which is the order a person reads their own history in - not
-        // `createdAt`, which is only when this app got told about it.
-        .orderBy(caseProtocols.registeredAt);
+        db.select({
+          id: caseProtocols.id,
+          caseId: caseProtocols.caseId,
+          stage: caseProtocols.stage,
+          protocolNumber: caseProtocols.protocolNumber,
+          channel: caseProtocols.channel,
+          registeredAt: caseProtocols.registeredAt,
+          responseDueAt: caseProtocols.responseDueAt,
+          responseReceivedAt: caseProtocols.responseReceivedAt,
+          responseSummary: caseProtocols.responseSummary,
+          createdAt: caseProtocols.createdAt,
+          updatedAt: caseProtocols.updatedAt,
+        })
+          .from(caseProtocols)
+          .where(eq(caseProtocols.caseId, caseId))
+          // `registeredAt` is when the company actually recorded the
+          // protocol, which is the order a person reads their own history
+          // in - not `createdAt`, which is only when this app got told.
+          .orderBy(caseProtocols.registeredAt),
 
-      const timeline = await db.select({
-        id: events.id,
-        userId: events.userId,
-        sessionId: events.sessionId,
-        caseId: events.caseId,
-        invoiceId: events.invoiceId,
-        type: events.type,
-        payload: events.payload,
-        occurredAt: events.occurredAt,
-      })
-        .from(events)
-        .where(eq(events.caseId, caseId))
-        .orderBy(events.occurredAt);
+        db.select({
+          id: events.id,
+          userId: events.userId,
+          sessionId: events.sessionId,
+          caseId: events.caseId,
+          invoiceId: events.invoiceId,
+          type: events.type,
+          payload: events.payload,
+          occurredAt: events.occurredAt,
+        })
+          .from(events)
+          .where(eq(events.caseId, caseId))
+          .orderBy(events.occurredAt),
+      ]);
 
       return { case: row, documents, protocols, timeline };
     },
 
     /**
      * Closes a case and settles the findings it was disputing. Returns the
-     * updated row, because the caller needs `invoiceId` and the values as
-     * actually stored for the `outcome_confirmed` event it records.
+     * updated row - the caller still wants `invoiceId` and the values as
+     * actually stored, even though the `outcome_confirmed` event is written
+     * here rather than by the route.
      *
      * **Once, and only once.** `isNull(cases.closedAt)` is folded into the
      * same predicate as the ownership check rather than tested beforehand,
@@ -690,17 +751,53 @@ export function withUser(session: Session, db: Db = getUnscopedDb()) {
      * this case to its own business: a finding some other write already
      * settled is not this close's to move.
      *
-     * `note` is not a parameter: `cases` has no column for it, and the route
-     * puts the person's own words in the event payload instead. Accepting it
-     * here would only invite a caller to believe it was stored.
+     * **Why this method records its own event**, when `editCaseDocument`
+     * leaves `contest_edited` to its route: the close is deliberately
+     * one-shot, so a route-written event is not merely late, it is
+     * unrepairable. A crash between a committed close and the route's write
+     * would leave a closed case whose `outcome_confirmed` can never be
+     * written at all - the retry hits `isNull(cases.closedAt)`, gets the
+     * same `null` a wrong owner gets, and A3's trail is permanently missing
+     * the one row §1.4's north-star metric is computed from. Inside the
+     * transaction, close and event commit or roll back together
+     * (`apps/jobs/src/tasks/ingest.ts` is the precedent). The insert goes
+     * straight against `tx`; `recordEvent` above closes over the
+     * non-transactional `db` and would commit independently, which is
+     * exactly the split this avoids.
+     *
+     * **`note` is masked here, not by the caller.** `cases` has no column
+     * for it, so it lives only in the event payload - but INV-007 says PII
+     * is masked before it is persisted, and free text a person types about
+     * their own bill is precisely where a CPF turns up. `maskText` runs
+     * inside this method rather than in the route because a masking step a
+     * caller can forget is a masking step that will eventually be forgotten,
+     * and the event row is durable.
+     *
+     * **`recoveredCents` is checked here too**, even though the route
+     * validates its own body first. "Money is integer cents, always" has no
+     * enforcement at this layer otherwise: a fractional value only fails at
+     * the column, and a negative one succeeds and quietly *subtracts* from
+     * the north-star metric. It throws rather than returning `null`, because
+     * `null` means "no such case of yours", and a caller cannot be told a
+     * bad argument is a missing row.
      */
-    async closeCase(caseId: string, input: { outcome: CaseOutcome; recoveredCents?: number }) {
+    async closeCase(caseId: string, input: { outcome: CaseOutcome; recoveredCents?: number; note?: string }) {
       if (!userId) return null;
+      if (
+        input.recoveredCents !== undefined
+        && (!Number.isInteger(input.recoveredCents) || input.recoveredCents < 0)
+      ) {
+        throw new Error(`closeCase: recoveredCents must be a non-negative integer of cents, got ${input.recoveredCents}`);
+      }
       const now = new Date();
       return db.transaction(async (tx) => {
         const [updated] = await tx.update(cases)
           .set({
             stage: "closed",
+            // Stamped with the same instant as `closedAt`: without it the
+            // row would keep claiming the case entered `closed` back when it
+            // actually entered `sac`.
+            stageEnteredAt: now,
             outcome: input.outcome,
             outcomeConfirmedBy: "user",
             recoveredCents: input.recoveredCents ?? 0,
@@ -717,6 +814,19 @@ export function withUser(session: Session, db: Db = getUnscopedDb()) {
             updatedAt: now,
           })
           .where(and(inArray(findings.id, updated.findingIds), eq(findings.status, "contested")));
+        await tx.insert(events).values({
+          id: newId("evt"),
+          userId,
+          invoiceId: updated.invoiceId,
+          caseId: updated.id,
+          type: "outcome_confirmed",
+          payload: {
+            outcome: updated.outcome,
+            recoveredCents: updated.recoveredCents,
+            confirmedBy: "user",
+            ...(input.note === undefined ? {} : { note: maskText(input.note) }),
+          },
+        });
         return updated;
       });
     },
