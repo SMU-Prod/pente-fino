@@ -1,0 +1,296 @@
+/*
+ * The case screen. Same system as `home.module.css` and
+ * `laudo/[id]/laudo.module.css`: PRD §13.1 tokens only, Fraunces for
+ * display, IBM Plex Mono for every label and every number, `--deep` kept
+ * for the one surface that means "this is the step you take now".
+ */
+
+.page {
+  max-width: 46rem;
+  margin: 0 auto;
+  padding: clamp(1.5rem, 4vw, 3.5rem) 1.25rem 4rem;
+}
+
+.eyebrow {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  margin: 0 0 0.75rem;
+}
+
+.heading {
+  font-family: var(--font-display);
+  font-weight: 400;
+  font-size: clamp(1.5rem, 4vw, 2.25rem);
+  line-height: 1.25;
+  margin: 0 0 1.5rem;
+  color: var(--ink);
+}
+
+/* ---------------------------------------------------------------- ladder */
+
+.ladder {
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  padding: 0;
+  margin: 0 0 2rem;
+}
+
+.rung {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 0.35rem 0.6rem;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  color: var(--ink-3);
+}
+
+.rungDone {
+  border-color: var(--ok);
+  color: var(--ok);
+}
+
+.rungCurrent {
+  background: var(--deep);
+  border-color: var(--deep);
+  color: #F3EEE7;
+}
+
+/* -------------------------------------------------------------- deadline */
+
+.deadline {
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--card);
+  padding: 1.1rem 1.25rem;
+  margin: 0 0 2rem;
+}
+
+.deadlineLabel {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  margin: 0 0 0.35rem;
+}
+
+.deadlineValue {
+  font-family: var(--font-mono);
+  font-size: 1.35rem;
+  color: var(--ink);
+  margin: 0;
+}
+
+.deadlineLate {
+  color: var(--mark);
+}
+
+.deadlineNote {
+  margin: 0.4rem 0 0;
+  font-size: 0.9rem;
+  color: var(--ink-2);
+}
+
+/* ---------------------------------------------------------------- action */
+
+.action {
+  background: var(--deep);
+  border-radius: 14px;
+  padding: clamp(1.25rem, 3vw, 1.75rem);
+  color: #F3EEE7;
+  margin: 0 0 2.5rem;
+}
+
+.actionLabel {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  opacity: 0.72;
+  margin: 0 0 0.5rem;
+}
+
+.actionChannel {
+  font-family: var(--font-display);
+  font-weight: 400;
+  font-size: 1.5rem;
+  margin: 0 0 1rem;
+}
+
+.actionRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  margin: 0 0 1.25rem;
+}
+
+.linkButton,
+.copyButton {
+  font: inherit;
+  font-size: 0.9rem;
+  font-weight: 500;
+  padding: 0.6rem 1rem;
+  border-radius: 10px;
+  border: 1px solid rgb(255 255 255 / 0.28);
+  background: transparent;
+  color: #F3EEE7;
+  cursor: pointer;
+  text-decoration: none;
+  display: inline-block;
+}
+
+.linkButton {
+  background: var(--mark);
+  border-color: var(--mark);
+  color: #FFF;
+}
+
+.noLink {
+  font-size: 0.85rem;
+  opacity: 0.72;
+  margin: 0 0 1.25rem;
+}
+
+.checklist {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: 0.5rem;
+}
+
+.checklistItem {
+  display: flex;
+  gap: 0.6rem;
+  font-size: 0.9rem;
+  line-height: 1.5;
+  opacity: 0.92;
+}
+
+.checkBox {
+  font-family: var(--font-mono);
+  opacity: 0.6;
+}
+
+.checklistTitle {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  opacity: 0.72;
+  margin: 0 0 0.6rem;
+}
+
+/* --------------------------------------------------------------- section */
+
+.section {
+  margin: 0 0 2.5rem;
+}
+
+.sectionTitle {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  margin: 0 0 0.9rem;
+}
+
+.row {
+  border-top: 1px solid var(--line);
+  padding: 0.85rem 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 1rem;
+  align-items: baseline;
+}
+
+.rowMain {
+  flex: 1 1 18rem;
+  margin: 0;
+  color: var(--ink);
+  font-size: 0.95rem;
+  line-height: 1.5;
+}
+
+.rowMeta {
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  color: var(--ink-3);
+  margin: 0;
+}
+
+.empty {
+  margin: 0;
+  padding: 0.85rem 0;
+  border-top: 1px solid var(--line);
+  font-size: 0.9rem;
+  color: var(--ink-3);
+}
+
+/* -------------------------------------------------------------- timeline */
+
+.timeline {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.timelineItem {
+  border-left: 1px solid var(--line);
+  padding: 0 0 1.1rem 1.1rem;
+  position: relative;
+}
+
+.timelineItem::before {
+  content: "";
+  position: absolute;
+  left: -3.5px;
+  top: 0.45rem;
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--ink-3);
+}
+
+.timelineItem:last-child {
+  padding-bottom: 0;
+}
+
+.timelineWhen {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--ink-3);
+  margin: 0 0 0.15rem;
+}
+
+.timelineWhat {
+  margin: 0;
+  font-size: 0.92rem;
+  color: var(--ink);
+}
+
+.footnote {
+  margin: 3rem 0 0;
+  padding-top: 1.25rem;
+  border-top: 1px solid var(--line);
+  font-size: 0.85rem;
+  line-height: 1.6;
+  color: var(--ink-3);
+}
+
+.accessState {
+  max-width: 34rem;
+  margin: 0 auto;
+  padding: 6rem 1.25rem;
+  text-align: center;
+  color: var(--ink-2);
+  font-size: 1rem;
+}
