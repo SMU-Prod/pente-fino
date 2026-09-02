@@ -7,6 +7,7 @@ import type { TaskHandler } from "@pentefino/adapters";
 // eslint-disable-next-line pentefino/require-with-user -- system job with no user session; writes go through the caller-injected `Database` (deps.db), not a client this module creates itself
 import { schema, type Database } from "@pentefino/db";
 import { renderDossierPdf } from "../pdf/render-dossier.js";
+import { resolveNow } from "../clock.js";
 
 const {
   caseDocuments, caseProtocols, cases, events, findings, invoiceItems, invoices, issuers,
@@ -47,22 +48,6 @@ const MAX_FAILURE_MESSAGE_LENGTH = 500;
 const INVOICE_SCOPED_EVENT_TYPES: string[] = [
   "invoice_uploaded", "invoice_analyzed", "invoice_file_expired", "invoice_file_expiry_failed",
 ];
-
-/**
- * Identical to `expire-files.ts`'s: `createDossierTask`'s own deps are fixed
- * to `{ db, storage }`, so the one place left to inject a deterministic
- * "today" is the payload every `TaskHandler` already accepts. Production's
- * scheduler passes no `now` and gets the real clock; the test passes a fixed
- * instant, so `generatedAt` — and every date the PDF prints from it — is
- * reproducible. Deliberately the same shape rather than a second convention.
- */
-function resolveNow(payload: Record<string, unknown>): Date {
-  const raw = payload.now;
-  if (raw === undefined) return new Date();
-  if (raw instanceof Date) return raw;
-  if (typeof raw === "string" || typeof raw === "number") return new Date(raw);
-  throw new Error(`dossier: payload.now must be a Date, string or number, got ${typeof raw}`);
-}
 
 type CaseRow = typeof cases.$inferSelect;
 
@@ -236,7 +221,7 @@ export function createDossierTask(deps: DossierDeps): TaskHandler {
   }
 
   return async function dossier(payload: Record<string, unknown>): Promise<void> {
-    const now = resolveNow(payload);
+    const now = resolveNow(payload, "dossier");
 
     // `notExists` rather than loading every jec_ready case and filtering in
     // memory: the guard belongs in the query, so a case that already has its

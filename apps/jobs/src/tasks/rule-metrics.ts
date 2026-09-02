@@ -1,6 +1,7 @@
 import { and, gte, inArray, lt, sql } from "drizzle-orm";
 import { newId, type EventType } from "@pentefino/core";
 import type { TaskHandler } from "@pentefino/adapters";
+import { resolveNow } from "../clock.js";
 // eslint-disable-next-line pentefino/require-with-user -- system job with no user session; writes go through the caller-injected `Database` (deps.db), not a client this module creates itself
 import { schema, type Database } from "@pentefino/db";
 
@@ -29,18 +30,16 @@ const CONFIRMED: EventType = "finding_confirmed";
 const TRACKED_TYPES: EventType[] = [FIRED, DISMISSED, CONFIRMED];
 
 /**
- * Same shape as `expire-files.ts`'s `resolveNow`: the task's own deps carry
- * no clock, so a test that needs a deterministic "day" injects one through
- * the payload every `TaskHandler` already accepts. Production's own
- * scheduler call passes no `now` and gets the real clock.
+ * The shared `resolveNow` (`../clock.js`) turned into this job's UTC day.
+ *
+ * This used to re-implement the payload parsing inline. It was the third
+ * copy of the same six lines, and the risk was never that one of them was
+ * wrong today: it was that a job could come to accept a payload shape the
+ * others reject, and nobody would notice until a date was wrong in
+ * production.
  */
 function resolveDay(payload: Record<string, unknown>): { start: Date; end: Date; iso: string } {
-  const raw = payload.now;
-  let now: Date;
-  if (raw === undefined) now = new Date();
-  else if (raw instanceof Date) now = raw;
-  else if (typeof raw === "string" || typeof raw === "number") now = new Date(raw);
-  else throw new Error(`rule-metrics: payload.now must be a Date, string or number, got ${typeof raw}`);
+  const now = resolveNow(payload, "rule-metrics");
 
   // UTC day boundaries, not local time: `day` is a plain `date` column, and
   // pinning it to UTC keeps a run's result independent of the host's time
