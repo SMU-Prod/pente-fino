@@ -10,7 +10,7 @@ import { signSession } from "../../lib/session.js";
 import { createCookieStore, jarFor, type MockCookieStore } from "../helpers/cookies.js";
 import { buildTestContainer } from "../helpers/container.js";
 
-const { anonymousSessions, events, findings, invoices, issuers, rules, users } = schema;
+const { anonymousSessions, cases, events, findings, invoices, issuers, rules, users } = schema;
 
 vi.mock("next/headers", () => ({ cookies: vi.fn() }));
 vi.mock("../../lib/container.js", () => ({ container: vi.fn() }));
@@ -121,6 +121,30 @@ describe("GET /api/cases/[id]", () => {
     expect(body.case).toMatchObject({ id: aliceCaseId, invoiceId: aliceInvoice, stage: "draft" });
     expect(body.documents).toEqual([]);
     expect(body.protocols).toEqual([]);
+  });
+
+  // `cases.protocol_token` is the workflow's `wait.forToken` handle: whoever
+  // holds it can resume the run this case is waiting on. Nothing in this
+  // response consumes it, and E5 Tasks 3 and 5 read it server-side from the
+  // row itself, so it has no reason to cross into a browser at all. The
+  // token is seeded with a value that could not appear by coincidence and
+  // checked against the *raw* body rather than the parsed `case` object, so
+  // a copy of it reaching the response some other way - a timeline payload,
+  // a generated document - fails this too.
+  it("never serialises the case's protocolToken", async () => {
+    const token = "wtk_do_not_ship_this_token_to_a_browser";
+    await ctx.db.update(cases).set({ protocolToken: token }).where(eq(cases.id, aliceCaseId));
+
+    useCookies(createCookieStore({ pf_session: signSession(sessionA, SECRET) }));
+    const response = await GET(request(aliceCaseId), ctxFor(aliceCaseId));
+    const raw = await response.text();
+
+    expect(response.status).toBe(200);
+    expect(raw).not.toContain(token);
+    expect(JSON.parse(raw).case).not.toHaveProperty("protocolToken");
+    // The rest of the case still comes back - this is a stripped field, not
+    // a stripped object.
+    expect(JSON.parse(raw).case).toMatchObject({ id: aliceCaseId, invoiceId: aliceInvoice, stage: "draft" });
   });
 
   it("returns the timeline in chronological order, carrying the case_created event written at creation", async () => {

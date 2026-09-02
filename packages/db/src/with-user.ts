@@ -67,6 +67,22 @@ const VISIBLE_FINDING_STATUSES = ["open", "confirmed_by_user", "contested", "unr
 const CONTESTABLE_FINDING_STATUSES = ["open", "confirmed_by_user", "unresolved"] as const;
 
 /**
+ * The one thing `createCase`'s transaction throws on purpose. It has to
+ * throw rather than return, because returning from the callback commits -
+ * and the whole point is that the case row, the flip to `contested` and the
+ * `case_created` event unwind together when the concurrency gate fails.
+ * `createCase` catches this exact class at its own boundary and returns
+ * `null`, so a lost race looks to the caller like every other rejection
+ * (INV-008) instead of a 500.
+ *
+ * It is a named class rather than a bare `Error` so the catch can be narrow:
+ * a genuine database fault raised inside the same transaction - a dropped
+ * connection, a constraint the schema still enforces - must keep propagating.
+ * A `catch {}` around a transaction is how those stop being noticed.
+ */
+class CaseFindingRaceLost extends Error {}
+
+/**
  * Creates the `anonymous_sessions` row a fresh session id needs before any
  * invoice can reference it: `invoices.session_id` carries a real foreign key
  * to `anonymous_sessions.id`, so inserting an invoice for a session id that
@@ -521,17 +537,38 @@ export function withUser(session: Session, db: Db = getUnscopedDb()) {
      * loser blocks on the row lock the winner already holds, re-reads the
      * row after the winner commits, matches zero rows, and the count test
      * rolls its whole transaction back - the insert, the flip and the event
-     * together. `FOR UPDATE` on the SELECT would serialise the two callers
-     * too, but it would put the lock in a statement that is not the one that
-     * has to hold it; keeping the test on the write means a future caller
-     * that skips the SELECT still cannot open a duplicate case.
+     * together. (That paragraph describes production Postgres, and is
+     * reasoned rather than tested: PGlite runs every transaction under one
+     * mutex, so no test in this repo can put two of them in flight at once.
+     * What the race test does prove is the other half - a second call whose
+     * SELECT is already stale opens no case.) `FOR UPDATE` on the SELECT
+     * would serialise the two callers too, but it would put the lock in a
+     * statement that is not the one that has to hold it.
+     *
+     * **The two WHEREs are deliberately not identical.** The UPDATE carries
+     * only what it has to decide for itself - `shadow = false` and the
+     * contestable status list - and omits the invoice and ownership
+     * predicates, because the SELECT above already proved those about the
+     * very same ids. What the write therefore guarantees on its own is
+     * narrow but exact: no finding can enter two cases, whoever asks. What
+     * it does *not* guarantee is ownership - a future caller that skipped
+     * the SELECT could flip and contest another user's findings, since
+     * nothing in this UPDATE mentions `invoices` at all. The SELECT is the
+     * only thing standing between `findingIds` and INV-008, which is why it
+     * is not an optimisation to be dropped later.
      *
      * Every rejection returns the same `null` - not owned, does not exist,
-     * already contested, no issuer - so the caller (and therefore the HTTP
-     * response) can never learn which one it was (INV-008). The lost race is
-     * the one case that throws rather than returning `null`: it is not a
-     * property of the request, and a caller that retries it will get a clean
-     * `null` from the SELECT on the next attempt.
+     * already contested, no issuer, and a lost race - so the caller (and
+     * therefore the HTTP response) can never learn which one it was
+     * (INV-008). The lost race returns `null` rather than throwing on
+     * purpose: given the paragraph above, the only way to reach that branch
+     * is contention, which is a property of the moment and not of the
+     * request. A double-clicked submit is two concurrent requests under any
+     * real pool, and it would be incoherent for the loser to get a 500 when
+     * the *sequential* double-submit gets the 404 the design intends.
+     * `apps/web/app/api/cases/route.ts` does not catch, so a throw here is a
+     * 500 in production; 500s are worth paging on only while they still mean
+     * a broken invariant.
      *
      * **Why this method records its own event**, when `editCaseDocument`
      * leaves `contest_edited` to its route: A3 says every state transition
@@ -578,43 +615,53 @@ export function withUser(session: Session, db: Db = getUnscopedDb()) {
       // so all three commit or none do. A case whose findings never flipped
       // would leave the same money open to a second case, which is exactly
       // what `CONTESTABLE_FINDING_STATUSES` excluding `contested` prevents.
-      await db.transaction(async (tx) => {
-        await tx.insert(cases).values({
-          id,
-          userId,
-          invoiceId: input.invoiceId,
-          issuerId,
-          findingIds,
-          stage: "draft",
-          nextDeadlineAt: null,
+      try {
+        await db.transaction(async (tx) => {
+          await tx.insert(cases).values({
+            id,
+            userId,
+            invoiceId: input.invoiceId,
+            issuerId,
+            findingIds,
+            stage: "draft",
+            nextDeadlineAt: null,
+          });
+          // The concurrency gate: the same contestability test the SELECT ran,
+          // re-applied by the statement that actually takes the rows. A loser
+          // racing for the same finding matches fewer rows than it named and
+          // rolls the whole transaction back.
+          const flipped = await tx.update(findings)
+            .set({ status: "contested", updatedAt: now })
+            .where(and(
+              inArray(findings.id, findingIds),
+              eq(findings.shadow, false),
+              inArray(findings.status, [...CONTESTABLE_FINDING_STATUSES]),
+            ))
+            .returning({ id: findings.id });
+          if (flipped.length !== findingIds.length) {
+            throw new CaseFindingRaceLost(
+              `createCase lost a race for ${findingIds.length - flipped.length} finding(s): ` +
+              "another case took them between the check and the write",
+            );
+          }
+          await tx.insert(events).values({
+            id: newId("evt"),
+            userId,
+            invoiceId: input.invoiceId,
+            caseId: id,
+            type: "case_created" satisfies EventType,
+            payload: { invoiceId: input.invoiceId, findingIds, stage: "draft" },
+          });
         });
-        // The concurrency gate: the same contestability test the SELECT ran,
-        // re-applied by the statement that actually takes the rows. A loser
-        // racing for the same finding matches fewer rows than it named and
-        // rolls the whole transaction back.
-        const flipped = await tx.update(findings)
-          .set({ status: "contested", updatedAt: now })
-          .where(and(
-            inArray(findings.id, findingIds),
-            eq(findings.shadow, false),
-            inArray(findings.status, [...CONTESTABLE_FINDING_STATUSES]),
-          ))
-          .returning({ id: findings.id });
-        if (flipped.length !== findingIds.length) {
-          throw new Error(
-            `createCase lost a race for ${findingIds.length - flipped.length} finding(s): ` +
-            "another case took them between the check and the write",
-          );
-        }
-        await tx.insert(events).values({
-          id: newId("evt"),
-          userId,
-          invoiceId: input.invoiceId,
-          caseId: id,
-          type: "case_created",
-          payload: { invoiceId: input.invoiceId, findingIds, stage: "draft" },
-        });
-      });
+      } catch (error) {
+        // Narrow on purpose: only the sentinel the gate above raises becomes
+        // a `null`. Anything else out of the transaction - a constraint, a
+        // connection that went away - is a genuine fault and keeps going up,
+        // because the moment this catch stops being narrow it also stops
+        // being possible to tell contention from a broken database.
+        if (error instanceof CaseFindingRaceLost) return null;
+        throw error;
+      }
       return id;
     },
 
@@ -780,13 +827,21 @@ export function withUser(session: Session, db: Db = getUnscopedDb()) {
      * the north-star metric. It throws rather than returning `null`, because
      * `null` means "no such case of yours", and a caller cannot be told a
      * bad argument is a missing row.
+     *
+     * An explicit `null` is treated exactly as an absent value, not as a bad
+     * argument: JSON has no `undefined`, so "no amount" arrives from a body
+     * as `null` as often as by omission, and the `?? 0` this method has
+     * always applied would have accepted it. Rejecting it would have made a
+     * key spelled out as null a 500 where the same key left out is a normal
+     * close - a difference no caller could have predicted from the outside.
      */
-    async closeCase(caseId: string, input: { outcome: CaseOutcome; recoveredCents?: number; note?: string }) {
+    async closeCase(
+      caseId: string,
+      input: { outcome: CaseOutcome; recoveredCents?: number | null; note?: string },
+    ) {
       if (!userId) return null;
-      if (
-        input.recoveredCents !== undefined
-        && (!Number.isInteger(input.recoveredCents) || input.recoveredCents < 0)
-      ) {
+      const recoveredCents = input.recoveredCents ?? 0;
+      if (!Number.isInteger(recoveredCents) || recoveredCents < 0) {
         throw new Error(`closeCase: recoveredCents must be a non-negative integer of cents, got ${input.recoveredCents}`);
       }
       const now = new Date();
@@ -800,7 +855,7 @@ export function withUser(session: Session, db: Db = getUnscopedDb()) {
             stageEnteredAt: now,
             outcome: input.outcome,
             outcomeConfirmedBy: "user",
-            recoveredCents: input.recoveredCents ?? 0,
+            recoveredCents,
             closedAt: now,
             nextDeadlineAt: null,
             updatedAt: now,
@@ -819,7 +874,7 @@ export function withUser(session: Session, db: Db = getUnscopedDb()) {
           userId,
           invoiceId: updated.invoiceId,
           caseId: updated.id,
-          type: "outcome_confirmed",
+          type: "outcome_confirmed" satisfies EventType,
           payload: {
             outcome: updated.outcome,
             recoveredCents: updated.recoveredCents,

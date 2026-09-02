@@ -41,6 +41,17 @@ import { SESSION_COOKIE, getSessionSecret, readSession } from "@/lib/session.js"
  * here would put a name into the trail that no dashboard, metric or job
  * agreed to; E5 Task 6 owns that decision, and RF-185 stays unserved until
  * it makes it.
+ *
+ * **`protocolToken` is stripped from the serialised case.** It is the
+ * workflow's `wait.forToken` handle (`packages/db/src/schema.ts`) - a
+ * capability, not a fact about the dispute: whoever holds it can resume the
+ * run this case is waiting on, and E5 Tasks 3 and 5 use it server-side, from
+ * the case row they read themselves. Nothing in this response consumes it,
+ * so shipping it to a browser would only widen where it can leak from - a
+ * screenshot, a client-side log, a `fetch` in a devtools tab - with nothing
+ * gained. `caseDetail` still returns it, deliberately: its other callers are
+ * the ones that need it, and narrowing the method would take it away from
+ * them to solve a problem only this boundary has.
  */
 export async function GET(_request: Request, ctx: { params: Promise<{ id: string }> }) {
   const { id } = await ctx.params;
@@ -56,5 +67,9 @@ export async function GET(_request: Request, ctx: { params: Promise<{ id: string
   const detail = await scoped.caseDetail(id);
   if (!detail) return apiError("not_found");
 
-  return Response.json(detail);
+  // Destructured away rather than rebuilt key by key: a column added to
+  // `cases` later should reach this response by default, and only the one
+  // named here should have to be argued for.
+  const { protocolToken: _protocolToken, ...serialisableCase } = detail.case;
+  return Response.json({ ...detail, case: serialisableCase });
 }

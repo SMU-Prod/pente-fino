@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { eq, inArray } from "drizzle-orm";
-import { newId, type ContestDocument } from "@pentefino/core";
+import { and, eq, inArray } from "drizzle-orm";
+import { newId, type ContestDocument, type EventType } from "@pentefino/core";
 import { createTestDb, type TestDb } from "../src/testing.js";
 import {
   anonymousSessions, caseDocuments, caseProtocols, cases, events, findings, invoices, issuers, rules, users,
@@ -95,6 +95,18 @@ async function anonymousScope(db: TestDb["db"]) {
 const casesOf = (db: TestDb["db"], userId: string) =>
   db.select().from(cases).where(eq(cases.userId, userId));
 
+// Same reason as `casesOf`, and the reason these two exist at all: an event
+// assertion filtered on `type` alone reads the whole `events` table, so it
+// would count rows written by a seed, by a sibling case, or by the other
+// user in this file - and a count of 1 would stop meaning "this case wrote
+// exactly one". Scope every event assertion to the case it is about, or to
+// the user when the case was never created.
+const eventsOfCase = (db: TestDb["db"], caseId: string, type: EventType) =>
+  db.select().from(events).where(and(eq(events.caseId, caseId), eq(events.type, type)));
+
+const eventsOfUser = (db: TestDb["db"], userId: string, type: EventType) =>
+  db.select().from(events).where(and(eq(events.userId, userId), eq(events.type, type)));
+
 beforeEach(async () => {
   ctx = await createTestDb();
   await ctx.db.insert(users).values([
@@ -172,7 +184,7 @@ describe("createCase (the case-creation hole E5 Task 4 fills, INV-008)", () => {
     const scoped = withUser({ userId: alice }, ctx.db);
     const caseId = (await scoped.createCase({ invoiceId: aliceInvoice, findingIds: [aliceFinding] }))!;
 
-    const rows = await ctx.db.select().from(events).where(eq(events.type, "case_created"));
+    const rows = await eventsOfCase(ctx.db, caseId, "case_created");
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ userId: alice, invoiceId: aliceInvoice, caseId });
     expect(rows[0]?.payload).toMatchObject({
@@ -185,7 +197,9 @@ describe("createCase (the case-creation hole E5 Task 4 fills, INV-008)", () => {
     expect(await scoped.createCase({
       invoiceId: aliceInvoice, findingIds: [aliceFinding, bobFinding],
     })).toBeNull();
-    expect(await ctx.db.select().from(events).where(eq(events.type, "case_created"))).toHaveLength(0);
+    // No case id to scope to - there is no case. Alice is the next-narrowest
+    // scope, and it still excludes Bob's rows and anything a seed wrote.
+    expect(await eventsOfUser(ctx.db, alice, "case_created")).toHaveLength(0);
   });
 
   // The validating SELECT runs outside the transaction, so two callers can
@@ -195,17 +209,41 @@ describe("createCase (the case-creation hole E5 Task 4 fills, INV-008)", () => {
   // the case names. Without that, both callers insert and the same money ends
   // up in two live cases - double-counted into §1.4's north-star metric the
   // moment both close.
-  it("opens only one case when two calls race for the same finding", async () => {
+  //
+  // **What this test proves, exactly.** Both calls are issued together, but
+  // PGlite runs every transaction under a single mutex
+  // (`_runExclusiveTransaction`), so they execute one after the other and no
+  // test in this repo can observe the two-transactions-in-flight case at
+  // all. What is real here is the *stale SELECT*: the second call's
+  // validating SELECT already ran and passed while the finding was still
+  // `open`, and by the time its UPDATE runs the winner has flipped it to
+  // `contested`, so the UPDATE matches zero rows and the whole transaction
+  // rolls back. That is the half that would break first if the hardened
+  // WHERE were dropped from the write. The row-lock behaviour described in
+  // `createCase`'s doc comment is production Postgres and is reasoned, not
+  // tested - do not read this test as evidence for it.
+  //
+  // The loser gets `null`, not a rejection: contention is not a broken
+  // invariant, and the route does not catch, so a throw would be a 500 on
+  // exactly the double-clicked submit that gets a clean 404 when it happens
+  // sequentially. `allSettled` rather than `all` so a regression to throwing
+  // shows up as a failed assertion here rather than as an unhandled rejection.
+  it("opens only one case when two calls race for the same finding, and the loser gets null", async () => {
     const scoped = withUser({ userId: alice }, ctx.db);
     const results = await Promise.allSettled([
       scoped.createCase({ invoiceId: aliceInvoice, findingIds: [aliceFinding] }),
       scoped.createCase({ invoiceId: aliceInvoice, findingIds: [aliceFinding] }),
     ]);
 
-    const opened = results.filter((r) => r.status === "fulfilled" && r.value !== null);
+    expect(results.map((r) => r.status)).toEqual(["fulfilled", "fulfilled"]);
+    const values = results.map((r) => (r.status === "fulfilled" ? r.value : "REJECTED"));
+    expect(values.filter((v) => typeof v === "string")).toHaveLength(1);
+    expect(values.filter((v) => v === null)).toHaveLength(1);
+
+    const opened = await casesOf(ctx.db, alice);
     expect(opened).toHaveLength(1);
-    expect(await casesOf(ctx.db, alice)).toHaveLength(1);
-    expect(await ctx.db.select().from(events).where(eq(events.type, "case_created"))).toHaveLength(1);
+    expect(await eventsOfCase(ctx.db, opened[0]!.id, "case_created")).toHaveLength(1);
+    expect(await eventsOfUser(ctx.db, alice, "case_created")).toHaveLength(1);
     const [contested] = await ctx.db.select().from(findings).where(eq(findings.id, aliceFinding));
     expect(contested?.status).toBe("contested");
   });
@@ -268,6 +306,22 @@ describe("createCase (the case-creation hole E5 Task 4 fills, INV-008)", () => {
     expect(await scoped.createCase({ invoiceId: aliceInvoice, findingIds: [dismissed] })).toBeNull();
     expect(await scoped.createCase({ invoiceId: aliceInvoice, findingIds: [aliceFinding, dismissed] })).toBeNull();
     expect(await casesOf(ctx.db, alice)).toHaveLength(0);
+  });
+
+  // The fourth status `CONTESTABLE_FINDING_STATUSES` leaves out, and the one
+  // the other three tests here had no companion for. A `resolved` finding is
+  // money an earlier case already got back: contesting it again would ask a
+  // company for a refund it has already made, and its `recoveredCents` would
+  // be counted a second time into §1.4's north-star metric when the new case
+  // closed.
+  it("refuses a resolved finding - that money was already recovered once", async () => {
+    const settled = await seedFinding(ctx.db, aliceInvoice, { status: "resolved" });
+    const scoped = withUser({ userId: alice }, ctx.db);
+    expect(await scoped.createCase({ invoiceId: aliceInvoice, findingIds: [settled] })).toBeNull();
+    expect(await scoped.createCase({ invoiceId: aliceInvoice, findingIds: [aliceFinding, settled] })).toBeNull();
+    expect(await casesOf(ctx.db, alice)).toHaveLength(0);
+    const [untouched] = await ctx.db.select().from(findings).where(eq(findings.id, settled));
+    expect(untouched?.status).toBe("resolved");
   });
 
   it("refuses a finding already contested by another case, so a double submit cannot duplicate it", async () => {
@@ -343,6 +397,21 @@ describe("caseDetail (the case, its documents, its protocols and its timeline)",
     ]);
   }
 
+  // One document and one protocol on a case that is NOT the one under test.
+  // `minutes` is chosen by the caller so the rows interleave with the case
+  // under test's own: a list that stopped filtering by `caseId` could then
+  // not even come back in the right order, never mind the right length.
+  async function seedForeignFixtures(db: TestDb["db"], caseId: string, tag: string, minutes: number) {
+    await db.insert(caseDocuments).values({
+      id: newId("doc"), caseId, stage: "sac", kind: "gov_text", promptVersion: 1,
+      body: { ...SAMPLE_BODY, subject: `NOT MINE - ${tag}` }, createdAt: at(minutes),
+    });
+    await db.insert(caseProtocols).values({
+      id: newId("prt"), caseId, stage: "sac", protocolNumber: `P-${tag}`, channel: "web",
+      registeredAt: at(minutes), responseDueAt: at(minutes + 60 * 24 * 5),
+    });
+  }
+
   it("returns documents, protocols and the timeline in chronological order", async () => {
     const scoped = withUser({ userId: alice }, ctx.db);
     const caseId = (await scoped.createCase({ invoiceId: aliceInvoice, findingIds: [aliceFinding] }))!;
@@ -403,6 +472,45 @@ describe("caseDetail (the case, its documents, its protocols and its timeline)",
     expect(detail?.timeline.every((e) => e.caseId === caseId)).toBe(true);
   });
 
+  // The same hole the timeline test above closed, in the two lists that
+  // carry the actual contents of a dispute. `eq(caseDocuments.caseId, ...)`
+  // and `eq(caseProtocols.caseId, ...)` were the only scoping on either
+  // list, and until this test nothing in the repo went red if you deleted
+  // one: every other `caseDetail` test seeds documents and protocols for a
+  // single case, so "every row in the table" and "this case's rows" were the
+  // same set. Delete either `.where(...)` and this returns another person's
+  // letters and their protocol numbers - the two things in a case that
+  // identify who is disputing what, with whom.
+  //
+  // Three cases, chosen so neither ownership nor the caller's identity can
+  // stand in for the filter: the case under test, a *sibling* owned by the
+  // same person (which `cases.userId` would not separate), and one owned by
+  // Bob (which nothing in these two queries mentions at all).
+  it("scopes documents and protocols to its own case, against a sibling and another user's", async () => {
+    const scoped = withUser({ userId: alice }, ctx.db);
+    const siblingFinding = await seedFinding(ctx.db, aliceInvoice);
+    const caseId = (await scoped.createCase({ invoiceId: aliceInvoice, findingIds: [aliceFinding] }))!;
+    const siblingCaseId = (await scoped.createCase({ invoiceId: aliceInvoice, findingIds: [siblingFinding] }))!;
+    const strangerCaseId = (await withUser({ userId: bob }, ctx.db)
+      .createCase({ invoiceId: bobInvoice, findingIds: [bobFinding] }))!;
+
+    await seedTimelineFixtures(ctx.db, caseId);
+    // at(15) lands between this case's two documents; at(35) between its two
+    // protocols. Both would be interleaved into the returned lists, not
+    // appended, if the scoping went away.
+    await seedForeignFixtures(ctx.db, siblingCaseId, "SIBLING", 15);
+    await seedForeignFixtures(ctx.db, strangerCaseId, "STRANGER", 35);
+
+    const detail = await scoped.caseDetail(caseId);
+
+    expect(detail?.documents.map((d) => d.caseId)).toEqual([caseId, caseId]);
+    expect(detail?.documents.map((d) => d.kind)).toEqual(["contest_letter", "sac_script"]);
+    expect(detail?.documents.map((d) => d.body.subject)).toEqual([SAMPLE_BODY.subject, SAMPLE_BODY.subject]);
+
+    expect(detail?.protocols.map((p) => p.caseId)).toEqual([caseId, caseId]);
+    expect(detail?.protocols.map((p) => p.protocolNumber)).toEqual(["P-1", "P-2"]);
+  });
+
   it("returns exactly the same value for another user's case and for a case that does not exist", async () => {
     const scoped = withUser({ userId: alice }, ctx.db);
     const caseId = (await scoped.createCase({ invoiceId: aliceInvoice, findingIds: [aliceFinding] }))!;
@@ -455,6 +563,18 @@ describe("closeCase (§1.4's north-star metric is fed from here, so it may only 
     expect(closed?.recoveredCents).toBe(0);
   });
 
+  // JSON has no `undefined`: "no amount" reaches a body as `null` at least as
+  // often as by omission. The integer guard used to fire on the explicit
+  // `null` while `?? 0` two lines below would have accepted it, so the same
+  // intention expressed two ways got a 500 one way and a normal close the
+  // other. `null` is now exactly an absent value.
+  it("treats an explicit null recoveredCents as absent, not as a bad argument", async () => {
+    const { scoped, caseId } = await openCase([aliceFinding]);
+    const closed = await scoped.closeCase(caseId, { outcome: "denied", recoveredCents: null });
+    expect(closed?.recoveredCents).toBe(0);
+    expect(closed?.stage).toBe("closed");
+  });
+
   // Without this the row would keep claiming the case entered `closed` at the
   // moment it actually entered `sac` - the one timestamp anything reading the
   // stage machine has to trust.
@@ -480,7 +600,7 @@ describe("closeCase (§1.4's north-star metric is fed from here, so it may only 
 
     const [row] = await ctx.db.select().from(cases).where(eq(cases.id, caseId));
     expect(row).toMatchObject({ stage: "draft", outcome: null, closedAt: null });
-    expect(await ctx.db.select().from(events).where(eq(events.type, "outcome_confirmed"))).toHaveLength(0);
+    expect(await eventsOfCase(ctx.db, caseId, "outcome_confirmed")).toHaveLength(0);
   });
 
   // A3, and unrepairable if left to the route: the close is one-shot, so a
@@ -491,7 +611,7 @@ describe("closeCase (§1.4's north-star metric is fed from here, so it may only 
     const { scoped, caseId } = await openCase([aliceFinding]);
     await scoped.closeCase(caseId, { outcome: "partial", recoveredCents: 4_200 });
 
-    const rows = await ctx.db.select().from(events).where(eq(events.type, "outcome_confirmed"));
+    const rows = await eventsOfCase(ctx.db, caseId, "outcome_confirmed");
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ userId: alice, invoiceId: aliceInvoice, caseId });
     expect(rows[0]?.payload).toMatchObject({
@@ -504,7 +624,7 @@ describe("closeCase (§1.4's north-star metric is fed from here, so it may only 
     await scoped.closeCase(caseId, { outcome: "resolved", recoveredCents: 9_900 });
     expect(await scoped.closeCase(caseId, { outcome: "resolved", recoveredCents: 9_900 })).toBeNull();
 
-    expect(await ctx.db.select().from(events).where(eq(events.type, "outcome_confirmed"))).toHaveLength(1);
+    expect(await eventsOfCase(ctx.db, caseId, "outcome_confirmed")).toHaveLength(1);
   });
 
   // INV-007: PII is masked before it is persisted, and free text a person
@@ -519,7 +639,7 @@ describe("closeCase (§1.4's north-star metric is fed from here, so it may only 
       note: "Atendente confirmou o estorno, CPF 123.456.789-09 conferido no protocolo",
     });
 
-    const [row] = await ctx.db.select().from(events).where(eq(events.type, "outcome_confirmed"));
+    const [row] = await eventsOfCase(ctx.db, caseId, "outcome_confirmed");
     expect(row?.payload.note).toBe("Atendente confirmou o estorno, CPF [CPF] conferido no protocolo");
     expect(JSON.stringify(row?.payload)).not.toContain("123.456.789-09");
   });
@@ -528,7 +648,7 @@ describe("closeCase (§1.4's north-star metric is fed from here, so it may only 
     const { scoped, caseId } = await openCase([aliceFinding]);
     await scoped.closeCase(caseId, { outcome: "denied" });
 
-    const [row] = await ctx.db.select().from(events).where(eq(events.type, "outcome_confirmed"));
+    const [row] = await eventsOfCase(ctx.db, caseId, "outcome_confirmed");
     expect(row?.payload).not.toHaveProperty("note");
   });
 
