@@ -158,7 +158,9 @@ describe("SCHEDULABLE and container()'s handler map cannot drift apart", () => {
   it("schedules, or explicitly excuses, every handler container() registers", async () => {
     const { readFileSync } = await import("node:fs");
     const source = readFileSync(new URL("../../lib/container.ts", import.meta.url), "utf8");
-    const registered = [...source.matchAll(/handlers\.(\w+)\s*=/g)].map((m) => m[1]);
+    const registered = [...source.matchAll(/handlers\.(\w+)\s*=/g)]
+      .map((m) => m[1])
+      .filter((name): name is string => name !== undefined);
 
     expect(registered.length).toBeGreaterThan(0); // the regex still matches something
 
