@@ -55,8 +55,8 @@ beforeEach(async () => {
     { id: bob, email: "bob@example.com" },
   ]);
   await ctx.db.insert(anonymousSessions).values([
-    { id: sessionA, claimedByUserId: alice, expiresAt: new Date(Date.now() + 60_000) },
-    { id: sessionB, claimedByUserId: bob, expiresAt: new Date(Date.now() + 60_000) },
+    { id: sessionA, claimedByUserId: alice, expiresAt: new Date(Date.now() + 60 * 60_000) },
+    { id: sessionB, claimedByUserId: bob, expiresAt: new Date(Date.now() + 60 * 60_000) },
   ]);
 
   issuerId = newId("iss");
@@ -150,8 +150,11 @@ describe("GET /api/cases/[id]", () => {
   it("returns the timeline in chronological order, carrying the case_created event written at creation", async () => {
     // Inserted *after* the case exists but stamped *before* it: a timeline
     // that came back in insertion order would put this last. Only an order
-    // on `occurredAt` puts it first, which is what the dossier (E5 Task 7)
-    // reads the same history for.
+    // on `occurredAt` puts it first - which is what a person reading their
+    // own case screen needs, and what `caseDetail`'s `(occurredAt, id)`
+    // ordering guarantees even when two rows share an instant. (E5 Task 7's
+    // dossier orders the same way, but assembles its own wider query rather
+    // than calling this route - see the route's doc comment.)
     const [created] = await ctx.db.select().from(events)
       .where(and(eq(events.caseId, aliceCaseId), eq(events.type, "case_created")));
     await ctx.db.insert(events).values({

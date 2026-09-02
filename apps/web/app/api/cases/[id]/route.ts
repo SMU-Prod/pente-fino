@@ -23,8 +23,22 @@ import { SESSION_COOKIE, getSessionSecret, readSession } from "@/lib/session.js"
  * **`timeline` is the case's own `events` rows in chronological order.**
  * This is what makes principle A3 worth having: every state transition
  * wrote a row, so the history can be read back from `events` alone rather
- * than inferred from whatever the `cases` row currently says. E5 Task 7's
- * dossier reads the same history through the same method.
+ * than inferred from whatever the `cases` row currently says.
+ *
+ * It is this case's own history, and deliberately not the widest history
+ * that could be assembled about it. Everything here is scoped on
+ * `events.case_id`, because this response is what a person reads on their
+ * own case screen and a case's screen shows what happened to that case. E5
+ * Task 7's dossier is a different view of the same table and builds its own,
+ * *wider* query - case-scoped rows OR the invoice-scoped
+ * `invoice_uploaded` / `invoice_analyzed` / `invoice_file_expired` ones,
+ * because `invoice_file_expired` carries no `caseId` at all and a dossier
+ * assembled for a company has to account for the file that is no longer
+ * there. It is a system job and does not call `caseDetail`. So the two
+ * timelines differ on purpose, and neither is the other's bug: widening this
+ * one to match the dossier would put invoice-level history on a case screen,
+ * and narrowing the dossier to this one would drop the rows it exists to
+ * explain.
  *
  * **INV-007.** Everything returned here is user-facing, and it now carries
  * free text the person typed - a close note - alongside generated

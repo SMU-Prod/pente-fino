@@ -85,7 +85,7 @@ async function seedFinding(
 
 async function anonymousScope(db: TestDb["db"]) {
   const sessionId = newId("ses");
-  await db.insert(anonymousSessions).values({ id: sessionId, expiresAt: new Date(Date.now() + 60_000) });
+  await db.insert(anonymousSessions).values({ id: sessionId, expiresAt: new Date(Date.now() + 60 * 60_000) });
   return { sessionId, scoped: withUser({ sessionId }, db) };
 }
 
@@ -458,9 +458,17 @@ describe("caseDetail (the case, its documents, its protocols and its timeline)",
   });
 
   // Decision 6: the timeline is scoped on `events.caseId` alone, never on the
-  // caller's own `ownsEvent` predicate. E5 Task 3's deadline job has no user
-  // session, so the rows it writes carry no `userId` - an `ownsEvent` filter
-  // would silently drop exactly the events nobody else records.
+  // caller's own `ownsEvent` predicate, because ownership was already proved
+  // on the case itself one query earlier.
+  //
+  // What this pins is the **property** - a row carrying this `caseId` is on
+  // this case's timeline whether or not it also carries a `userId` - and not
+  // a claim about any particular writer. Do not rewrite it as "this is how
+  // E5 Task 3's deadline job writes its rows": that job's `record()` helper
+  // stamps `userId` alongside `caseId` and `invoiceId`, so the claim would be
+  // false, and the next person to check it would "fix" the discrepancy by
+  // adding the `ownsEvent` filter this test exists to forbid. `events.user_id`
+  // is nullable and no writer is obliged to fill it; that is enough.
   it("includes a system event written with a caseId but no userId", async () => {
     const scoped = withUser({ userId: alice }, ctx.db);
     const caseId = (await scoped.createCase({ invoiceId: aliceInvoice, findingIds: [aliceFinding] }))!;
@@ -557,11 +565,72 @@ describe("caseDetail (the case, its documents, its protocols and its timeline)",
     expect(notMine).toEqual(notThere);
   });
 
+  // **This does not gate the `!userId` guard, and should not be read as if
+  // it did.** The guard is not mutation-testable here: `userId` is `string |
+  // null` inside `withUser`, and every query in `caseDetail` scopes on
+  // `eq(cases.userId, userId)`, so deleting the guard does not compile and
+  // the mutant can never be run. Only `createCase`'s version of this test
+  // gates its own guard - there the mutant *does* typecheck, because the
+  // insert's `userId` field would reach the NOT NULL column and throw a 500
+  // where INV-008 requires the same `null` every other rejection gets. What
+  // this pins is the contract, which is worth pinning on its own: an
+  // anonymous session gets exactly what a stranger gets.
   it("returns null for an anonymous session, whatever the caseId", async () => {
     const scoped = withUser({ userId: alice }, ctx.db);
     const caseId = (await scoped.createCase({ invoiceId: aliceInvoice, findingIds: [aliceFinding] }))!;
     const { scoped: anon } = await anonymousScope(ctx.db);
     expect(await anon.caseDetail(caseId)).toBeNull();
+  });
+
+  // `occurred_at`, `created_at` and `registered_at` all default to `now()`,
+  // which in Postgres is the *transaction's* start time rather than the
+  // statement's - so any writer emitting two rows in one transaction stamps
+  // them with the same instant. That is not a freak case: E5 Task 3's
+  // deadline job writes `deadline_expired` and `stage_advanced` together,
+  // and `closeCase` writes `outcome_confirmed` and `stage_advanced`
+  // together. Ordered on the timestamp alone, tied rows come back in
+  // whatever order the plan happens to produce, and change order when the
+  // plan does - so a person's history would silently rearrange itself.
+  //
+  // Each pair below is inserted in the order the `id` tiebreak reverses, so
+  // a list that returned insertion order (which is what an unordered scan of
+  // a freshly written table gives) fails. The claim is determinism, not
+  // chronology: ids are random, so the tiebreak fixes *an* order, and the
+  // point is that it is always the same one.
+  it("returns tied timestamps in a stable order, in all three lists", async () => {
+    const scoped = withUser({ userId: alice }, ctx.db);
+    const caseId = (await scoped.createCase({ invoiceId: aliceInvoice, findingIds: [aliceFinding] }))!;
+    const at = await anchorOn(ctx.db, caseId);
+
+    await ctx.db.insert(caseDocuments).values([
+      { id: "doc_zz_written_first", caseId, stage: "sac", kind: "sac_script", promptVersion: 1, body: SAMPLE_BODY, createdAt: at(10) },
+      { id: "doc_aa_written_second", caseId, stage: "sac", kind: "gov_text", promptVersion: 1, body: SAMPLE_BODY, createdAt: at(10) },
+    ]);
+    await ctx.db.insert(caseProtocols).values([
+      {
+        id: "prt_zz_written_first", caseId, stage: "sac", protocolNumber: "P-1", channel: "web",
+        registeredAt: at(20), responseDueAt: at(20 + 60 * 24 * 5),
+      },
+      {
+        id: "prt_aa_written_second", caseId, stage: "sac", protocolNumber: "P-2", channel: "web",
+        registeredAt: at(20), responseDueAt: at(20 + 60 * 24 * 5),
+      },
+    ]);
+    // The pair E5 Task 3's deadline job writes, with the single `occurredAt`
+    // one transaction would give them.
+    await ctx.db.insert(events).values([
+      { id: "evt_zz_written_first", caseId, type: "deadline_expired", payload: {}, occurredAt: at(30) },
+      { id: "evt_aa_written_second", caseId, type: "stage_advanced", payload: {}, occurredAt: at(30) },
+    ]);
+
+    const detail = await scoped.caseDetail(caseId);
+    expect(detail?.documents.map((d) => d.id)).toEqual(["doc_aa_written_second", "doc_zz_written_first"]);
+    expect(detail?.protocols.map((p) => p.id)).toEqual(["prt_aa_written_second", "prt_zz_written_first"]);
+    expect(detail?.timeline.map((e) => e.id)).toEqual([
+      (await eventsOfCase(ctx.db, caseId, "case_created"))[0]!.id,
+      "evt_aa_written_second",
+      "evt_zz_written_first",
+    ]);
   });
 });
 
@@ -659,6 +728,55 @@ describe("closeCase (§1.4's north-star metric is fed from here, so it may only 
     expect(await scoped.closeCase(caseId, { outcome: "resolved", recoveredCents: 9_900 })).toBeNull();
 
     expect(await eventsOfCase(ctx.db, caseId, "outcome_confirmed")).toHaveLength(1);
+    expect(await eventsOfCase(ctx.db, caseId, "stage_advanced")).toHaveLength(1);
+  });
+
+  // A close is a stage transition too, and E5 Task 3's abandonment sweep
+  // records `stage_advanced` for exactly this column change. If a user close
+  // wrote only `outcome_confirmed`, one case's history would have a
+  // `stage_advanced` for its move to `closed` and another's would not,
+  // depending on who closed it - and E6, told by Task 2's
+  // `next-stage.table.ts` to recover a case's pre-close stage from "the last
+  // `stage_advanced`" (RF-203), would be right about half of them.
+  it("records the stage it left as a stage_advanced event, beside the outcome", async () => {
+    const { scoped, caseId } = await openCase([aliceFinding]);
+    await ctx.db.update(cases).set({ stage: "sac" }).where(eq(cases.id, caseId));
+
+    await scoped.closeCase(caseId, { outcome: "resolved", recoveredCents: 7_700 });
+
+    const advanced = await eventsOfCase(ctx.db, caseId, "stage_advanced");
+    expect(advanced).toHaveLength(1);
+    expect(advanced[0]).toMatchObject({ userId: alice, invoiceId: aliceInvoice, caseId });
+    // `from` is the stage the case actually left, not the stage it is in now
+    // - it is the whole reason this row exists.
+    expect(advanced[0]?.payload).toEqual({ from: "sac", to: "closed", by: "user", outcome: "resolved" });
+
+    // Exactly one of each, and neither replaces the other: `outcome_confirmed`
+    // says how the dispute ended, `stage_advanced` says which stage it left.
+    expect(await eventsOfCase(ctx.db, caseId, "outcome_confirmed")).toHaveLength(1);
+  });
+
+  // Nothing in the schema pairs `stage = 'closed'` with a non-null
+  // `closed_at`: they are two independent columns, and only `closeCase`
+  // happens to write both. `nextStage` returns `stage: "closed"` with an
+  // outcome for its `resolved` and `user_abandon` events, and E5 Task 5's
+  // `/advance` route applies what it returns - so an advance that writes the
+  // stage and the outcome without stamping `closed_at` produces a case that
+  // is closed by every reading except a guard that only tests `closed_at`.
+  // Closing it again would emit a second `outcome_confirmed` and count the
+  // same recovery twice into §1.4's north-star metric.
+  it("refuses a case already at stage closed, even with closed_at still null", async () => {
+    const { scoped, caseId } = await openCase([aliceFinding]);
+    await ctx.db.update(cases)
+      .set({ stage: "closed", outcome: "resolved", outcomeConfirmedBy: "diff", recoveredCents: 3_000 })
+      .where(eq(cases.id, caseId));
+
+    expect(await scoped.closeCase(caseId, { outcome: "partial", recoveredCents: 4_200 })).toBeNull();
+
+    const [row] = await ctx.db.select().from(cases).where(eq(cases.id, caseId));
+    expect(row).toMatchObject({ stage: "closed", outcome: "resolved", recoveredCents: 3_000, closedAt: null });
+    expect(await eventsOfCase(ctx.db, caseId, "outcome_confirmed")).toHaveLength(0);
+    expect(await eventsOfCase(ctx.db, caseId, "stage_advanced")).toHaveLength(0);
   });
 
   // INV-007: PII is masked before it is persisted, and free text a person
@@ -709,6 +827,12 @@ describe("closeCase (§1.4's north-star metric is fed from here, so it may only 
     expect(row).toMatchObject({ stage: "draft", outcome: null, closedAt: null });
   });
 
+  // Same caveat as `caseDetail`'s: this pins the contract, not the guard.
+  // `userId` is `string | null` inside `withUser` and the UPDATE scopes on
+  // `eq(cases.userId, userId)`, so a build without the `!userId`
+  // short-circuit does not typecheck and the mutant cannot be run. Only
+  // `createCase`'s anonymous-session test gates its own guard, because there
+  // the mutant compiles and reaches `cases.user_id` NOT NULL.
   it("returns null for an anonymous session", async () => {
     const { caseId } = await openCase([aliceFinding]);
     const { scoped: anon } = await anonymousScope(ctx.db);

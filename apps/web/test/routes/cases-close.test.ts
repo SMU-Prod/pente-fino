@@ -61,8 +61,8 @@ beforeEach(async () => {
     { id: bob, email: "bob@example.com" },
   ]);
   await ctx.db.insert(anonymousSessions).values([
-    { id: sessionA, claimedByUserId: alice, expiresAt: new Date(Date.now() + 60_000) },
-    { id: sessionB, claimedByUserId: bob, expiresAt: new Date(Date.now() + 60_000) },
+    { id: sessionA, claimedByUserId: alice, expiresAt: new Date(Date.now() + 60 * 60_000) },
+    { id: sessionB, claimedByUserId: bob, expiresAt: new Date(Date.now() + 60 * 60_000) },
   ]);
 
   issuerId = newId("iss");
@@ -303,6 +303,34 @@ describe("POST /api/cases/[id]/close", () => {
     expect(await response.json()).toEqual(NOT_FOUND_BODY);
     const [row] = await caseRow(aliceCaseId);
     expect(row?.closedAt).toBeNull();
+  });
+
+  // `note` had a 2 000-character cap and no test at all, which is the same
+  // thing as no cap: nothing downstream bounds it either. `closeCase` puts
+  // the note into `events.payload`, a `jsonb` column with no length limit,
+  // so an unbounded string is persisted verbatim, forever, on a row every
+  // read of the case's timeline carries back out. The pair below is what
+  // makes the number real - one over is refused, the cap itself is accepted,
+  // so neither deleting the `.max()` nor lowering it can stay unnoticed.
+  it("rejects a note longer than the cap, and accepts one exactly at it", async () => {
+    useCookies(createCookieStore({ pf_session: signSession(sessionA, SECRET) }));
+
+    const overCap = await POST(
+      request(aliceCaseId, { outcome: "resolved", recoveredCents: 5_000, note: "a".repeat(2_001) }),
+      ctxFor(aliceCaseId),
+    );
+
+    expect(overCap.status).toBe(404);
+    expect(await overCap.json()).toEqual(NOT_FOUND_BODY);
+    const [stillOpen] = await caseRow(aliceCaseId);
+    expect(stillOpen?.closedAt).toBeNull();
+    expect(await closeEvents(aliceCaseId)).toHaveLength(0);
+
+    const atCap = await POST(
+      request(aliceCaseId, { outcome: "resolved", recoveredCents: 5_000, note: "a".repeat(2_000) }),
+      ctxFor(aliceCaseId),
+    );
+    expect(atCap.status).toBe(200);
   });
 
   it("rejects malformed JSON the same way, never as a 500", async () => {

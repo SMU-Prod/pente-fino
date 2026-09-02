@@ -60,6 +60,19 @@ const Body = z.object({
  * close through - would emit a second `outcome_confirmed` and double-count
  * the north-star metric on exactly the cases someone clicked twice.
  *
+ * **What that costs, so it is not discovered later as a surprise.** The
+ * guard does not distinguish "already closed by this person" from "already
+ * closed by the system". E5 Task 3's sweep closes a case as `abandoned`
+ * after 60 days without user action; if the refund lands on day 61 and the
+ * person comes here to say so, this route answers `not_found` and their
+ * money never reaches §1.4's metric. That is the deliberate trade - a
+ * one-shot close is the only thing that keeps the metric from being
+ * inflatable by a double click - and the intended way out is E6's
+ * `case_reopened` (RF-203 already reopens a closed case for a different
+ * reason), not a second close. Until that exists, a late recovery on an
+ * abandoned case is unrecordable, and no code path here should pretend
+ * otherwise.
+ *
  * **INV-008**, the same split every case route draws: `forbidden` for "no
  * valid session was presented at all", `not_found` for everything else -
  * a case belonging to somebody else, a case that never existed, an already

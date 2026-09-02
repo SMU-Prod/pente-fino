@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { newId } from "@pentefino/core";
 import { createTestDb, schema, type TestDb } from "@pentefino/db/testing";
 import { signSession } from "../../lib/session.js";
@@ -59,6 +59,17 @@ async function seedFinding(db: TestDb["db"], invoiceId: string) {
   return id;
 }
 
+// Bulk version, for the one test that needs more findings than the route's
+// cap allows. One statement rather than N, because the point of that test is
+// the route's schema, not how fast PGlite inserts.
+async function seedFindings(db: TestDb["db"], invoiceId: string, count: number) {
+  const ids = Array.from({ length: count }, () => newId("fnd"));
+  await db.insert(findings).values(ids.map((id) => ({
+    id, invoiceId, ruleId, ruleVersion: 1, confidence: 0.9, amountCents: 1_000,
+  })));
+  return ids;
+}
+
 // Scoped to the user under test rather than reading the whole table:
 // `createTestDb` runs `seedAll`, and a seed that one day ships a case would
 // otherwise turn these assertions red for a reason that is not this route's.
@@ -76,9 +87,9 @@ beforeEach(async () => {
     { id: bob, email: "bob@example.com" },
   ]);
   await ctx.db.insert(anonymousSessions).values([
-    { id: sessionA, claimedByUserId: alice, expiresAt: new Date(Date.now() + 60_000) },
-    { id: sessionB, claimedByUserId: bob, expiresAt: new Date(Date.now() + 60_000) },
-    { id: sessionAnon, expiresAt: new Date(Date.now() + 60_000) },
+    { id: sessionA, claimedByUserId: alice, expiresAt: new Date(Date.now() + 60 * 60_000) },
+    { id: sessionB, claimedByUserId: bob, expiresAt: new Date(Date.now() + 60 * 60_000) },
+    { id: sessionAnon, expiresAt: new Date(Date.now() + 60 * 60_000) },
   ]);
 
   issuerId = newId("iss");
@@ -296,15 +307,32 @@ describe("POST /api/cases", () => {
     expect(await casesOf(alice)).toHaveLength(0);
   });
 
-  it("rejects more findingIds than one contestation can plausibly name, never as a 500", async () => {
+  // The ids below are **real** contestable findings on the caller's own
+  // invoice, 201 of them, and that is the whole design of this test. Written
+  // with fabricated ids it proved nothing: `createCase` rejects those on its
+  // own (they match no row), so the assertion stayed green with
+  // `MAX_FINDING_IDS` deleted from the route entirely - a cap that gated
+  // nothing, guarded by a test that could never say so. With real ones, the
+  // schema's `.max()` is the only thing between a 201-item request and a
+  // case, so deleting it turns this red.
+  //
+  // The second half pins the boundary from the other side: a cap set too low
+  // is as wrong as no cap, and only a request *at* the limit can tell.
+  it("rejects more findingIds than one contestation can plausibly name, and accepts the cap itself", async () => {
     useCookies(createCookieStore({ pf_session: signSession(sessionA, SECRET) }));
+    const many = await seedFindings(ctx.db, aliceInvoice, 201);
 
-    const response = await POST(request({
-      invoiceId: aliceInvoice,
-      findingIds: Array.from({ length: 201 }, () => newId("fnd")),
-    }));
+    const overCap = await POST(request({ invoiceId: aliceInvoice, findingIds: many }));
 
-    expect(response.status).toBe(404);
-    expect(await response.json()).toEqual(NOT_FOUND_BODY);
+    expect(overCap.status).toBe(404);
+    expect(await overCap.json()).toEqual(NOT_FOUND_BODY);
+    expect(await casesOf(alice)).toHaveLength(0);
+    // Nothing was taken on the way out either: a rejected request must not
+    // have flipped anything to `contested`.
+    const after = await ctx.db.select().from(findings).where(inArray(findings.id, many));
+    expect(after.filter((f) => f.status !== "open")).toEqual([]);
+
+    const atCap = await POST(request({ invoiceId: aliceInvoice, findingIds: many.slice(0, 200) }));
+    expect(atCap.status).toBe(201);
   });
 });

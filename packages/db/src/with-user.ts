@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, isNull } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, ne } from "drizzle-orm";
 import { maskText, newId, newPublicToken, type CaseOutcome, type ContestDocument, type EventType, type Stage } from "@pentefino/core";
 import { getUnscopedDb } from "./client.js";
 import {
@@ -63,6 +63,22 @@ const VISIBLE_FINDING_STATUSES = ["open", "confirmed_by_user", "contested", "unr
  *   - `unresolved` stays in: a dispute that ended without fixing the charge
  *     leaves the money exactly as live as `open` did, just with a failed
  *     attempt behind it, so escalating again is the whole point of E5.
+ *
+ * **The obligation this list puts on every path that closes a case.**
+ * Excluding `contested` here is only safe while something always moves a
+ * finding *out* of `contested` when its case ends. `closeCase` below is the
+ * only code in this repo that does, and it is a `withUser` method - a system
+ * job with no user session cannot reach it. So a job that closes a case by
+ * writing `cases` directly (E5 Task 3's day-60 abandonment sweep is the one
+ * being built) and leaves `findings` alone strands those findings in
+ * `contested` permanently: `VISIBLE_FINDING_STATUSES` keeps showing them on
+ * the report as if a dispute were still running, and this list refuses to
+ * let them into a new case, so the person can never contest that money
+ * again. It is a dead end with no way out from the product, on exactly the
+ * charges §1.4's north-star metric is counted from. Any path that closes a
+ * case must settle its findings in the same transaction - `resolved` for a
+ * `resolved` outcome, `unresolved` for the rest, which is what `closeCase`
+ * does.
  */
 const CONTESTABLE_FINDING_STATUSES = ["open", "confirmed_by_user", "unresolved"] as const;
 
@@ -520,6 +536,24 @@ export function withUser(session: Session, db: Db = getUnscopedDb()) {
      * "all of them did". `findings.id` is the primary key, so N rows back
      * for N deduped ids means every one of them passed.
      *
+     * **The SELECT names the invoice twice, and both have to stay.** The
+     * inner join is `findings.invoice_id = invoices.id`, so with it in place
+     * `eq(invoices.id, input.invoiceId)` and `eq(findings.invoiceId,
+     * input.invoiceId)` say the same thing about the same row: delete either
+     * one on its own and no test in this repo changes colour. That is
+     * precisely how both get deleted - one as "obviously redundant", the
+     * other later for the same reason - so it is written down here. Jointly
+     * they are the only thing tying the case to the invoice it claims to be
+     * about: with neither, `ownsInvoice` still holds (it is a predicate on
+     * `invoices`) and the count test still passes, but the caller may fill
+     * the case with findings from *any other invoice of their own* while
+     * `cases.invoiceId` says this one, and `issuerId` is then read off
+     * whichever row came back first - a case addressed to the wrong company
+     * about charges on a different bill. The test that goes red is "refuses
+     * a finding of a different invoice of the same owner". Keep them as a
+     * pair; `ownsInvoice` is the separate half that stops another *person's*
+     * findings, and neither half substitutes for the other.
+     *
      * **Issuer.** `cases.issuerId` is NOT NULL, and a case with no issuer
      * has no playbook (§20.2) to walk, so an owned invoice whose issuer was
      * never detected (RF-105/RF-106 leaves `invoices.issuerId` nullable)
@@ -545,17 +579,44 @@ export function withUser(session: Session, db: Db = getUnscopedDb()) {
      * would serialise the two callers too, but it would put the lock in a
      * statement that is not the one that has to hold it.
      *
-     * **The two WHEREs are deliberately not identical.** The UPDATE carries
-     * only what it has to decide for itself - `shadow = false` and the
-     * contestable status list - and omits the invoice and ownership
-     * predicates, because the SELECT above already proved those about the
-     * very same ids. What the write therefore guarantees on its own is
+     * **The two WHEREs are deliberately not identical.** The UPDATE omits
+     * the invoice and ownership predicates because the SELECT above already
+     * proved those about the very same ids, and it re-states the contestable
+     * status list because that is the one thing that can have *changed*
+     * between the two statements - another case taking the finding. That
+     * status list is the load-bearing half. `shadow = false` is carried
+     * along with it but decides nothing here: `findings.shadow` is written
+     * once, at insert (`apps/jobs/src/tasks/ingest.ts`), and no statement in
+     * this repo ever updates it, so a row the SELECT already excluded as
+     * shadow cannot have become non-shadow by the time the UPDATE runs. It
+     * is kept because a WHERE that mirrors the contestability rule in full
+     * is easier to keep true than one that has been pruned to the subset
+     * that happens to matter today - but nobody should read it as a second
+     * gate. What the write guarantees on its own is
      * narrow but exact: no finding can enter two cases, whoever asks. What
      * it does *not* guarantee is ownership - a future caller that skipped
      * the SELECT could flip and contest another user's findings, since
      * nothing in this UPDATE mentions `invoices` at all. The SELECT is the
      * only thing standing between `findingIds` and INV-008, which is why it
      * is not an optimisation to be dropped later.
+     *
+     * **Several live cases may exist on one invoice, on purpose.** Nothing
+     * here - and no constraint in `packages/db/src/schema.ts` - stops a
+     * second `createCase` on the same `invoiceId` while the first case is
+     * still open, and a test in `packages/db/test/cases.test.ts` now depends
+     * on that ("does not touch findings of another case that shares the
+     * invoice"). It is allowed because one bill can carry two arguments that
+     * have nothing to do with each other - an SVA nobody signed up for and a
+     * plan charged at the wrong price - and forcing them into one case would
+     * make the person drop one to pursue the other, or withdraw both to
+     * settle either. What is *not* allowed is the same money in two cases,
+     * and that is the invariant `CONTESTABLE_FINDING_STATUSES` excluding
+     * `contested` enforces, per finding rather than per invoice. The cost is
+     * real and is accepted knowingly: two cases on one bill are two
+     * escalation ladders against the same company, two clocks in E5 Task 3's
+     * deadline scan and two dossiers in Task 7 - so anything walking cases
+     * must handle siblings sharing an `invoiceId`, and must not assume it
+     * can find "the" case for an invoice.
      *
      * Every rejection returns the same `null` - not owned, does not exist,
      * already contested, no issuer, and a lost race - so the caller (and
@@ -677,15 +738,39 @@ export function withUser(session: Session, db: Db = getUnscopedDb()) {
      * HTTP response, can never tell the two apart.
      *
      * **The timeline is NOT filtered by `ownsEvent`, and must not be.** It
-     * is deliberately scoped on `events.caseId` alone. E5 Task 3's deadline
-     * scan is a *system* caller with no user session: the `deadline_expired`
-     * and `stage_advanced` rows it writes carry neither `userId` nor
-     * `sessionId`, so an `ownsEvent` filter here would silently drop exactly
-     * those - the only events on the timeline that nobody else records - and
-     * a case would look as though its deadline had never passed. This is the
-     * kind of filter that gets added later as a free extra safety; it is not
-     * free, and the ownership it would duplicate has already been proved on
-     * the case one query earlier.
+     * is deliberately scoped on `events.caseId` alone, because ownership was
+     * already settled one query earlier - on the case itself, which is the
+     * row that actually has an owner. A per-event owner filter could
+     * therefore only ever remove rows that belong on this case's history,
+     * and what it would remove is decided by which writer happened to stamp
+     * a `userId` on them: `events.user_id` is nullable, system jobs have no
+     * user session to stamp from, and nothing constrains a row carrying this
+     * `caseId` to carry this `userId` too. Adding the filter would make the
+     * completeness of a person's own history depend on a column no writer is
+     * obliged to fill - a case whose deadline expired could simply stop
+     * saying so. (Do not restate this as a claim about what any particular
+     * job writes today: E5 Task 3's `record()` helper does stamp `userId`
+     * alongside `caseId` and `invoiceId` on every row, so "the deadline job
+     * writes no `userId`" would be false, and a contributor who checked it,
+     * found it false and "fixed" the comment by adding the owner filter
+     * would be undoing the decision this paragraph exists to protect. The
+     * reason is the one above, which does not depend on any writer's habits.)
+     *
+     * **Each list is ordered by its timestamp *and its id*.** `occurred_at`,
+     * `created_at` and `registered_at` all default to `now()`, which in
+     * Postgres is the *transaction's* start time, not the statement's - so
+     * any writer emitting two rows in one transaction stamps them
+     * identically. E5 Task 3's deadline job does exactly that, writing
+     * `deadline_expired` and `stage_advanced` together, and `closeCase`
+     * below writes `outcome_confirmed` and `stage_advanced` in one
+     * transaction for the same reason. On the timestamp alone Postgres is
+     * free to return tied rows in any order, and will change its mind as
+     * soon as the plan changes, so "the deadline expired, then the stage
+     * advanced" would read backwards at random. The `id` tiebreak makes the
+     * order total and therefore stable; it is not a *chronological* claim
+     * about tied rows (ids are random), only a deterministic one. E5 Task
+     * 7's dossier already orders by `(occurredAt, id)`, so this is also what
+     * keeps the two views of one history from disagreeing.
      */
     async caseDetail(caseId: string) {
       if (!userId) return null;
@@ -731,7 +816,7 @@ export function withUser(session: Session, db: Db = getUnscopedDb()) {
         })
           .from(caseDocuments)
           .where(eq(caseDocuments.caseId, caseId))
-          .orderBy(caseDocuments.createdAt),
+          .orderBy(caseDocuments.createdAt, caseDocuments.id),
 
         db.select({
           id: caseProtocols.id,
@@ -751,7 +836,7 @@ export function withUser(session: Session, db: Db = getUnscopedDb()) {
           // `registeredAt` is when the company actually recorded the
           // protocol, which is the order a person reads their own history
           // in - not `createdAt`, which is only when this app got told.
-          .orderBy(caseProtocols.registeredAt),
+          .orderBy(caseProtocols.registeredAt, caseProtocols.id),
 
         db.select({
           id: events.id,
@@ -765,7 +850,7 @@ export function withUser(session: Session, db: Db = getUnscopedDb()) {
         })
           .from(events)
           .where(eq(events.caseId, caseId))
-          .orderBy(events.occurredAt),
+          .orderBy(events.occurredAt, events.id),
       ]);
 
       return { case: row, documents, protocols, timeline };
@@ -777,14 +862,32 @@ export function withUser(session: Session, db: Db = getUnscopedDb()) {
      * actually stored, even though the `outcome_confirmed` event is written
      * here rather than by the route.
      *
-     * **Once, and only once.** `isNull(cases.closedAt)` is folded into the
-     * same predicate as the ownership check rather than tested beforehand,
-     * so the close is decided by the write itself and two concurrent calls
-     * cannot both win it. A second close therefore returns the same `null` a
-     * wrong owner gets, and can never emit a second `outcome_confirmed` -
-     * `recoveredCents` feeds §1.4's north-star metric ("R$ recuperados"),
-     * and a case that could report its recovery twice would inflate the one
-     * number this product is measured by.
+     * **Once, and only once.** `isNull(cases.closedAt)` *and* `ne(cases.stage,
+     * "closed")` are folded into the same predicate as the ownership check
+     * rather than tested beforehand, so the close is decided by the write
+     * itself and two concurrent calls cannot both win it. A second close
+     * therefore returns the same `null` a wrong owner gets, and can never
+     * emit a second `outcome_confirmed` - `recoveredCents` feeds §1.4's
+     * north-star metric ("R$ recuperados"), and a case that could report its
+     * recovery twice would inflate the one number this product is measured
+     * by.
+     *
+     * **Why both halves, when either looks sufficient.** Nothing in the
+     * schema pairs them: `cases.stage = 'closed'` and `closed_at IS NOT
+     * NULL` are two independent columns, and the only CHECK on `stage` is
+     * its value list. This method writes both together, so on rows it wrote
+     * the two are equivalent - and that is exactly why one of them alone is
+     * a bad guard, because the rows that matter are the ones *something
+     * else* wrote. `nextStage` returns `stage: "closed"` with an outcome for
+     * its `resolved` and `user_abandon` events, and E5 Task 5's `/advance`
+     * route applies whatever it returns: an advance that writes `stage` and
+     * `outcome` without stamping `closed_at` produces a case that is closed
+     * by every reading except this predicate's, and `isNull(closedAt)` alone
+     * would happily close it again - a second `outcome_confirmed`, and the
+     * same recovery counted twice into the metric. `ne(stage, "closed")`
+     * covers that row; `isNull(closedAt)` covers the mirror case of a writer
+     * that stamps the timestamp without moving the stage. Neither is
+     * redundant until the schema makes them so.
      *
      * **What happens to the findings.** Findings this case named and that are
      * still `contested` become `resolved` on a `resolved` outcome and
@@ -797,6 +900,21 @@ export function withUser(session: Session, db: Db = getUnscopedDb()) {
      * report, with a failed attempt behind it. The `contested` filter keeps
      * this case to its own business: a finding some other write already
      * settled is not this close's to move.
+     *
+     * **The findings UPDATE is scoped by `id ∈ case.findingIds AND status =
+     * 'contested'` and by nothing else** - not by the case, because
+     * `findings` has no `case_id`. It is safe only because of one invariant
+     * held elsewhere: a finding can be `contested` by at most one case at a
+     * time, which is what `CONTESTABLE_FINDING_STATUSES` excluding
+     * `contested` gives `createCase`. Take that away and this statement
+     * settles findings that belong to somebody's *other*, still-running
+     * case. E6's `case_reopened` is the change that will take it away: a
+     * reopen that clears `closed_at` without putting its findings back to
+     * `contested` - or one that puts them back while a newer case is already
+     * contesting them - lets this close reach findings it never named a
+     * second time. Whoever builds `case_reopened` owns keeping the
+     * one-case-per-finding invariant true, or this UPDATE needs a narrower
+     * scope than `findings` can currently express.
      *
      * **Why this method records its own event**, when `editCaseDocument`
      * leaves `contest_edited` to its route: the close is deliberately
@@ -811,6 +929,41 @@ export function withUser(session: Session, db: Db = getUnscopedDb()) {
      * straight against `tx`; `recordEvent` above closes over the
      * non-transactional `db` and would commit independently, which is
      * exactly the split this avoids.
+     *
+     * **And why it also writes `stage_advanced`, which no brief asked for.**
+     * This close moves `cases.stage` to `closed` and restamps
+     * `stageEnteredAt` - a stage transition, by every definition the rest of
+     * E5 uses. E5 Task 3's abandonment sweep records `stage_advanced` for
+     * that same column change, and Task 2's `next-stage.table.ts` instructs
+     * E6 to recover a case's pre-close stage from "the last `stage_advanced`"
+     * (RF-203 needs it: reopening a case has to know what to reopen it
+     * *to*). If a user close wrote only `outcome_confirmed`, the trail would
+     * have two different shapes for one column change depending on who
+     * closed the case, and every reader would have to know both - or, more
+     * likely, know one and be quietly wrong about the other half of the
+     * cases. So both rows are written here, in the one transaction:
+     * `outcome_confirmed` unchanged, saying how the dispute ended, and
+     * `stage_advanced` carrying `from` (the stage this case actually left)
+     * and `to: "closed"`. `from` is read under `FOR UPDATE` so it cannot be
+     * a stale guess - the lock is only about the accuracy of that payload;
+     * the UPDATE below is still the sole decider of whether the close
+     * happens at all.
+     *
+     * **This is the only code that moves findings out of `contested`, and
+     * that is a problem for whoever closes a case without it.** `closeCase`
+     * is a `withUser` method, so a system job with no user session cannot
+     * call it. E5 Task 3's day-60 abandonment sweep closes cases directly
+     * against `cases`; unless it also settles `findings`, the findings those
+     * cases named stay `contested` forever. Nothing else ever changes them:
+     * they keep appearing on the report as actively disputed
+     * (`VISIBLE_FINDING_STATUSES` includes `contested`), and they can never
+     * enter another case (`CONTESTABLE_FINDING_STATUSES` excludes it). The
+     * money is then unrecoverable through the product - on exactly the
+     * charges §1.4's north-star metric is counted from, and for the people
+     * whose case was abandoned because nothing happened, who are the least
+     * likely to be told why. Any path that closes a case must settle its
+     * findings in the same transaction, with the same mapping this method
+     * uses.
      *
      * **`note` is masked here, not by the caller.** `cases` has no column
      * for it, so it lives only in the event payload - but INV-007 says PII
@@ -846,6 +999,19 @@ export function withUser(session: Session, db: Db = getUnscopedDb()) {
       }
       const now = new Date();
       return db.transaction(async (tx) => {
+        // Read only for `stage_advanced`'s `from`: Postgres before 18 cannot
+        // return a column's pre-UPDATE value, and the stage this case is
+        // leaving is the one thing the close destroys. `FOR UPDATE` takes the
+        // row lock here so a concurrent advance cannot move the stage between
+        // this read and the UPDATE and leave the payload naming a stage the
+        // case had already left. Ownership is folded in so a foreign case id
+        // locks nothing; whether the close happens is still decided entirely
+        // by the UPDATE's own predicate below, which is what makes a second
+        // close impossible rather than merely unlikely.
+        const [before] = await tx.select({ stage: cases.stage })
+          .from(cases)
+          .where(and(eq(cases.id, caseId), eq(cases.userId, userId)))
+          .for("update");
         const [updated] = await tx.update(cases)
           .set({
             stage: "closed",
@@ -860,7 +1026,12 @@ export function withUser(session: Session, db: Db = getUnscopedDb()) {
             nextDeadlineAt: null,
             updatedAt: now,
           })
-          .where(and(eq(cases.id, caseId), eq(cases.userId, userId), isNull(cases.closedAt)))
+          .where(and(
+            eq(cases.id, caseId),
+            eq(cases.userId, userId),
+            isNull(cases.closedAt),
+            ne(cases.stage, "closed"),
+          ))
           .returning();
         if (!updated) return null;
         await tx.update(findings)
@@ -881,6 +1052,19 @@ export function withUser(session: Session, db: Db = getUnscopedDb()) {
             confirmedBy: "user",
             ...(input.note === undefined ? {} : { note: maskText(input.note) }),
           },
+        });
+        // The same column change E5 Task 3's abandonment close records, so a
+        // user close and a system close leave one shape of trail rather than
+        // two. `from` is what E6's `case_reopened` reads to know which stage
+        // to put the case back into (RF-203); `by` is what tells the two
+        // apart without having to join back to `cases.outcome_confirmed_by`.
+        await tx.insert(events).values({
+          id: newId("evt"),
+          userId,
+          invoiceId: updated.invoiceId,
+          caseId: updated.id,
+          type: "stage_advanced" satisfies EventType,
+          payload: { from: before?.stage ?? null, to: "closed", by: "user", outcome: updated.outcome },
         });
         return updated;
       });
