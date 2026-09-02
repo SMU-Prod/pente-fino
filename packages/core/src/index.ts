@@ -6,8 +6,9 @@ export type { Finding } from "./rules/finding.js";
 export { STAGES, type Stage, type Playbook } from "./cases/playbook.js";
 export { ContestDocument } from "./documents/contest.js";
 export {
-  assembleContest, MANDATORY_SCRIPT_ITEMS,
+  assembleContest, collectExpiredDeadlines, expiredDeadlineSentence, MANDATORY_SCRIPT_ITEMS,
   type AssembleContestInput, type AssembledContest, type RecordedProtocol,
+  type ExpiredDeadline, type CaseProtocolRecord, type CaseEventRecord,
 } from "./documents/assemble.js";
 export {
   buildDossier, DOSSIER_FIXED_STRINGS,

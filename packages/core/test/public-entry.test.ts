@@ -58,6 +58,14 @@ describe("the public entry point", () => {
       "formatCentsBRL",
       "formatUtcDate",
       "formatIsoDateOrUnknown",
+      // RF-182: the protocol route and the contest generator both live
+      // outside this package and both reach these through the barrel —
+      // `collectExpiredDeadlines` turns a case's own rows into
+      // `deadlinesExpired`, `expiredDeadlineSentence` is the sentence
+      // RF-182's acceptance looks for.
+      "assembleContest",
+      "collectExpiredDeadlines",
+      "expiredDeadlineSentence",
     ];
     const missing = expected.filter((name) => !(name in core));
     expect(missing).toEqual([]);

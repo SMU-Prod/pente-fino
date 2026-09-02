@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { assembleContest } from "@pentefino/core";
+import { assembleContest, collectExpiredDeadlines, computeDeadline } from "@pentefino/core";
 import type { Finding, Playbook } from "@pentefino/core";
 import type { LegalRef } from "@pentefino/core";
 import type { AiUsage } from "@pentefino/core/ports";
@@ -262,5 +262,130 @@ describe("generateContestDocument · deterministic fields are attached verbatim,
     const { document } = await generateContestDocument(baseInput(), PROMPT_BODY, generate);
     const { ContestDocument } = await import("@pentefino/core");
     expect(() => ContestDocument.parse(document)).not.toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// RF-182 — "Ao avançar por prazo vencido, o gerador recebe `deadlinesExpired`
+// e o texto sai com canal, protocolo e datas."
+// Aceite: "documento contém a frase com número de protocolo e as duas datas."
+//
+// Every assertion here reads the PRODUCED DOCUMENT. A test that asserted the
+// field reached `generate` would pass just as happily against a generator
+// that ignored it, which is exactly the outcome RF-182 exists to rule out —
+// so the one assertion of that shape below is labelled as covering RF-182's
+// *other* half (the literal "o gerador recebe") and is deliberately not the
+// acceptance.
+// ---------------------------------------------------------------------------
+describe("RF-182 · the escalation document names the channel, the protocol and both dates", () => {
+  const REGISTERED_AT = new Date("2026-08-05T15:00:00.000Z");
+  const EXPIRED_AT = computeDeadline({ startedAt: REGISTERED_AT, days: 7, businessDays: false }).expiresAt;
+
+  // Built the way the protocol route builds it: from the case's own
+  // `case_protocols` row and its own `deadline_expired` event.
+  const deadlinesExpired = collectExpiredDeadlines({
+    protocols: [{
+      stage: "sac",
+      protocolNumber: "2026080512345",
+      channel: "SAC da operadora",
+      registeredAt: REGISTERED_AT,
+      responseDueAt: EXPIRED_AT,
+    }],
+    events: [{ type: "deadline_expired", occurredAt: new Date("2026-08-14T09:00:00.000Z"), payload: { stage: "sac" } }],
+  });
+
+  function escalatingInput(): ContestPromptInput {
+    return {
+      issuerName: "Claro Móvel",
+      assembled: assembleContest({
+        findings: [findingWith([CDC_ART_39])],
+        stage: "consumidor_gov",
+        playbook: TELECOM_PLAYBOOK,
+        deadlinesExpired,
+      }),
+      findings: [],
+    };
+  }
+
+  it("the produced document contains the protocol number", async () => {
+    const { document } = await generateContestDocument(escalatingInput(), PROMPT_BODY, fixedGenerate(CLEAN_DRAFT));
+    expect(JSON.stringify(document)).toContain("2026080512345");
+  });
+
+  it("the produced document contains the date the protocol was registered", async () => {
+    const { document } = await generateContestDocument(escalatingInput(), PROMPT_BODY, fixedGenerate(CLEAN_DRAFT));
+    expect(JSON.stringify(document)).toContain("05/08/2026");
+  });
+
+  it("the produced document contains the date the deadline expired", async () => {
+    const { document } = await generateContestDocument(escalatingInput(), PROMPT_BODY, fixedGenerate(CLEAN_DRAFT));
+    expect(JSON.stringify(document)).toContain("12/08/2026");
+  });
+
+  it("the produced document names the channel", async () => {
+    const { document } = await generateContestDocument(escalatingInput(), PROMPT_BODY, fixedGenerate(CLEAN_DRAFT));
+    expect(JSON.stringify(document)).toContain("SAC da operadora");
+  });
+
+  // The acceptance's own wording: one sentence carrying all four facts, not
+  // four facts scattered across a document where no reader would connect
+  // them.
+  it("carries all of it in one sentence, verbatim from assembleContest", async () => {
+    const input = escalatingInput();
+    const { document } = await generateContestDocument(input, PROMPT_BODY, fixedGenerate(CLEAN_DRAFT));
+    expect(document.escalationHistory).toEqual(input.assembled.escalationHistory);
+    expect(document.escalationHistory?.[0]).toBe(
+      "Protocolo 2026080512345, registrado no canal SAC da operadora em 05/08/2026: " +
+      "o prazo de resposta terminou em 12/08/2026 sem resposta dentro do prazo.",
+    );
+  });
+
+  // The model is never trusted with these facts. A draft that invents its
+  // own protocol number and dates changes nothing about what the document
+  // states, because `escalationHistory` never passes through the model at
+  // all — the same guarantee `legalRefs` has under RF-161.
+  it("a model that invents its own numbers cannot change what the document states", async () => {
+    const lyingDraft: ContestDraft = {
+      subject: "Contestação de cobrança",
+      body: CLEAN_BODY,
+      scriptForCall: ["Cite o protocolo 000000000 registrado em 01/01/2020."],
+    };
+    const { document } = await generateContestDocument(escalatingInput(), PROMPT_BODY, fixedGenerate(lyingDraft));
+    expect(document.escalationHistory?.[0]).toContain("2026080512345");
+    expect(document.escalationHistory?.[0]).toContain("12/08/2026");
+  });
+
+  // RF-182's other half, and the one place asserting on the plumbing is the
+  // right thing to assert: "o gerador recebe `deadlinesExpired`".
+  it("the generator receives the structured deadlinesExpired entries", async () => {
+    let received: ContestPromptInput | undefined;
+    const spy: GenerateContestFn = async (input) => {
+      received = input;
+      return { draft: CLEAN_DRAFT, usage: FAKE_USAGE };
+    };
+    await generateContestDocument(escalatingInput(), PROMPT_BODY, spy);
+    expect(received?.assembled.deadlinesExpired).toEqual(deadlinesExpired);
+  });
+
+  it("a case that is not escalating on an expiry produces an empty escalationHistory", async () => {
+    const { document } = await generateContestDocument(baseInput(), PROMPT_BODY, fixedGenerate(CLEAN_DRAFT));
+    expect(document.escalationHistory).toEqual([]);
+  });
+
+  // RF-162's gate runs over this field too. The variable parts are a channel
+  // name and a protocol number a person typed into a form, so a forbidden
+  // term can genuinely arrive here — and a document is never shown with one
+  // in it, whichever field it landed in.
+  it("a forbidden term reaching escalationHistory fails the lint gate like any other field", async () => {
+    const tainted: ContestPromptInput = {
+      issuerName: "Claro Móvel",
+      assembled: {
+        ...assembleContest({ findings: [findingWith([CDC_ART_39])], stage: "consumidor_gov", playbook: TELECOM_PLAYBOOK }),
+        escalationHistory: ["Protocolo 123, aberto pelo meu advogado em 05/08/2026."],
+      },
+      findings: [],
+    };
+    await expect(generateContestDocument(tainted, PROMPT_BODY, fixedGenerate(CLEAN_DRAFT)))
+      .rejects.toThrow(ContestGenerationError);
   });
 });
