@@ -77,6 +77,12 @@ export async function seedIssuers(db: Database): Promise<void> {
         cnpj: entry.cnpj,
         aliases: [...entry.aliases],
         sections: [...entry.sections],
+        // Filled in by `seedPlaybooks`, which runs straight after this one
+        // and writes §20.2's telecom playbook onto every telecom issuer
+        // whose column is still null. Kept out of this upsert on purpose:
+        // an issuer's identity is seed data that may be corrected here,
+        // while its playbook is configuration an operator may tune, and a
+        // redeploy must not overwrite the second.
         playbook: null,
         status: "active",
       })

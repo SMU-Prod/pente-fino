@@ -38,6 +38,56 @@ describe("seeds", () => {
     expect(await ctx.db.select().from(schema.issuers)).toHaveLength(6);
   });
 
+  it("gives every telecom issuer §20.2's playbook, so a live issuer can produce a deadline", async () => {
+    await seedAll(ctx.db);
+    const rows = await ctx.db.select().from(schema.issuers);
+    const withoutPlaybook = rows.filter((r) => r.playbook === null).map((r) => r.slug);
+    expect(withoutPlaybook).toEqual([]);
+  });
+
+  it("carries §20.2's response days and business-day flags onto the row (RF-181)", async () => {
+    await seedAll(ctx.db);
+    const [vivo] = await ctx.db.select().from(schema.issuers)
+      .where(eq(schema.issuers.slug, "vivo-movel"));
+    const stages = vivo?.playbook?.stages ?? [];
+    expect(stages.map((s) => s.stage)).toEqual(["sac", "consumidor_gov", "regulator", "jec_ready"]);
+    expect(stages.find((s) => s.stage === "sac"))
+      .toMatchObject({ responseDays: 7, businessDays: false });
+    expect(stages.find((s) => s.stage === "regulator"))
+      .toMatchObject({ responseDays: 5, businessDays: true });
+  });
+
+  it("carries §20.2's legal references through the jsonb round trip (RF-161)", async () => {
+    // E4's `assembleContest` is forbidden from inventing a legal reference,
+    // so the ones a document may cite have to survive being stored and read
+    // back exactly — accents, section signs and all.
+    await seedAll(ctx.db);
+    const [claro] = await ctx.db.select().from(schema.issuers)
+      .where(eq(schema.issuers.slug, "claro-movel"));
+    expect(claro?.playbook?.stages.find((s) => s.stage === "sac")?.legalRefs).toEqual([
+      { law: "Decreto 11.034/2022", article: "art. 13 e §3º", effect: "suspensao" },
+      { law: "Decreto 11.034/2022", article: "art. 12, §2º e §3º", effect: "limite" },
+    ]);
+    expect(claro?.playbook?.stages.find((s) => s.stage === "consumidor_gov")?.deepLink)
+      .toBe("https://www.consumidor.gov.br/pages/reclamacao/abrir");
+  });
+
+  it("never overwrites a playbook an operator has tuned for one issuer", async () => {
+    await seedAll(ctx.db);
+    const tuned = { stages: [], notes: "ajustado pela operação" };
+    await ctx.db.update(schema.issuers).set({ playbook: tuned })
+      .where(eq(schema.issuers.slug, "oi"));
+
+    await seedAll(ctx.db);
+
+    const [oi] = await ctx.db.select().from(schema.issuers)
+      .where(eq(schema.issuers.slug, "oi"));
+    expect(oi?.playbook).toEqual(tuned);
+    const [sky] = await ctx.db.select().from(schema.issuers)
+      .where(eq(schema.issuers.slug, "sky"));
+    expect(sky?.playbook?.stages).toHaveLength(4);
+  });
+
   it("seeds the v1 extraction prompt as an active row (A5)", async () => {
     await seedAll(ctx.db);
     const rows = await ctx.db.select().from(schema.prompts);
