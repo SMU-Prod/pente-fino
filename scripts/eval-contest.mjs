@@ -63,16 +63,30 @@
 //
 // The other two need either data this repo does not have yet or a model:
 //
-//   - "protocolsAndDeadlines" — `AssembledContest.protocols` carries a
-//                         protocol number and channel per stage, but no
-//                         date, so "prazo vencido" (an expired deadline) is
-//                         not computable from it. Once a recorded protocol
-//                         carries a date, the "mentions the protocol number"
-//                         half could join the deterministic set — the
-//                         "expired deadline" half still could not, without
-//                         also deciding what counts as a textual mention of
-//                         one, which needs judgment this harness does not
-//                         attempt to encode as a moving target.
+//   - "protocolsAndDeadlines" — was blocked on data this repo did not have:
+//                         `AssembledContest.protocols` carries a protocol
+//                         number and channel per stage, but no date, so
+//                         "prazo vencido" was not computable from it, and
+//                         "counts as a textual mention" needed judgment.
+//                         **E5 Task 5 (RF-182) removed both obstacles** and
+//                         this comment is now a description of work that is
+//                         merely undone, not impossible. `AssembledContest`
+//                         gained `deadlinesExpired` (channel, protocol
+//                         number, registration date, expiry date — every
+//                         field a recorded fact) and `escalationHistory`,
+//                         the finished sentences; `ContestDocument` carries
+//                         those sentences verbatim in a field of its own.
+//                         So the criterion is now an exact string check
+//                         against known values — "when one exists, does the
+//                         document contain this protocol number and these
+//                         two dates" — with no judgment and no moving
+//                         target, and the "quando existirem" half is the
+//                         empty case. Wiring it would raise the
+//                         deterministic score from 8 to 9 of 10 and is left
+//                         as its own change, since it moves `MEASURED_MAX`
+//                         and the §18 gate read off it.
+//                         RF-182's own acceptance is meanwhile enforced
+//                         directly, in `packages/ai/src/contest.test.ts`.
 //   - "lengthAndTone"        — length alone (200-4000 characters) is a
 //                         trivial check, but the rubric line bundles it with
 //                         "tom neutro" (neutral tone) into one weighted
@@ -247,7 +261,7 @@ export function scoreContestDocument(assembled, doc) {
       passed: null,
       points: null,
       detail:
-        "não medido: AssembledContest.protocols não carrega data, então prazo vencido não é computável; menção textual também exige julgamento",
+        "não medido: já é computável desde a RF-182 (AssembledContest.deadlinesExpired e ContestDocument.escalationHistory trazem canal, protocolo e as duas datas), mas o cálculo ainda não foi ligado a esta rubrica",
     },
     {
       criterion: "lengthAndTone",
