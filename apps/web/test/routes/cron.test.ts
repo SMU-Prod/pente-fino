@@ -14,7 +14,9 @@ const SECRET = "cron-secret-for-tests";
 // Mirrors `SCHEDULABLE` in the route. Kept here rather than imported
 // because the route does not export it, and a test that imported it could
 // not notice the list being emptied.
-const SCHEDULABLE_NAMES = ["expireFiles", "ruleMetrics", "ruleLifecycle", "caseDeadlines", "dossier"];
+const SCHEDULABLE_NAMES = [
+  "expireFiles", "ruleMetrics", "ruleLifecycle", "caseDeadlines", "dossier", "caseReminders",
+];
 
 let enqueue: ReturnType<typeof vi.fn>;
 

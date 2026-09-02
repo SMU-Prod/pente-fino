@@ -12,6 +12,7 @@ Cron da Vercel roda em **UTC**. São Paulo é UTC−3 o ano inteiro (ver
 | Tarefa | Cron (UTC) | Hora em SP | Por quê |
 |---|---|---|---|
 | `caseDeadlines` | `0 * * * *` | de hora em hora | RF-180. Um prazo que venceu às 9h não pode esperar até a manhã seguinte pra alguém saber — o bloco inteiro existe pra avisar no dia certo. |
+| `caseReminders` | `0 12 * * *` | 09:00 | RF-185. De manhã, uma vez por dia. Lembrete não é urgência: quem recebe às 3h da manhã não age às 3h da manhã, e mandar mais de uma vez por dia é o caminho mais curto pra pessoa silenciar o canal — que é o mesmo que não ter lembrete nenhum, só que depois de irritar alguém. |
 | `dossier` | `0 5 * * *` | 02:00 | RF-187. Antes do `expireFiles` de propósito: um caso que chegou ao `jec_ready` hoje ganha o dossiê enquanto o arquivo da fatura ainda existe. |
 | `expireFiles` | `0 6 * * *` | 03:00 | RF-110. Retenção; a hora exata não importa, madrugada é barata. |
 | `ruleMetrics` | `0 7 * * *` | 04:00 | RF-302. Materializa `rule_metrics` a partir de `events`. |
@@ -22,6 +23,13 @@ O `container.ts` já dizia que a ordem importa e que ela é problema do
 agendador. Encadear os dois numa chamada só faria uma corrida de métricas
 lenta ou quebrada arrastar a decisão de promoção junto; separados, uma
 falha atrasa a promoção em um dia e não corrompe nada.
+
+## Variáveis de ambiente
+
+Além do `CRON_SECRET` abaixo, o `caseReminders` precisa de **`APP_BASE_URL`**
+— o lembrete leva um link para o caso, e em produção o container **recusa
+adivinhar o host** em vez de mandar alguém para o lugar errado. E-mail é a
+única saída que um deploy posterior não desfaz.
 
 ## Autenticação
 

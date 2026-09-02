@@ -28,7 +28,9 @@ describe("container() registers every task name this process can run", () => {
   // `container()` memoizes for the lifetime of the module, so everything
   // here shares the one database built by the first call — hence a single
   // test rather than one per task name.
-  const SCHEDULED = ["caseDeadlines", "dossier", "expireFiles", "ruleMetrics", "ruleLifecycle"];
+  const SCHEDULED = [
+    "caseDeadlines", "caseReminders", "dossier", "expireFiles", "ruleMetrics", "ruleLifecycle",
+  ];
 
   it("resolves every scheduled task name, and refuses a name it does not know", async () => {
     ctx = await createTestDb();

@@ -15,3 +15,7 @@ export { createRuleLifecycleTask, type RuleLifecycleDeps } from "./tasks/rule-li
 // `@pentefino/jobs`" a structural property rather than a fact that merely
 // happens to hold. See the module header of `pdf/render-dossier.ts`.
 export { createDossierTask, type DossierDeps } from "./tasks/dossier.js";
+export {
+  createCaseRemindersTask, REMINDER_REASONS, SUPPRESSION_WINDOW_HOURS,
+  type CaseRemindersDeps, type ReminderReason,
+} from "./tasks/case-reminders.js";

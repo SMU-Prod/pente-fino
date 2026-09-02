@@ -3,7 +3,7 @@ import { EVENTS } from "./events.js";
 
 describe("EVENTS", () => {
   it("carries every event named in PRD §15.1, plus the ingest, expiry and finding terminals Tasks 13, 9 and 8 (E1/E2) added, plus invoice_processing_started (Task 2, E3), RF-187's dossier pair, RF-184's response_received and RF-186's case_stalled (Tasks 7, 5 and 3, E5), plus RF-185's case_viewed (Task 6, E5)", () => {
-    expect(EVENTS).toHaveLength(38);
+    expect(EVENTS).toHaveLength(39);
   });
 
   it("has no duplicates, because names are a contract", () => {
@@ -56,5 +56,9 @@ describe("EVENTS", () => {
 
   it("names the case screen being opened, the durable fact RF-185's reminder suppression reads (Task 6, E5)", () => {
     expect(EVENTS).toContain("case_viewed");
+  });
+
+  it("names a reminder having been sent, so a sweep cannot send the same one twice (RF-185)", () => {
+    expect(EVENTS).toContain("case_reminder_sent");
   });
 });

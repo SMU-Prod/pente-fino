@@ -2,7 +2,7 @@ import { buildAdapters, createUnpdfReader, type TaskHandler } from "@pentefino/a
 // eslint-disable-next-line pentefino/require-with-user -- the ingest job runs system-wide, with no user session
 import { getUnscopedDb, type Database } from "@pentefino/db";
 import {
-  createCaseDeadlinesTask, createDossierTask, createExpireFilesTask, createIngestTask,
+  createCaseDeadlinesTask, createCaseRemindersTask, createDossierTask, createExpireFilesTask, createIngestTask,
   createRuleLifecycleTask, createRuleMetricsTask,
 } from "@pentefino/jobs";
 
@@ -22,6 +22,26 @@ export type ContainerOverrides = {
 };
 
 type Container = { db: Database } & ReturnType<typeof buildAdapters>;
+
+/**
+ * Where the app lives, for the link a reminder e-mail carries.
+ *
+ * Refuses to guess in production, the same way `getSessionSecret` refuses a
+ * placeholder secret: a reminder that points at the wrong host is a wrong
+ * link in somebody's inbox, and an e-mail is the one output a later deploy
+ * cannot take back. Local development gets the dev server's own origin,
+ * because the alternative is that nothing runs locally at all.
+ */
+function resolveAppBaseUrl(env: NodeJS.ProcessEnv = process.env): string {
+  const configured = env.APP_BASE_URL;
+  if (configured) return configured;
+  if (env.NODE_ENV === "production") {
+    throw new Error(
+      "APP_BASE_URL is not set. Refusing to guess the host for a link sent by e-mail (RF-185).",
+    );
+  }
+  return "http://localhost:3000";
+}
 
 function buildContainer(overrides: ContainerOverrides): Container {
   const db = overrides.db ?? getUnscopedDb();
@@ -57,6 +77,10 @@ function buildContainer(overrides: ContainerOverrides): Container {
   // job on this map was in before the scheduler existed, and the reason
   // `test/routes/cron.test.ts` now reads this file.
   handlers.caseDeadlines = createCaseDeadlinesTask({ db });
+  // RF-185 (Task 6C, E5): the reminders.
+  handlers.caseReminders = createCaseRemindersTask({
+    db, mailer: adapters.mailer, appBaseUrl: resolveAppBaseUrl(),
+  });
   return { db, ...adapters };
 }
 

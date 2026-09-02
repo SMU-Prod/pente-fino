@@ -74,7 +74,9 @@ export const dynamic = "force-dynamic";
  * to a user's upload — an allowlist keeps this route from becoming a way to
  * invoke arbitrary registered work by guessing its name.
  */
-const SCHEDULABLE = ["expireFiles", "ruleMetrics", "ruleLifecycle", "caseDeadlines", "dossier"] as const;
+const SCHEDULABLE = [
+  "expireFiles", "ruleMetrics", "ruleLifecycle", "caseDeadlines", "dossier", "caseReminders",
+] as const;
 
 function isSchedulable(task: string): task is (typeof SCHEDULABLE)[number] {
   return (SCHEDULABLE as readonly string[]).includes(task);

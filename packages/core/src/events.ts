@@ -117,6 +117,23 @@ export const EVENTS = [
   // without this name, "was this case looked at recently" has no honest
   // source to read it from, and the suppression stays unbuildable.
   "case_viewed",
+  // `case_reminder_sent` is the seventh addition, for E5's RF-185. Unlike
+  // `case_viewed` this one *is* an A3 fact about the case: the product
+  // reached out to the person on a date, through a channel, about a reason.
+  //
+  // It exists because a reminder has to be idempotent across sweeps. The
+  // job runs on a clock; without a row saying "this case was already
+  // reminded about this stall", every run would send the same e-mail again,
+  // and a product that mails you daily about one thing is a product you
+  // mute — after which no reminder reaches you at all, which is the failure
+  // RF-185's suppression rule already exists to prevent.
+  //
+  // It is also the only durable record that the person was told. RF-186
+  // gives a stalled case "um lembrete final" before closing it 30 days
+  // later, and a case closed as abandoned should be able to show it warned
+  // its owner first — RF-187's dossier and any support conversation both
+  // need that to be a fact rather than an assumption.
+  "case_reminder_sent",
 ] as const;
 
 export type EventType = (typeof EVENTS)[number];
