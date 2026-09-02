@@ -1,0 +1,233 @@
+/*
+ * The front door. Same system as `laudo/[id]/laudo.module.css`: PRD §13.1's
+ * tokens only, no invented colors, Fraunces for display, IBM Plex Mono for
+ * the eyebrow and every number. The circled-amount motif is the product's
+ * signature — someone going down a printed bill with a pen — so it appears
+ * here first and the report screen answers it.
+ */
+
+.page {
+  max-width: 52rem;
+  margin: 0 auto;
+  padding: clamp(2rem, 6vw, 5rem) 1.25rem 4rem;
+}
+
+/* ---------------------------------------------------------------- hero */
+
+.eyebrow {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  margin: 0 0 1rem;
+}
+
+.headline {
+  font-family: var(--font-display);
+  font-weight: 400;
+  font-size: clamp(2rem, 6.5vw, 3.5rem);
+  line-height: 1.1;
+  letter-spacing: -0.015em;
+  margin: 0 0 1.25rem;
+  color: var(--ink);
+  max-width: 18ch;
+}
+
+.marked {
+  position: relative;
+  display: inline-block;
+  white-space: nowrap;
+}
+
+.markedUnderline {
+  position: absolute;
+  left: -5%;
+  bottom: -0.22em;
+  width: 110%;
+  height: 0.5em;
+  pointer-events: none;
+  color: var(--mark);
+}
+
+.lede {
+  font-size: clamp(1rem, 2.2vw, 1.15rem);
+  line-height: 1.6;
+  color: var(--ink-2);
+  margin: 0 0 2.5rem;
+  max-width: 46ch;
+}
+
+/* ------------------------------------------------------------ dropzone */
+
+.drop {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: var(--card);
+  border: 1.5px dashed var(--line);
+  border-radius: 14px;
+  padding: clamp(1.5rem, 4vw, 2.25rem);
+  cursor: pointer;
+  color: inherit;
+  font: inherit;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .drop {
+    transition: border-color 160ms ease, background-color 160ms ease;
+  }
+}
+
+.drop:hover,
+.dropActive {
+  border-color: var(--mark);
+  background: var(--mark-soft);
+}
+
+.drop:disabled {
+  cursor: progress;
+}
+
+.dropTitle {
+  font-family: var(--font-display);
+  font-weight: 400;
+  font-size: 1.35rem;
+  margin: 0 0 0.4rem;
+  color: var(--ink);
+}
+
+.dropHint {
+  margin: 0;
+  font-size: 0.9rem;
+  color: var(--ink-3);
+}
+
+.dropHint code {
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+}
+
+.fileInput {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ------------------------------------------------------------- progress */
+
+.progress {
+  margin-top: 1.25rem;
+  background: var(--deep);
+  border-radius: 14px;
+  padding: 1.25rem 1.35rem;
+  color: #F3EEE7;
+}
+
+.progressStep {
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  margin: 0 0 0.7rem;
+  opacity: 0.75;
+}
+
+.progressTrack {
+  height: 5px;
+  border-radius: 999px;
+  background: rgb(255 255 255 / 0.16);
+  overflow: hidden;
+}
+
+.progressBar {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--mark);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .progressBar {
+    transition: width 320ms ease;
+  }
+}
+
+.error {
+  margin-top: 1.25rem;
+  background: var(--mark-soft);
+  border: 1px solid var(--mark);
+  border-radius: 14px;
+  padding: 1rem 1.25rem;
+  color: var(--ink);
+}
+
+.errorTitle {
+  font-weight: 600;
+  margin: 0 0 0.3rem;
+  font-size: 0.95rem;
+}
+
+.errorBody {
+  margin: 0;
+  font-size: 0.9rem;
+  color: var(--ink-2);
+}
+
+/* ---------------------------------------------------------------- steps */
+
+.steps {
+  list-style: none;
+  padding: 0;
+  margin: 3.5rem 0 0;
+  display: grid;
+  gap: 1.5rem;
+  grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+}
+
+.step {
+  border-top: 1px solid var(--line);
+  padding-top: 1rem;
+}
+
+.stepNumber {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--mark);
+  letter-spacing: 0.08em;
+  display: block;
+  margin-bottom: 0.5rem;
+}
+
+.stepTitle {
+  font-family: var(--font-display);
+  font-weight: 400;
+  font-size: 1.1rem;
+  margin: 0 0 0.35rem;
+  color: var(--ink);
+}
+
+.stepBody {
+  margin: 0;
+  font-size: 0.9rem;
+  line-height: 1.55;
+  color: var(--ink-2);
+}
+
+/* --------------------------------------------------------------- footer */
+
+.footnote {
+  margin: 3.5rem 0 0;
+  padding-top: 1.25rem;
+  border-top: 1px solid var(--line);
+  font-size: 0.85rem;
+  line-height: 1.6;
+  color: var(--ink-3);
+  max-width: 52ch;
+}
