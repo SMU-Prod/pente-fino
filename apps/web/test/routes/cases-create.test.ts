@@ -143,9 +143,10 @@ describe("POST /api/cases", () => {
     expect(await response.json()).toEqual(FORBIDDEN_BODY);
   });
 
-  it("opens the caller's own case at draft with no deadline, stamped with the invoice's issuer", async () => {
+  it("opens the caller's own case at draft, on RF-186's clock, stamped with the invoice's issuer", async () => {
     useCookies(createCookieStore({ pf_session: signSession(sessionA, SECRET) }));
 
+    const before = Date.now();
     const response = await POST(request({ invoiceId: aliceInvoice, findingIds: [aliceFinding, aliceFinding2] }));
 
     expect(response.status).toBe(201);
@@ -159,10 +160,18 @@ describe("POST /api/cases", () => {
       issuerId,
       findingIds: [aliceFinding, aliceFinding2],
       // §9.1: a case opens at `draft`. `protocol_entered` is what moves it
-      // to `sac` (E5 Task 5's route), so nothing is due yet.
+      // to `sac` (E5 Task 5's protocol route).
       stage: "draft",
-      nextDeadlineAt: null,
     });
+    // RF-186, and this assertion is the reverse of the one this file
+    // shipped with (`nextDeadlineAt: null`). A null here keeps the case out
+    // of the deadline scan entirely — no day-30 nudge, no day-60 close, no
+    // event — which is not "nothing is due yet", it is the case being
+    // forgotten. §20.2 has no `draft` deadline; what runs is RF-186's own
+    // 30-day window for a case with no protocol.
+    const days = (row!.nextDeadlineAt!.getTime() - before) / 86_400_000;
+    expect(days).toBeGreaterThan(29.9);
+    expect(days).toBeLessThan(33.1);
   });
 
   it("records exactly one case_created event, and the route adds none of its own", async () => {
