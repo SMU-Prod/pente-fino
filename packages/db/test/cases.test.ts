@@ -372,15 +372,39 @@ describe("createCase (the case-creation hole E5 Task 4 fills, INV-008)", () => {
 });
 
 describe("caseDetail (the case, its documents, its protocols and its timeline)", () => {
-  // Fixtures sit after "now" so they sort after the real `case_created` row
-  // `createCase` writes in its own transaction - the timeline assertions
-  // below therefore read as "creation first, then what happened next".
-  const T0 = new Date(Date.now() + 60_000);
-  const at = (minutes: number) => new Date(T0.getTime() + minutes * 60_000);
+  // Fixtures sit after the case's own `case_created` row - the one
+  // `createCase` writes inside its own transaction - so the timeline
+  // assertions below read as "creation first, then what happened next".
+  //
+  // **The coupling that used to live here, so nobody puts it back.** This was
+  // `const T0 = new Date(Date.now() + 60_000)` with `at(minutes)` counting
+  // from it, both at the top of this `describe`. A `describe` body runs when
+  // vitest *collects* the file, so `T0` froze one minute after collection,
+  // while `case_created` is stamped at *execution* time by the `now()` default
+  // on `events.occurred_at`. Run this file alone and the two are seconds
+  // apart, so `case_created` sorted first and every assertion held. Run
+  // `pnpm -w test`, where turbo runs seven packages at once and this suite
+  // needs minutes to reach the tests below, and real `now()` had already gone
+  // past `at(1)`..`at(3)`: `case_created` sorted *after* the fixtures it is
+  // supposed to precede, and the two ordering tests failed. The fixtures must
+  // be anchored on the row they are actually compared against, never on the
+  // wall clock - the offsets below are minutes from `case_created`, not from
+  // "now".
+  type At = (minutes: number) => Date;
+
+  // Reads back the `case_created` event `createCase` just wrote and returns an
+  // `at()` counting from that exact instant. Every fixture in one test shares
+  // a single anchor, which is what keeps the interleaving deliberate.
+  async function anchorOn(db: TestDb["db"], caseId: string): Promise<At> {
+    const [created] = await eventsOfCase(db, caseId, "case_created");
+    if (!created) throw new Error(`no case_created event for case ${caseId}`);
+    const t0 = created.occurredAt.getTime();
+    return (minutes: number) => new Date(t0 + minutes * 60_000);
+  }
 
   // Every fixture below is inserted in reverse chronological order, so a
   // method that just returns insertion order fails these assertions.
-  async function seedTimelineFixtures(db: TestDb["db"], caseId: string) {
+  async function seedTimelineFixtures(db: TestDb["db"], caseId: string, at: At) {
     await db.insert(caseDocuments).values([
       { id: newId("doc"), caseId, stage: "sac", kind: "sac_script", promptVersion: 1, body: SAMPLE_BODY, createdAt: at(20) },
       { id: newId("doc"), caseId, stage: "draft", kind: "contest_letter", promptVersion: 1, body: SAMPLE_BODY, createdAt: at(10) },
@@ -400,8 +424,10 @@ describe("caseDetail (the case, its documents, its protocols and its timeline)",
   // One document and one protocol on a case that is NOT the one under test.
   // `minutes` is chosen by the caller so the rows interleave with the case
   // under test's own: a list that stopped filtering by `caseId` could then
-  // not even come back in the right order, never mind the right length.
-  async function seedForeignFixtures(db: TestDb["db"], caseId: string, tag: string, minutes: number) {
+  // not even come back in the right order, never mind the right length. `at`
+  // is therefore the case *under test*'s anchor, not this foreign case's -
+  // the interleaving is only meaningful on one shared timeline.
+  async function seedForeignFixtures(db: TestDb["db"], caseId: string, tag: string, minutes: number, at: At) {
     await db.insert(caseDocuments).values({
       id: newId("doc"), caseId, stage: "sac", kind: "gov_text", promptVersion: 1,
       body: { ...SAMPLE_BODY, subject: `NOT MINE - ${tag}` }, createdAt: at(minutes),
@@ -415,7 +441,8 @@ describe("caseDetail (the case, its documents, its protocols and its timeline)",
   it("returns documents, protocols and the timeline in chronological order", async () => {
     const scoped = withUser({ userId: alice }, ctx.db);
     const caseId = (await scoped.createCase({ invoiceId: aliceInvoice, findingIds: [aliceFinding] }))!;
-    await seedTimelineFixtures(ctx.db, caseId);
+    const at = await anchorOn(ctx.db, caseId);
+    await seedTimelineFixtures(ctx.db, caseId, at);
     await ctx.db.insert(events).values([
       { id: newId("evt"), userId: alice, caseId, type: "contest_marked_sent", payload: {}, occurredAt: at(30) },
       { id: newId("evt"), userId: alice, caseId, type: "protocol_entered", payload: {}, occurredAt: at(5) },
@@ -437,6 +464,7 @@ describe("caseDetail (the case, its documents, its protocols and its timeline)",
   it("includes a system event written with a caseId but no userId", async () => {
     const scoped = withUser({ userId: alice }, ctx.db);
     const caseId = (await scoped.createCase({ invoiceId: aliceInvoice, findingIds: [aliceFinding] }))!;
+    const at = await anchorOn(ctx.db, caseId);
     await ctx.db.insert(events).values([
       // No userId and no sessionId, exactly as the deadline job writes it.
       { id: newId("evt"), caseId, type: "deadline_expired", payload: { stage: "sac" }, occurredAt: at(2) },
@@ -458,6 +486,10 @@ describe("caseDetail (the case, its documents, its protocols and its timeline)",
     const otherFinding = await seedFinding(ctx.db, aliceInvoice);
     const caseId = (await scoped.createCase({ invoiceId: aliceInvoice, findingIds: [aliceFinding] }))!;
     const otherCaseId = (await scoped.createCase({ invoiceId: aliceInvoice, findingIds: [otherFinding] }))!;
+    // The case under test's own creation instant. The sibling was created a
+    // few milliseconds later, which is nowhere near a minute, so every offset
+    // below still lands after both `case_created` rows.
+    const at = await anchorOn(ctx.db, caseId);
     await ctx.db.insert(events).values([
       { id: newId("evt"), userId: alice, caseId, type: "protocol_entered", payload: {}, occurredAt: at(1) },
       { id: newId("evt"), userId: alice, caseId: otherCaseId, type: "protocol_entered", payload: {}, occurredAt: at(2) },
@@ -494,12 +526,14 @@ describe("caseDetail (the case, its documents, its protocols and its timeline)",
     const strangerCaseId = (await withUser({ userId: bob }, ctx.db)
       .createCase({ invoiceId: bobInvoice, findingIds: [bobFinding] }))!;
 
-    await seedTimelineFixtures(ctx.db, caseId);
+    const at = await anchorOn(ctx.db, caseId);
+    await seedTimelineFixtures(ctx.db, caseId, at);
     // at(15) lands between this case's two documents; at(35) between its two
     // protocols. Both would be interleaved into the returned lists, not
-    // appended, if the scoping went away.
-    await seedForeignFixtures(ctx.db, siblingCaseId, "SIBLING", 15);
-    await seedForeignFixtures(ctx.db, strangerCaseId, "STRANGER", 35);
+    // appended, if the scoping went away - which is why all three cases are
+    // seeded off the case under test's anchor rather than their own.
+    await seedForeignFixtures(ctx.db, siblingCaseId, "SIBLING", 15, at);
+    await seedForeignFixtures(ctx.db, strangerCaseId, "STRANGER", 35, at);
 
     const detail = await scoped.caseDetail(caseId);
 
@@ -514,7 +548,7 @@ describe("caseDetail (the case, its documents, its protocols and its timeline)",
   it("returns exactly the same value for another user's case and for a case that does not exist", async () => {
     const scoped = withUser({ userId: alice }, ctx.db);
     const caseId = (await scoped.createCase({ invoiceId: aliceInvoice, findingIds: [aliceFinding] }))!;
-    await seedTimelineFixtures(ctx.db, caseId);
+    await seedTimelineFixtures(ctx.db, caseId, await anchorOn(ctx.db, caseId));
 
     const other = withUser({ userId: bob }, ctx.db);
     const notMine = await other.caseDetail(caseId);
