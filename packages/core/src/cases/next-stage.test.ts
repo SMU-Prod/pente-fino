@@ -217,10 +217,10 @@ describe("nextStage · the enumeration §9.1 requires", () => {
   it("never asks the caller to clear a deadline the decision wanted to set", () => {
     // `stampDeadline: true` with a null date writes NULL to
     // `cases.next_deadline_at`, which drops the case out of the
-    // `cases_next_deadline` partial index for good. That must only happen
-    // where the decision genuinely says `clear` — never for a `wait` whose
-    // instant is missing, which is every wait until Task 1's calculator is
-    // wired in.
+    // `cases_next_deadline` partial index for good — silently, and
+    // indistinguishably from a case that finished. That must only ever
+    // happen where the decision genuinely says `clear`, never for a `wait`
+    // whose instant came back missing.
     const offenders: string[] = [];
     for (const combination of COMBINATIONS) {
       const { stage, category, hasProtocol, event } = combination;
@@ -451,30 +451,91 @@ describe("nextStage · which clock a transition starts (RF-181, RF-186)", () => 
 });
 
 /**
- * MERGE TRIPWIRE — E5 Task 1 (`packages/core/src/cases/deadline.ts`).
+ * The instants, through `computeDeadline` (E5 Task 1).
  *
- * The transition table is complete; turning its `wait` rules into instants
- * is the parallel task's business-day calculator. Until that lands,
- * `nextDeadlineAt` is null on a transition that asks for a wait, which a
- * caller would read as "clear the column".
+ * `AT` is 2026-08-30T14:00:00Z — 11:00 on **Sunday 30 August 2026** in São
+ * Paulo. Every date below was worked out by hand from that before the code
+ * was run:
  *
- * This block fails the moment the calculator is wired in, which is the
- * point: whoever merges Task 1 has to come here, see that the gap is closed
- * and delete it, instead of the gap surviving because nothing complained.
+ *  - **`sac`, 7 calendar days.** The start day does not count, so +7 lands on
+ *    Sunday 6 September. That is not a business day, so it rolls to Monday
+ *    the 7th — which is Independência do Brasil — and then to **Tuesday 8
+ *    September**. Two rolls in one deadline, which is why this is the case
+ *    worth asserting.
+ *  - **`regulator`, 5 business days.** Mon 31 Aug, Tue 1, Wed 2, Thu 3,
+ *    **Fri 4 September**. No weekend or holiday intervenes, so the
+ *    business-day count lands short of the calendar-day one.
+ *  - **RF-186's 30-day window.** +30 calendar days is **Tuesday 29
+ *    September**, an ordinary business day, so it stands.
+ *
+ * `expiresAt` is the last millisecond of that civil day in São Paulo
+ * (UTC−3), so it reads as 02:59:59.999 the following day in UTC. Asserting
+ * the UTC instant rather than a formatted local date is deliberate: it is
+ * the value that reaches `cases.next_deadline_at`, and a timezone slip in
+ * either direction changes it.
  */
-describe("nextStage · MERGE TRIPWIRE: the deadline calculator is not wired yet", () => {
-  it("asks for a wait, cannot yet say when it ends, and therefore leaves the column alone", () => {
-    const state = { stage: "sac" as Stage, category: "telecom" as Category, hasProtocol: false };
-    const event: StageEvent = { type: "protocol_entered", at: AT };
-    expect(decideTransition(state, TELECOM_PLAYBOOK_V1, event).deadline).toMatchObject({
-      kind: "wait", days: 7, businessDays: false,
-    });
-    const result = nextStage(state, TELECOM_PLAYBOOK_V1, event);
-    // Delete this describe block on merge and replace it with the date Task
-    // 1's `computeDeadline` produces: 7 calendar days after `AT`, rolled
-    // forward off a weekend or holiday, with `stampDeadline` then true.
-    expect(result.nextDeadlineAt).toBeNull();
-    expect(result.stampDeadline).toBe(false);
+describe("nextStage · the instant a wait ends (RF-181)", () => {
+  it("counts sac's seven calendar days off a Sunday, over a holiday Monday, onto the Tuesday", () => {
+    const result = nextStage(
+      { stage: "sac", category: "telecom", hasProtocol: false },
+      TELECOM_PLAYBOOK_V1,
+      { type: "protocol_entered", at: AT },
+    );
+    expect(result.stampDeadline).toBe(true);
+    expect(result.nextDeadlineAt?.toISOString()).toBe("2026-09-09T02:59:59.999Z");
+  });
+
+  it("counts the regulator's five days as BUSINESS days — the playbook flag has to reach the calendar", () => {
+    // Started on **Thursday 3 September 2026**, the Thursday before the 7
+    // September holiday, which is RF-181's own acceptance shape. Five
+    // business days: Fri 4 (1) — Sat, Sun and the holiday Monday are not
+    // days — Tue 8 (2), Wed 9 (3), Thu 10 (4), **Fri 11 (5)**.
+    //
+    // The same five counted as CALENDAR days lands on Tuesday 8 September.
+    // Both are asserted, because `AT`'s Sunday start happens to give the
+    // same answer either way, and a test that cannot tell the two counts
+    // apart does not test the flag at all.
+    const thursdayBeforeTheHoliday = new Date("2026-09-03T14:00:00Z");
+    const state = { stage: "regulator" as Stage, category: "telecom" as Category, hasProtocol: false };
+    const event: StageEvent = { type: "protocol_entered", at: thursdayBeforeTheHoliday };
+
+    const businessDays = nextStage(state, TELECOM_PLAYBOOK_V1, event);
+    expect(businessDays.nextDeadlineAt?.toISOString()).toBe("2026-09-12T02:59:59.999Z");
+
+    const asCalendarDays: Playbook = {
+      stages: TELECOM_PLAYBOOK_V1.stages.map((entry) =>
+        entry.stage === "regulator" ? { ...entry, businessDays: false } : entry,
+      ),
+    };
+    const calendarDays = nextStage(state, asCalendarDays, event);
+    expect(calendarDays.nextDeadlineAt?.toISOString()).toBe("2026-09-09T02:59:59.999Z");
+  });
+
+  it("counts RF-186's thirty-day window on an escalation", () => {
+    const result = nextStage(
+      { stage: "sac", category: "telecom", hasProtocol: true },
+      TELECOM_PLAYBOOK_V1,
+      { type: "deadline_expired", at: AT },
+    );
+    expect(result.stage).toBe("consumidor_gov");
+    expect(result.nextDeadlineAt?.toISOString()).toBe("2026-09-30T02:59:59.999Z");
+  });
+
+  it("produces an instant for every transition that starts a wait, and only for those", () => {
+    const offenders: string[] = [];
+    for (const combination of COMBINATIONS) {
+      const { stage, category, hasProtocol, event } = combination;
+      const decision = decideTransition(
+        { stage, category, hasProtocol }, TELECOM_PLAYBOOK_V1, { type: event, at: AT },
+      );
+      const result = transitionFor(combination);
+      const wanted = decision.deadline.kind === "wait";
+      if (wanted !== (result.nextDeadlineAt !== null)) offenders.push(label(combination));
+      if (wanted && result.nextDeadlineAt !== null && result.nextDeadlineAt <= AT) {
+        offenders.push(`${label(combination)} → deadline in the past`);
+      }
+    }
+    expect(offenders).toEqual([]);
   });
 });
 

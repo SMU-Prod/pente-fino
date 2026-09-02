@@ -24,10 +24,11 @@ import type { CaseOutcome, StageEvent } from "./next-stage.js";
  * The decision is split out of `nextStage` for one reason: the deadline a
  * transition asks for is a *rule* (how many days, counted how, from where
  * it came), while `StageTransition.nextDeadlineAt` is an *instant*. Turning
- * the rule into an instant needs the Brazilian business-day calendar, which
- * is E5 Task 1's `./deadline.js`. Keeping the rule addressable means the
- * whole table can be tested today, exhaustively, without that calendar —
- * and the merge is one expression in `nextStage`.
+ * the rule into an instant is `./deadline.js`'s job, against the national
+ * holiday calendar. Keeping the two apart means this table can be tested
+ * exhaustively without a single date in the assertions, and a wrong deadline
+ * can be traced to either the rule or the arithmetic instead of to both at
+ * once.
  *
  * Three §9.1 readings this file commits to, because the diagram leaves them
  * implicit and a wrong guess loses somebody's case:
