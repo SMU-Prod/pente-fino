@@ -1,9 +1,24 @@
 // RF-187: renders a `Dossier` (the pure model `buildDossier` builds in
-// `packages/core`) to PDF bytes. This module lives in `apps/jobs` — a
-// Node-only job package — and nowhere near `apps/web`, so `pdf-lib` can
-// never end up in a browser bundle: RNF-05's <=120 kB gzip initial-JS
-// budget is untouched by this file's existence. Do not import this module,
-// or `pdf-lib`, from `apps/web`.
+// `packages/core`) to PDF bytes. This module lives in `apps/jobs`, a
+// Node-only job package, and `pdf-lib` is a dependency of `apps/jobs`
+// alone — never of `apps/web`.
+//
+// That is a packaging boundary, not structural isolation from the browser
+// bundle, and this comment should not claim otherwise: `apps/web` depends
+// on `@pentefino/jobs`, and `src/index.ts` re-exports `renderDossierPdf`,
+// so the barrel is reachable from web code. What keeps `pdf-lib` out of a
+// client bundle today is that every `@pentefino/jobs` import in `apps/web`
+// is server-side (`lib/container.ts` and the API route handlers).
+//
+// Watch the asymmetry: the barrel already pulls `@pentefino/db` ->
+// `postgres`, a Node-only driver that would break a browser build loudly.
+// `pdf-lib` is browser-compatible pure JS, so an accidental client-side
+// import would bundle ~350 kB silently instead of failing. The real gate on
+// RNF-05's <=120 kB gzip initial-JS budget is
+// `scripts/check-bundle-budget.mjs`, run in CI against `next build`'s own
+// First Load JS table.
+//
+// So: never import this module, or `pdf-lib`, from a client component.
 import { PDFDocument, PageSizes, StandardFonts, rgb } from "pdf-lib";
 import type { PDFFont, PDFPage } from "pdf-lib";
 import type {
@@ -128,6 +143,16 @@ function formatCents(cents: number): string {
 // "smart quotes" or a pasted ellipsis happened to produce. `– —` are
 // themselves valid WinAnsi codepoints (verified against the embedded
 // Helvetica font before writing this) and are deliberately left alone.
+//
+// The NBSP entry is close to dead code: on the main text-wrapping path
+// `splitWords`'s `text.split(/\s+/)` matches NBSP as whitespace and
+// consumes it as a word separator before `sanitizeWord` (and this table)
+// ever runs, and NBSP (0xA0) is WinAnsi-encodable on its own anyway, so it
+// was never a crash risk. It only has any effect at all when `sanitizeWord`
+// is called on a whole caller-owned string that skips `splitWords`
+// (`formLine`'s label, `drawLabelWithRightValue`'s value) — and even there
+// it is a no-op today since none of those strings carry an NBSP. Kept for
+// the case where they eventually do, since the fix is free.
 const KNOWN_REPLACEMENTS: Array<[RegExp, string]> = [
   [/[‘’]/g, "'"],
   [/[“”]/g, '"'],
@@ -156,10 +181,16 @@ function normalizeKnownChars(text: string): string {
  * points rather than UTF-16 code units, so a surrogate-pair emoji collapses
  * to a single `?` instead of two mangled halves.
  *
- * This only ever receives whitespace-free words (see `splitWords` below) —
- * tab and newline both throw against WinAnsi too, but they are consumed as
- * word separators before sanitization ever sees them, so this function
- * does not need its own case for them.
+ * Receives either a whitespace-free word from `splitWords`, or a short
+ * caller-owned string whose only whitespace is plain spaces (`formLine`'s
+ * field label, `drawLabelWithRightValue`'s formatted money value — both
+ * call this directly on a whole string, not per word). Plain space (0x20)
+ * is WinAnsi-encodable, so that is harmless today. Tab and newline are not
+ * WinAnsi-encodable and would be replaced with `?` here rather than
+ * wrapped; `splitWords` consumes them as separators before that can happen
+ * on the main text-wrapping path, but a caller that hands this function a
+ * whole string bypasses that — a `\n` arriving through `party.fields`
+ * would silently become `?` instead of starting a new line.
  */
 function sanitizeWord(font: PDFFont, word: string): string {
   const normalized = normalizeKnownChars(word);
@@ -232,6 +263,13 @@ function wrapWords(font: PDFFont, words: string[], size: number, maxWidth: numbe
   return lines;
 }
 
+// `splitWords` collapses every whitespace run to a single space, embedded
+// newlines included — so any paragraph structure inside a `details` string
+// coming from `case_documents.editedBody` does not survive into the PDF.
+// Reasonable for this document (a chronology of short facts, not a reflow
+// of freeform prose), and it is what lets the test suite's own
+// `normalizeWhitespace` compare wrapped output against a single-line
+// needle.
 function wrapText(font: PDFFont, text: string, size: number, maxWidth: number): string[] {
   return wrapWords(font, splitWords(font, text), size, maxWidth);
 }
@@ -357,7 +395,9 @@ function drawTitleBlock(builder: PageBuilder, fonts: { regular: PDFFont; bold: P
  * any of this module's real field labels come close to needing.
  */
 function formLine(font: PDFFont, label: string, size: number, availableWidth: number): string {
-  // label is our own fixed pt-BR field label text - plain spaces only, safe to sanitize as one unit.
+  // label comes from party.fields, i.e. buildDossier's own fixed pt-BR
+  // field names - short, single-line, plain spaces only, so it is safe to
+  // sanitize as one unit rather than routing it through splitWords.
   const prefix = `${sanitizeWord(font, label)}: `;
   const prefixWidth = font.widthOfTextAtSize(prefix, size);
   const underscoreWidth = font.widthOfTextAtSize("_", size);
@@ -372,6 +412,13 @@ function drawParties(builder: PageBuilder, fonts: { regular: PDFFont; bold: PDFF
     builder.drawWrapped(PARTY_ROLE_LABELS[party.role], { font: fonts.bold, size: BODY_SIZE }, BODY_LINE_HEIGHT);
 
     if (party.name === null) {
+      // `party.document` is never printed in this branch — the type
+      // permits a null name with a non-null document, but `buildDossier`
+      // never produces that combination today (the only null-name party is
+      // the consumidor, whose document is also always null). If a future
+      // caller ever does hand this a document alongside a null name, it
+      // would silently be dropped; worth a line here rather than a comment
+      // at buildDossier's call site, since this is the code that drops it.
       for (const field of party.fields) {
         const line = formLine(fonts.regular, field, BODY_SIZE, CONTENT_WIDTH - INDENT_STEP);
         builder.drawLine(line, { font: fonts.regular, size: BODY_SIZE, indent: INDENT_STEP }, BODY_LINE_HEIGHT);
@@ -508,9 +555,18 @@ function drawNotes(builder: PageBuilder, fonts: { regular: PDFFont; bold: PDFFon
  */
 function drawFooters(pages: PDFPage[], font: PDFFont, caseId: string): void {
   const total = pages.length;
+  // Every other drawn string on the page goes through sanitizeWord first;
+  // this is the one path that used to skip it. Safe in practice — caseId is
+  // `newId("cas")`, an ASCII nanoid — but the same caseId *is* sanitized
+  // when the title block draws it, so leaving the footer unsanitized was an
+  // inconsistency in an otherwise-total invariant, not a deliberate
+  // exception. `Página X de Y` needs no sanitization: it is built entirely
+  // from fixed pt-BR words and digits, neither of which this font can ever
+  // fail to encode.
+  const sanitizedCaseId = sanitizeWord(font, caseId);
   pages.forEach((page, index) => {
     const pageNumber = index + 1;
-    page.drawText(`Caso ${caseId}`, { x: MARGIN, y: FOOTER_Y, size: FOOTER_SIZE, font, color: GREY });
+    page.drawText(`Caso ${sanitizedCaseId}`, { x: MARGIN, y: FOOTER_Y, size: FOOTER_SIZE, font, color: GREY });
     const label = `Página ${pageNumber} de ${total}`;
     const width = font.widthOfTextAtSize(label, FOOTER_SIZE);
     page.drawText(label, { x: MARGIN + CONTENT_WIDTH - width, y: FOOTER_Y, size: FOOTER_SIZE, font, color: GREY });

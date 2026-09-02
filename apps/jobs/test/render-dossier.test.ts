@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { extractText, getDocumentProxy } from "unpdf";
+import { extractText, getDocumentProxy, getMeta } from "unpdf";
 import { sniffMimeType } from "@pentefino/core";
 import type { Dossier, DossierEntry } from "@pentefino/core";
 import { renderDossierPdf } from "../src/pdf/render-dossier.js";
@@ -50,7 +50,12 @@ function baseDossier(overrides: Partial<Dossier> = {}): Dossier {
       {
         role: "empresa",
         name: "Claro Móvel S.A.",
-        document: "[CNPJ]",
+        // A realistic, unmasked CNPJ — buildDossier sets this field to
+        // input.issuer.cnpj raw (packages/core/src/documents/dossier.ts),
+        // never through maskText. "[CNPJ]" would be what maskText produces
+        // for free text, which this field never is; using it here would
+        // make this fixture document behaviour the system does not have.
+        document: "12.345.678/0001-90",
         fields: [],
       },
     ],
@@ -83,7 +88,12 @@ function baseDossier(overrides: Partial<Dossier> = {}): Dossier {
         at: new Date("2026-06-05T12:00:00.000Z"),
         kind: "invoice",
         title: "Fatura recebida",
-        details: ["Período: 01/06/2026 a 30/06/2026", "Valor total: R$ 159,90"],
+        // Deliberately worded differently from "A fatura" section's own
+        // "Período: ... a ..." / "Valor total: ..." lines (same underlying
+        // numbers, different sentence) so this test's per-entry assertions
+        // are anchored to the timeline block specifically, not satisfied by
+        // a byte-identical line the invoice section renders elsewhere.
+        details: ["Referente ao período 01/06/2026–30/06/2026", "Valor cobrado: R$ 159,90"],
         sourceId: "inv_test456",
       }),
       entry({
@@ -140,30 +150,46 @@ describe("renderDossierPdf", () => {
     const dossier = baseDossier();
     const { text } = await renderAndExtract(dossier);
     expect(text).toContain(normalizeWhitespace(dossier.title));
-    expect(text).toContain(dossier.caseId);
-    expect(text).toContain(dossier.invoiceId);
-    expect(text).toContain("15/08/2026"); // generatedAt, dd/MM/yyyy
+    // Anchored to the title block's own back-to-back layout ("Caso X"
+    // immediately followed by "Fatura Y"), not the bare case id — the
+    // footer also draws "Caso <id>" on every page, so a bare
+    // `toContain(dossier.caseId)` would still pass with the whole title
+    // block deleted (only the generation date line below is unique to it).
+    expect(text).toContain(`Caso ${dossier.caseId} Fatura ${dossier.invoiceId}`);
+    expect(text).toContain("Documento gerado em 15/08/2026"); // generatedAt, dd/MM/yyyy
   });
 
   it("prints a fillable form line for a party whose name is null, one per field", async () => {
     const { text } = await renderAndExtract(baseDossier());
     for (const field of ["Nome completo", "CPF", "Endereço completo", "Telefone", "E-mail"]) {
-      expect(text).toContain(field);
+      // Anchored to the actual form line ("Field: ___"), not the bare
+      // label — "CPF" alone is also a substring of the "[CPF]" masked
+      // markers elsewhere in the fixture, so a bare toContain would not
+      // prove this field produced its own fillable line.
+      const escaped = field.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      expect(text).toMatch(new RegExp(`${escaped}: _{3,}`));
     }
-    // The point of the block is a visible line to complete by hand, not an
-    // empty string — so an underscore rule must actually appear.
-    expect(text).toMatch(/_{3,}/);
   });
 
   it("prints the named party's name and document", async () => {
     const { text } = await renderAndExtract(baseDossier());
-    expect(text).toContain("Claro Móvel S.A.");
-    expect(text).toContain("[CNPJ]");
+    // Anchored to the rendered "Nome:"/"Documento:" lines, not the bare
+    // values — "Claro Móvel S.A." also appears via the invoice section's
+    // "Prestadora: ..." line (same issuer name, different sentence), so a
+    // bare toContain would still pass with the party's own name line
+    // deleted entirely.
+    expect(text).toContain("Nome: Claro Móvel S.A.");
+    expect(text).toContain("Documento: 12.345.678/0001-90");
   });
 
   it("states the invoice file was removed, citing fileExpiredAt, when fileAvailable is false", async () => {
     const { text } = await renderAndExtract(baseDossier());
-    expect(text).toContain("01/08/2026");
+    // Assert the whole sentence, not the bare date — the fixture's own
+    // attachments[0].note repeats "01/08/2026" for an unrelated reason (the
+    // attachment section, not the invoice section), so a bare date would
+    // still pass with invoiceFileLine's call deleted entirely. Same pattern
+    // as the sibling "fileAvailable is true" test below.
+    expect(text).toContain("Arquivo original da fatura: removido do armazenamento em 01/08/2026.");
   });
 
   it("states the invoice file is available when fileAvailable is true, without inventing a removal date", async () => {
@@ -190,6 +216,11 @@ describe("renderDossierPdf", () => {
         expect(text).toContain(normalizeWhitespace(evidence));
       }
     }
+    // The brief asks for "description, right-aligned amount" — the amount
+    // half was previously unasserted (drawLabelWithRightValue's value draw
+    // could be deleted and this test would not notice).
+    expect(text).toContain("R$ 49,90"); // contestedItems[0].amountCents = 4990
+    expect(text).toContain("R$ 29,99"); // contestedItems[1].amountCents = 2999
     expect(text).toContain("R$ 79,89"); // contestedTotalCents = 7989
   });
 
@@ -221,9 +252,17 @@ describe("renderDossierPdf", () => {
       expect(text).toContain(normalizeWhitespace(attachment.label));
       if (attachment.note) expect(text).toContain(normalizeWhitespace(attachment.note));
     }
-    expect(text).toContain("não está mais disponível no sistema"); // expired
-    expect(text).toContain("a providenciar"); // user_provided
-    expect(text).toContain("disponível no sistema"); // available (substring of the expired wording too, both must be present)
+
+    // Anchor each status word to its own attachment's full rendered line
+    // (marker + label + status), not the bare status phrase — the
+    // `available` wording ("disponível no sistema") is itself a substring
+    // of the `expired` wording ("não está mais disponível no sistema"), so
+    // a bare toContain for `available` would still pass even if its own
+    // label were changed to something else entirely. The `[x]`/`[ ]`
+    // marker (brief: "a checkbox-ish marker") comes along for free.
+    expect(text).toContain("[ ] Fatura do período contestado — não está mais disponível no sistema"); // expired
+    expect(text).toContain("[ ] Comprovante do protocolo 12345 — telefone, 20/06/2026 — a providenciar"); // user_provided
+    expect(text).toContain("[x] Print da tela do aplicativo mostrando o item contestado — disponível no sistema"); // available
   });
 
   it("prints every notes paragraph, and omits the whole section when notes is empty", async () => {
@@ -271,10 +310,23 @@ describe("renderDossierPdf", () => {
       notes: [`Identificador muito longo: ${longWord} fim.`],
     });
 
-    const { text, totalPages } = await renderAndExtract(dossier);
-    expect(totalPages).toBeGreaterThanOrEqual(1);
+    const { text } = await renderAndExtract(dossier);
     expect(text).toContain("Identificador muito longo");
     expect(text).toContain("fim.");
+    // The two assertions above pass even without splitting — the words
+    // before and after the long word are drawn regardless of what happens
+    // to it. What actually distinguishes a hard split from drawing the
+    // word whole (this test's named mutation): verified by hand, pdf.js's
+    // text extraction silently truncates a single text-show operation that
+    // runs far past the page's content width — an unmutated 400-char draw
+    // comes back as only ~99 characters, the rest simply gone, with no
+    // error of any kind. A correct hard split keeps every line within
+    // maxWidth, so every "a" survives extraction. Summing every run of 20+
+    // consecutive "a"s (long enough that nothing else in the fixture's
+    // pt-BR text could produce one, split or not) must equal all 400 of
+    // them.
+    const survivingChars = [...text.matchAll(/a{20,}/g)].reduce((sum, m) => sum + m[0].length, 0);
+    expect(survivingChars).toBe(400);
   });
 
   it("paginates a long timeline without dropping entries, and numbers pages correctly", async () => {
@@ -291,9 +343,14 @@ describe("renderDossierPdf", () => {
 
     expect(totalPages).toBeGreaterThan(1);
 
-    // First and last entries alike — this is the assertion that catches
-    // silent truncation once the page fills up.
+    // First, middle and last entries alike — this is the assertion that
+    // catches silent truncation once the page fills up. First and last
+    // alone would not catch a drop confined to the middle of the array
+    // (e.g. a slice that kept only the two ends) as long as the page count
+    // still came out greater than one.
     expect(text).toContain("Entrada número 1 da linha do tempo");
+    expect(text).toContain("Entrada número 30 da linha do tempo");
+    expect(text).toContain("Detalhe A da entrada 30");
     expect(text).toContain("Entrada número 60 da linha do tempo");
     expect(text).toContain("Detalhe A da entrada 60");
     expect(text).toContain("Detalhe B da entrada 60");
@@ -315,9 +372,51 @@ describe("renderDossierPdf", () => {
         sourceId: `evt_${i + 1}`,
       }));
     const dossier = baseDossier({ entries: manyEntries });
-    const { text, totalPages } = await renderAndExtract(dossier);
+    const bytes = await renderDossierPdf(dossier);
+    const pdf = await getDocumentProxy(bytes.slice());
+    // Per-page extraction, not merged: the title block draws "Caso <id>"
+    // exactly once, on page 1 only. With `mergePages: true` that single
+    // occurrence would satisfy `toContain` for the whole document, so
+    // "every page" was never actually checked even in principle — and
+    // deleting the footer's own case-id draw would still leave the title
+    // block's occurrence to pass a merged assertion.
+    const { text: pages, totalPages } = await extractText(pdf, { mergePages: false });
     expect(totalPages).toBeGreaterThan(1);
-    expect(text).toContain(`Caso ${dossier.caseId}`);
+    expect(pages).toHaveLength(totalPages);
+    for (const pageText of pages) {
+      expect(normalizeWhitespace(pageText)).toContain(`Caso ${dossier.caseId}`);
+    }
+  });
+
+  it("formats money for zero, negative and four-digit amounts (thousands separator)", async () => {
+    // Every amount elsewhere in the fixture is between 2999 and 15990
+    // cents, so none of them exercise the thousands separator, a negative
+    // (credit-line) amount or zero — all three explicitly required by the
+    // brief ("Handle zero and negative values... a credit line is a real
+    // thing on an invoice").
+    const dossier = baseDossier({
+      contestedItems: [
+        { description: "Item de valor elevado", amountCents: 123456, evidence: [] },
+        { description: "Estorno de cobrança em duplicidade", amountCents: -150, evidence: [] },
+        { description: "Item sem custo associado", amountCents: 0, evidence: [] },
+      ],
+      contestedTotalCents: 123456 - 150 + 0,
+    });
+    const { text } = await renderAndExtract(dossier);
+    expect(text).toContain("R$ 1.234,56");
+    expect(text).toContain("-R$ 1,50");
+    expect(text).toContain("R$ 0,00");
+  });
+
+  it("sets the PDF's creation and modification dates from dossier.generatedAt, not the wall clock", async () => {
+    const dossier = baseDossier();
+    const bytes = await renderDossierPdf(dossier);
+    const pdf = await getDocumentProxy(bytes.slice());
+    const { info } = await getMeta(pdf);
+    // dossier.generatedAt = 2026-08-15T10:00:00.000Z; pdf-lib's PDFString.fromDate
+    // formats this as "D:YYYYMMDDHHMMSSZ" from the date's own UTC fields.
+    expect(info.CreationDate).toBe("D:20260815100000Z");
+    expect(info.ModDate).toBe("D:20260815100000Z");
   });
 
   it("is deterministic apart from PDF's own internal metadata: same input renders the same visible text", async () => {
