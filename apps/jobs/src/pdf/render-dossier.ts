@@ -1,0 +1,563 @@
+// RF-187: renders a `Dossier` (the pure model `buildDossier` builds in
+// `packages/core`) to PDF bytes. This module lives in `apps/jobs` — a
+// Node-only job package — and nowhere near `apps/web`, so `pdf-lib` can
+// never end up in a browser bundle: RNF-05's <=120 kB gzip initial-JS
+// budget is untouched by this file's existence. Do not import this module,
+// or `pdf-lib`, from `apps/web`.
+import { PDFDocument, PageSizes, StandardFonts, rgb } from "pdf-lib";
+import type { PDFFont, PDFPage } from "pdf-lib";
+import type {
+  Category, Dossier, DossierAttachmentStatus, DossierParty,
+} from "@pentefino/core";
+
+// --- geometry ---------------------------------------------------------------
+
+const [PAGE_WIDTH, PAGE_HEIGHT] = PageSizes.A4;
+const MARGIN = 50;
+const CONTENT_WIDTH = PAGE_WIDTH - MARGIN * 2;
+const INDENT_STEP = 16;
+const FOOTER_Y = 30;
+
+const TITLE_SIZE = 18;
+const TITLE_LINE_HEIGHT = 24;
+const HEADING_SIZE = 13;
+const HEADING_LINE_HEIGHT = 18;
+const BODY_SIZE = 10;
+const BODY_LINE_HEIGHT = 14;
+const FOOTER_SIZE = 8;
+
+// Gap inserted before every section heading except the very first thing on
+// the page. A heading landing right at the bottom of a page and pushing
+// straight to a new page is ugly but explicitly not a defect (brief,
+// "Pagination") — so this is a plain subtraction, not a "keep heading with
+// its first line" reservation.
+const SECTION_GAP = 10;
+
+const GREY = rgb(0.45, 0.45, 0.45);
+const BLACK = rgb(0, 0, 0);
+
+// Baseline sits a fixed fraction below the top of each line's box. This is
+// a layout approximation, not a font-metrics computation from ascent/
+// descent — good enough for a body of running text at fixed sizes, and
+// nothing here is asserted pixel-for-pixel (the tests read the PDF back as
+// text, not as coordinates).
+const BASELINE_RATIO = 0.8;
+
+// --- pt-BR label tables (rendering-only; §14.3 vocabulary applies) --------
+
+const PARTY_ROLE_LABELS: Record<DossierParty["role"], string> = {
+  consumidor: "Consumidor",
+  empresa: "Empresa",
+};
+
+const ATTACHMENT_STATUS_LABELS: Record<DossierAttachmentStatus, string> = {
+  available: "disponível no sistema",
+  expired: "não está mais disponível no sistema",
+  user_provided: "a providenciar",
+};
+
+// Category (packages/core/src/invoice/canonical.ts) is a closed union of
+// four English tokens used internally as a database enum. "Every string
+// drawn on the page is pt-BR" (house rule) applies to it like anything
+// else the invoice section shows.
+const CATEGORY_LABELS: Record<Category, string> = {
+  telecom: "Telecomunicações",
+  card: "Cartão de crédito",
+  energy: "Energia elétrica",
+  water: "Água",
+};
+
+// --- date/money formatting ---------------------------------------------------
+
+function pad2(n: number): string {
+  return n < 10 ? `0${n}` : `${n}`;
+}
+
+/**
+ * `dd/MM/yyyy` from a `Date`'s own UTC getters — deterministic, no locale,
+ * no timezone database. `dossier.ts` (sub-task A) has an identical private
+ * helper for the strings it builds; it isn't exported, so this is a
+ * separate small copy rather than a shared import, kept to the same
+ * format on purpose.
+ */
+function formatUtcDate(date: Date): string {
+  return `${pad2(date.getUTCDate())}/${pad2(date.getUTCMonth() + 1)}/${date.getUTCFullYear()}`;
+}
+
+// `periodStart`/`periodEnd`/`dueDate` on `dossier.invoice` are plain
+// `YYYY-MM-DD` strings with no time component (see the type's own
+// comment in dossier.ts) — splitting the string is simpler and stricter
+// than routing it through `Date` and back.
+function formatIsoDate(iso: string): string {
+  const [year, month, day] = iso.split("-");
+  return `${day}/${month}/${year}`;
+}
+
+function formatIsoDateOrUnknown(iso: string | null): string {
+  return iso !== null ? formatIsoDate(iso) : "não informado";
+}
+
+/**
+ * Integer cents -> `R$ 1.234,56`, hand-rolled rather than `Intl` so the
+ * output can never depend on the host's ICU data (a job runner is not
+ * guaranteed to carry full ICU). Handles zero and negative values — a
+ * credit line is a real thing on an invoice, rendered as `-R$ 1,50`.
+ */
+function formatCents(cents: number): string {
+  const negative = cents < 0;
+  const abs = Math.abs(cents);
+  const reais = Math.floor(abs / 100);
+  const centavos = abs % 100;
+
+  const digits = String(reais);
+  let grouped = "";
+  for (let i = 0; i < digits.length; i++) {
+    const fromEnd = digits.length - i;
+    grouped += digits[i];
+    if (fromEnd > 1 && fromEnd % 3 === 1) grouped += ".";
+  }
+
+  return `${negative ? "-" : ""}R$ ${grouped},${pad2(centavos)}`;
+}
+
+// --- WinAnsi sanitization ----------------------------------------------------
+
+// Characters with an obvious WinAnsi-safe equivalent are normalized even
+// though some of them (the dashes) already encode fine — this keeps the
+// document's punctuation consistent regardless of what a phone keyboard's
+// "smart quotes" or a pasted ellipsis happened to produce. `– —` are
+// themselves valid WinAnsi codepoints (verified against the embedded
+// Helvetica font before writing this) and are deliberately left alone.
+const KNOWN_REPLACEMENTS: Array<[RegExp, string]> = [
+  [/[‘’]/g, "'"],
+  [/[“”]/g, '"'],
+  [/…/g, "..."],
+  [/ /g, " "],
+];
+
+function normalizeKnownChars(text: string): string {
+  return KNOWN_REPLACEMENTS.reduce((acc, [pattern, replacement]) => acc.replace(pattern, replacement), text);
+}
+
+/**
+ * pdf-lib's standard-14 fonts throw the moment `drawText` (via
+ * `widthOfTextAtSize`/`encodeText`) is asked to place a character outside
+ * WinAnsiEncoding — and this renderer draws text that ultimately traces
+ * back to `case_documents.editedBody`, i.e. something a person typed and
+ * could easily paste an emoji, a `→`, or a CJK character into. A stray
+ * character must never be the reason a person's court dossier fails to be
+ * produced (INV-*: a document must degrade, never crash).
+ *
+ * Detection asks the embedded font itself rather than hand-maintaining a
+ * WinAnsi character table that could drift from whatever pdf-lib's
+ * embedder actually supports: `widthOfTextAtSize` throws on exactly the
+ * codepoints `encodeText` cannot map, so probing one codepoint at a time is
+ * ground truth, not a guess. Iterating with `for...of` walks Unicode code
+ * points rather than UTF-16 code units, so a surrogate-pair emoji collapses
+ * to a single `?` instead of two mangled halves.
+ *
+ * This only ever receives whitespace-free words (see `splitWords` below) —
+ * tab and newline both throw against WinAnsi too, but they are consumed as
+ * word separators before sanitization ever sees them, so this function
+ * does not need its own case for them.
+ */
+function sanitizeWord(font: PDFFont, word: string): string {
+  const normalized = normalizeKnownChars(word);
+  let result = "";
+  for (const char of normalized) {
+    try {
+      font.widthOfTextAtSize(char, 1);
+      result += char;
+    } catch {
+      result += "?";
+    }
+  }
+  return result;
+}
+
+function splitWords(font: PDFFont, text: string): string[] {
+  return text.split(/\s+/).filter((w) => w.length > 0).map((w) => sanitizeWord(font, w));
+}
+
+// --- text wrapping ------------------------------------------------------
+
+/**
+ * A single sanitized word wider than `maxWidth` on its own (a long URL, a
+ * raw id) must not overflow the margin or be handed to `drawText` as one
+ * unbreakable line — hard-split it by character. `current === ""` guards
+ * the pathological case where even one character is wider than
+ * `maxWidth`: that character still becomes its own line rather than
+ * looping forever trying to shrink below one character.
+ */
+function hardSplitWord(font: PDFFont, word: string, size: number, maxWidth: number): string[] {
+  const pieces: string[] = [];
+  let current = "";
+  for (const char of word) {
+    const candidate = current + char;
+    if (current === "" || font.widthOfTextAtSize(candidate, size) <= maxWidth) {
+      current = candidate;
+    } else {
+      pieces.push(current);
+      current = char;
+    }
+  }
+  if (current !== "") pieces.push(current);
+  return pieces;
+}
+
+/** Greedy word-wrap over already-sanitized words. Never drops a word. */
+function wrapWords(font: PDFFont, words: string[], size: number, maxWidth: number): string[] {
+  const lines: string[] = [];
+  let current = "";
+
+  for (const word of words) {
+    const candidate = current === "" ? word : `${current} ${word}`;
+    if (font.widthOfTextAtSize(candidate, size) <= maxWidth) {
+      current = candidate;
+      continue;
+    }
+
+    if (current !== "") lines.push(current);
+
+    if (font.widthOfTextAtSize(word, size) > maxWidth) {
+      const pieces = hardSplitWord(font, word, size, maxWidth);
+      for (let i = 0; i < pieces.length - 1; i++) lines.push(pieces[i]!);
+      current = pieces[pieces.length - 1] ?? "";
+    } else {
+      current = word;
+    }
+  }
+  if (current !== "") lines.push(current);
+
+  return lines;
+}
+
+function wrapText(font: PDFFont, text: string, size: number, maxWidth: number): string[] {
+  return wrapWords(font, splitWords(font, text), size, maxWidth);
+}
+
+// --- page/cursor builder -------------------------------------------------
+
+type TextStyle = { font: PDFFont; size: number; indent?: number; color?: typeof BLACK };
+
+/**
+ * Owns pagination. `y` tracks the top of the next line's box on the
+ * current page; `nextBaseline` is the only place that decides whether the
+ * current page still has room, and it is the single choke point every
+ * drawing helper below goes through — so "start a new page when a line
+ * would cross the bottom margin" only has to be correct once. Page numbers
+ * are written in a final pass after every page already exists (`drawFooters`),
+ * never while drawing content — the whole point being that `Página X de Y`
+ * needs an actual, final Y.
+ */
+class PageBuilder {
+  readonly pages: PDFPage[] = [];
+  private page: PDFPage;
+  private y = 0;
+
+  constructor(private readonly doc: PDFDocument) {
+    this.page = this.newPage();
+  }
+
+  private newPage(): PDFPage {
+    const page = this.doc.addPage([PAGE_WIDTH, PAGE_HEIGHT]);
+    this.pages.push(page);
+    this.page = page;
+    this.y = PAGE_HEIGHT - MARGIN;
+    return page;
+  }
+
+  private nextBaseline(lineHeight: number): { page: PDFPage; baseline: number } {
+    if (this.y - lineHeight < MARGIN) this.newPage();
+    const baseline = this.y - lineHeight * BASELINE_RATIO;
+    this.y -= lineHeight;
+    return { page: this.page, baseline };
+  }
+
+  /** Vertical whitespace with no page-break protection — see SECTION_GAP's comment. */
+  spacer(amount: number): void {
+    this.y -= amount;
+  }
+
+  /** Draws one line that the caller already knows fits within its column. */
+  drawLine(text: string, style: TextStyle, lineHeight: number): void {
+    const { page, baseline } = this.nextBaseline(lineHeight);
+    page.drawText(text, {
+      x: MARGIN + (style.indent ?? 0),
+      y: baseline,
+      size: style.size,
+      font: style.font,
+      color: style.color ?? BLACK,
+    });
+  }
+
+  /** Wraps `text` to the column width at `style.indent` and draws every resulting line. */
+  drawWrapped(text: string, style: TextStyle, lineHeight: number): void {
+    const indent = style.indent ?? 0;
+    const lines = wrapText(style.font, text, style.size, CONTENT_WIDTH - indent);
+    for (const line of lines) this.drawLine(line, style, lineHeight);
+  }
+
+  /**
+   * A label/value line whose value is right-aligned to the page's content
+   * edge (used for a contested item's amount). Only the line the value
+   * lands on carries it — if the label wraps to further lines, those are
+   * label-only, exactly like the rest of a wrapped paragraph.
+   */
+  drawLabelWithRightValue(label: string, value: string, style: TextStyle, lineHeight: number): void {
+    const indent = style.indent ?? 0;
+    // value is our own formatted text (money, in practice) - plain spaces only, safe to sanitize as one unit.
+    const sanitizedValue = sanitizeWord(style.font, value);
+    const valueWidth = style.font.widthOfTextAtSize(sanitizedValue, style.size);
+    const gap = 12;
+    const available = CONTENT_WIDTH - indent - valueWidth - gap;
+    // `value` is always a short formatted money string here, so `available`
+    // realistically never drops below this floor — it exists only so a
+    // pathological caller can never end up wrapping the label into a
+    // negative-width column.
+    const MIN_LABEL_COLUMN = 40;
+    const lines = wrapText(style.font, label, style.size, Math.max(available, MIN_LABEL_COLUMN));
+
+    lines.forEach((line, i) => {
+      const { page, baseline } = this.nextBaseline(lineHeight);
+      page.drawText(line, { x: MARGIN + indent, y: baseline, size: style.size, font: style.font, color: style.color ?? BLACK });
+      if (i === 0) {
+        const valueX = MARGIN + CONTENT_WIDTH - valueWidth;
+        page.drawText(sanitizedValue, { x: valueX, y: baseline, size: style.size, font: style.font, color: style.color ?? BLACK });
+      }
+    });
+  }
+}
+
+// --- section rendering ----------------------------------------------------
+
+function drawHeading(builder: PageBuilder, bold: PDFFont, text: string): void {
+  builder.spacer(SECTION_GAP);
+  builder.drawWrapped(text, { font: bold, size: HEADING_SIZE }, HEADING_LINE_HEIGHT);
+}
+
+function drawTitleBlock(builder: PageBuilder, fonts: { regular: PDFFont; bold: PDFFont }, dossier: Dossier): void {
+  builder.drawWrapped(dossier.title, { font: fonts.bold, size: TITLE_SIZE }, TITLE_LINE_HEIGHT);
+  builder.drawWrapped(`Caso ${dossier.caseId}`, { font: fonts.regular, size: BODY_SIZE }, BODY_LINE_HEIGHT);
+  builder.drawWrapped(`Fatura ${dossier.invoiceId}`, { font: fonts.regular, size: BODY_SIZE }, BODY_LINE_HEIGHT);
+  builder.drawWrapped(
+    `Documento gerado em ${formatUtcDate(dossier.generatedAt)}`,
+    { font: fonts.regular, size: BODY_SIZE },
+    BODY_LINE_HEIGHT,
+  );
+}
+
+/**
+ * A form line for a field the system doesn't hold: the label, then a rule
+ * of underscores sized to fill the rest of the available width, so it
+ * reads as a line to complete by hand rather than a blank or an empty
+ * string (that visible blankness is the entire point of this block).
+ * `Math.max(3, ...)` keeps the rule non-empty even for a label so long it
+ * would otherwise overrun the column — a defensive floor, not something
+ * any of this module's real field labels come close to needing.
+ */
+function formLine(font: PDFFont, label: string, size: number, availableWidth: number): string {
+  // label is our own fixed pt-BR field label text - plain spaces only, safe to sanitize as one unit.
+  const prefix = `${sanitizeWord(font, label)}: `;
+  const prefixWidth = font.widthOfTextAtSize(prefix, size);
+  const underscoreWidth = font.widthOfTextAtSize("_", size);
+  const count = Math.max(3, Math.floor((availableWidth - prefixWidth) / underscoreWidth));
+  return prefix + "_".repeat(count);
+}
+
+function drawParties(builder: PageBuilder, fonts: { regular: PDFFont; bold: PDFFont }, dossier: Dossier): void {
+  drawHeading(builder, fonts.bold, "Qualificação das partes");
+
+  for (const party of dossier.parties) {
+    builder.drawWrapped(PARTY_ROLE_LABELS[party.role], { font: fonts.bold, size: BODY_SIZE }, BODY_LINE_HEIGHT);
+
+    if (party.name === null) {
+      for (const field of party.fields) {
+        const line = formLine(fonts.regular, field, BODY_SIZE, CONTENT_WIDTH - INDENT_STEP);
+        builder.drawLine(line, { font: fonts.regular, size: BODY_SIZE, indent: INDENT_STEP }, BODY_LINE_HEIGHT);
+      }
+      continue;
+    }
+
+    builder.drawWrapped(`Nome: ${party.name}`, { font: fonts.regular, size: BODY_SIZE, indent: INDENT_STEP }, BODY_LINE_HEIGHT);
+    if (party.document !== null) {
+      builder.drawWrapped(
+        `Documento: ${party.document}`,
+        { font: fonts.regular, size: BODY_SIZE, indent: INDENT_STEP },
+        BODY_LINE_HEIGHT,
+      );
+    }
+  }
+}
+
+function invoiceFileLine(invoice: Dossier["invoice"]): string {
+  if (invoice.fileAvailable) return "Arquivo original da fatura: disponível no sistema.";
+  if (invoice.fileExpiredAt !== null) {
+    return `Arquivo original da fatura: removido do armazenamento em ${formatUtcDate(invoice.fileExpiredAt)}.`;
+  }
+  return "Arquivo original da fatura: removido do armazenamento (data não registrada).";
+}
+
+function drawInvoiceSection(builder: PageBuilder, fonts: { regular: PDFFont; bold: PDFFont }, dossier: Dossier): void {
+  drawHeading(builder, fonts.bold, "A fatura");
+  const { invoice } = dossier;
+  const style = { font: fonts.regular, size: BODY_SIZE };
+
+  builder.drawWrapped(`Prestadora: ${invoice.issuerName}`, style, BODY_LINE_HEIGHT);
+  builder.drawWrapped(`Categoria: ${CATEGORY_LABELS[invoice.category]}`, style, BODY_LINE_HEIGHT);
+  builder.drawWrapped(
+    `Período: ${formatIsoDateOrUnknown(invoice.periodStart)} a ${formatIsoDateOrUnknown(invoice.periodEnd)}`,
+    style,
+    BODY_LINE_HEIGHT,
+  );
+  builder.drawWrapped(`Vencimento: ${formatIsoDateOrUnknown(invoice.dueDate)}`, style, BODY_LINE_HEIGHT);
+  builder.drawWrapped(
+    `Valor total: ${invoice.totalCents !== null ? formatCents(invoice.totalCents) : "não informado"}`,
+    style,
+    BODY_LINE_HEIGHT,
+  );
+  builder.drawWrapped(invoiceFileLine(invoice), style, BODY_LINE_HEIGHT);
+}
+
+function drawContestedItems(builder: PageBuilder, fonts: { regular: PDFFont; bold: PDFFont }, dossier: Dossier): void {
+  drawHeading(builder, fonts.bold, "Itens contestados");
+
+  for (const item of dossier.contestedItems) {
+    builder.drawLabelWithRightValue(
+      item.description,
+      formatCents(item.amountCents),
+      { font: fonts.regular, size: BODY_SIZE },
+      BODY_LINE_HEIGHT,
+    );
+    for (const evidence of item.evidence) {
+      builder.drawWrapped(
+        `- ${evidence}`,
+        { font: fonts.regular, size: BODY_SIZE, indent: INDENT_STEP },
+        BODY_LINE_HEIGHT,
+      );
+    }
+  }
+
+  builder.drawWrapped(
+    `Total contestado: ${formatCents(dossier.contestedTotalCents)}`,
+    { font: fonts.bold, size: BODY_SIZE },
+    BODY_LINE_HEIGHT,
+  );
+}
+
+function drawTimeline(builder: PageBuilder, fonts: { regular: PDFFont; bold: PDFFont }, dossier: Dossier): void {
+  drawHeading(builder, fonts.bold, "Linha do tempo");
+
+  // Rendered strictly in array order — `dossier.entries` arrives already
+  // chronological (sub-task A's own sort, with a deterministic tie-break);
+  // re-sorting here would be both redundant and a second place the order
+  // could drift from what the model actually decided.
+  for (const item of dossier.entries) {
+    builder.drawWrapped(
+      `${formatUtcDate(item.at)} — ${item.title}`,
+      { font: fonts.bold, size: BODY_SIZE },
+      BODY_LINE_HEIGHT,
+    );
+    for (const line of item.details) {
+      builder.drawWrapped(
+        `- ${line}`,
+        { font: fonts.regular, size: BODY_SIZE, indent: INDENT_STEP },
+        BODY_LINE_HEIGHT,
+      );
+    }
+  }
+}
+
+function attachmentMarker(status: DossierAttachmentStatus): string {
+  return status === "available" ? "[x]" : "[ ]";
+}
+
+function drawAttachments(builder: PageBuilder, fonts: { regular: PDFFont; bold: PDFFont }, dossier: Dossier): void {
+  drawHeading(builder, fonts.bold, "Lista de anexos");
+
+  for (const attachment of dossier.attachments) {
+    builder.drawWrapped(
+      `${attachmentMarker(attachment.status)} ${attachment.label} — ${ATTACHMENT_STATUS_LABELS[attachment.status]}`,
+      { font: fonts.regular, size: BODY_SIZE },
+      BODY_LINE_HEIGHT,
+    );
+    if (attachment.note !== undefined) {
+      builder.drawWrapped(
+        attachment.note,
+        { font: fonts.regular, size: BODY_SIZE, indent: INDENT_STEP },
+        BODY_LINE_HEIGHT,
+      );
+    }
+  }
+}
+
+function drawNotes(builder: PageBuilder, fonts: { regular: PDFFont; bold: PDFFont }, dossier: Dossier): void {
+  if (dossier.notes.length === 0) return; // brief: omit the whole section when there are none
+
+  drawHeading(builder, fonts.bold, "Observações");
+  for (const note of dossier.notes) {
+    builder.drawWrapped(note, { font: fonts.regular, size: BODY_SIZE }, BODY_LINE_HEIGHT);
+    builder.spacer(4);
+  }
+}
+
+/**
+ * Runs only after every page already exists, so `Página X de Y` can carry
+ * a real, final `Y` — writing page numbers while content is still being
+ * laid out would mean guessing `Y` before it is known.
+ */
+function drawFooters(pages: PDFPage[], font: PDFFont, caseId: string): void {
+  const total = pages.length;
+  pages.forEach((page, index) => {
+    const pageNumber = index + 1;
+    page.drawText(`Caso ${caseId}`, { x: MARGIN, y: FOOTER_Y, size: FOOTER_SIZE, font, color: GREY });
+    const label = `Página ${pageNumber} de ${total}`;
+    const width = font.widthOfTextAtSize(label, FOOTER_SIZE);
+    page.drawText(label, { x: MARGIN + CONTENT_WIDTH - width, y: FOOTER_Y, size: FOOTER_SIZE, font, color: GREY });
+  });
+}
+
+// --- entry point --------------------------------------------------------
+
+/**
+ * RF-187: lays `dossier` out on A4 pages and returns the finished PDF's
+ * bytes. Pure aside from the PDF format's own internal object ids/xref
+ * offsets — every date embedded in the document (creation, modification)
+ * comes from `dossier.generatedAt`, never the wall clock, so the same
+ * `Dossier` always produces the same visible content.
+ *
+ * Does no masking, sorting or translation of its own: `dossier` arrives
+ * already masked (INV-007), already chronological, already pt-BR
+ * (`buildDossier`, packages/core). This function only lays it out on paper
+ * and defends against what paper itself cannot represent — text wider than
+ * the page, and characters the standard font cannot encode.
+ */
+export async function renderDossierPdf(dossier: Dossier): Promise<Uint8Array> {
+  const doc = await PDFDocument.create();
+  const regular = await doc.embedFont(StandardFonts.Helvetica);
+  const bold = await doc.embedFont(StandardFonts.HelveticaBold);
+
+  // PDF metadata strings go through a different encoder than page glyphs
+  // (verified: `setTitle`/`setSubject` accept arbitrary Unicode without
+  // throwing, unlike `drawText` with a standard font) — no WinAnsi
+  // sanitization needed here.
+  doc.setTitle(dossier.title);
+  doc.setSubject(`Fatura ${dossier.invoiceId} — Caso ${dossier.caseId}`);
+  doc.setCreationDate(dossier.generatedAt);
+  doc.setModificationDate(dossier.generatedAt);
+
+  const builder = new PageBuilder(doc);
+  const fonts = { regular, bold };
+
+  drawTitleBlock(builder, fonts, dossier);
+  drawParties(builder, fonts, dossier);
+  drawInvoiceSection(builder, fonts, dossier);
+  drawContestedItems(builder, fonts, dossier);
+  drawTimeline(builder, fonts, dossier);
+  drawAttachments(builder, fonts, dossier);
+  drawNotes(builder, fonts, dossier);
+
+  drawFooters(builder.pages, regular, dossier.caseId);
+
+  return doc.save();
+}
