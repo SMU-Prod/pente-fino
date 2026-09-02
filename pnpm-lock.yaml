@@ -17,6 +17,9 @@ importers:
       '@pentefino/adapters':
         specifier: workspace:*
         version: link:packages/adapters
+      '@pentefino/ai':
+        specifier: workspace:*
+        version: link:packages/ai
       '@pentefino/config':
         specifier: workspace:*
         version: link:packages/config
