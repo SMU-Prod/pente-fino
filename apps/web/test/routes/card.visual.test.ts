@@ -56,7 +56,12 @@ function hexToRgb(hex: string): [number, number, number] {
 }
 
 describe("GET /api/card/[token] — the rendered image (RF-145's visual test)", () => {
-  it("produces a real 1200x630 PNG, painted with §13.1's paper token as its background", async () => {
+  // Renders a real PNG through satori rather than a mock, which is the point
+  // of this test and also why it is slow. The default 5s budget is fine on an
+  // idle machine and not on a loaded one, and a test that fails from
+  // concurrency is a test that will fail in CI for a reason unrelated to the
+  // code it guards.
+  it("produces a real 1200x630 PNG, painted with §13.1's paper token as its background", { timeout: 60_000 }, async () => {
     const issuerId = newId("iss");
     await ctx.db.insert(issuers).values({ id: issuerId, slug: issuerId, category: "telecom", displayName: "Claro" });
     const invoiceId = newId("inv");

@@ -220,7 +220,11 @@ describe("GET /api/invoices/[id]/status", () => {
   // pipeline), so this exercises the real event trail the ingest task
   // writes, not a synthetic stand-in for it.
 
-  it("streams at least four distinct events between queued and analyzed for a client connected from the start", async () => {
+  // Drives a real ingestion and reads a real polling stream end to end, so it
+  // is bounded by the pipeline rather than by assertion cost. Same reasoning
+  // as the card's visual test: the default budget measures machine load, not
+  // correctness.
+  it("streams at least four distinct events between queued and analyzed for a client connected from the start", { timeout: 60_000 }, async () => {
     useCookies(createCookieStore({ pf_session: signSession(sessionA, SECRET) }));
     fireIngest();
 
