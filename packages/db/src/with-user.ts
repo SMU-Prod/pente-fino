@@ -1,8 +1,11 @@
-import { and, desc, eq, inArray } from "drizzle-orm";
-import { newId, newPublicToken, type ContestDocument, type EventType, type Stage } from "@pentefino/core";
+import { and, desc, eq, inArray, isNull } from "drizzle-orm";
+import {
+  newId, newPublicToken, type CaseOutcome, type ContestDocument, type EventType, type Stage,
+} from "@pentefino/core";
 import { getUnscopedDb } from "./client.js";
 import {
-  anonymousSessions, caseDocuments, cases, events, findings, invoiceItems, invoices, issuers, rules,
+  anonymousSessions, caseDocuments, caseProtocols, cases, events, findings, invoiceItems, invoices, issuers,
+  rules,
 } from "./schema.js";
 
 export type Session = { userId: string } | { sessionId: string };
@@ -36,6 +39,35 @@ type Db = ReturnType<typeof getUnscopedDb>;
  * still needed attention would misrepresent what is actually still owed.
  */
 const VISIBLE_FINDING_STATUSES = ["open", "confirmed_by_user", "contested", "unresolved"] as const;
+
+/**
+ * Which of `findings.status`'s six values may be put inside a *case* - the
+ * claim actually made to a company (E5 Task 4). Deliberately NOT the same
+ * list as `VISIBLE_FINDING_STATUSES` above, even though it starts from the
+ * same idea of "money still at stake":
+ *
+ *   - `shadow` findings are excluded by a separate `eq(findings.shadow,
+ *     false)` filter, not by this list, for RF-125's reason: a rule still on
+ *     probation never reached the person at all, so its finding is not
+ *     something they can be said to be disputing. A claim made to a company
+ *     on behalf of someone who was never shown it is the one thing the
+ *     shadow period exists to prevent.
+ *   - `dismissed_by_user` and `resolved` are left out for exactly the reason
+ *     `VISIBLE_FINDING_STATUSES` leaves them out - dismissal means the person
+ *     recognises the charge, `resolved` means it was already put right; in
+ *     neither case is there live money to contest.
+ *   - `contested` is left out, and this is the one place the two lists
+ *     genuinely diverge: a finding some *other* case is already disputing
+ *     must never enter a second one. `recoveredCents` at close feeds §1.4's
+ *     north-star metric ("R$ recuperados"), and the same charge sitting in
+ *     two cases would be counted twice the moment both close. It also makes
+ *     a double-submitted `POST /api/cases` fail on its second call instead of
+ *     quietly opening a duplicate case over the same money.
+ *   - `unresolved` stays in: a dispute that ended without fixing the charge
+ *     leaves the money exactly as live as `open` did, just with a failed
+ *     attempt behind it, so escalating again is the whole point of E5.
+ */
+const CONTESTABLE_FINDING_STATUSES = ["open", "confirmed_by_user", "unresolved"] as const;
 
 /**
  * Creates the `anonymous_sessions` row a fresh session id needs before any
@@ -444,6 +476,249 @@ export function withUser(session: Session, db: Db = getUnscopedDb()) {
       return db.select().from(events)
         .where(eq(events.invoiceId, invoiceId))
         .orderBy(events.occurredAt);
+    },
+
+    /**
+     * Opens a case: the write nothing in this codebase had until E5 Task 4,
+     * which is why the `case_created` event had never once been recorded.
+     *
+     * **Stage.** A new case starts at `draft` with no deadline, and
+     * `nextStage` is deliberately not consulted. §9.1's only edge out of
+     * `draft` is "usuário cria contestação", which is the contestation
+     * *document* (E4's generator, and the advance route that follows it),
+     * not the case row - `cases.stage` defaults to `draft` in §6.2's schema
+     * for exactly that reason, and `StageEvent` has no member that could
+     * even express "a case was just opened". §20.2's playbook has no `draft`
+     * entry either: its `sac` clock starts on "protocolo colado", not on
+     * entering the stage. Stamping a deadline here would drop a case the
+     * person has not yet acted on into the deadline scan and start expiring
+     * it. `stage` is written explicitly rather than left to the column
+     * default so the decision is visible at the one place that makes it.
+     *
+     * **Why one query, and why the count check.** `findingIds` is
+     * caller-supplied and is *not* covered by checking `invoiceId`: without
+     * the `contestable.length !== findingIds.length` test below, a caller
+     * could name its own invoice and slip somebody else's finding id into
+     * the array, and the case - and later its dossier, and later still its
+     * `recoveredCents` - would carry a stranger's money. So a single query
+     * proves all of it at once (the invoice is this caller's, every finding
+     * belongs to *that* invoice, none is shadow, each has a contestable
+     * status) and the row count is what turns "some of them matched" into
+     * "all of them did". `findings.id` is the primary key, so N rows back
+     * for N deduped ids means every one of them passed.
+     *
+     * **Issuer.** `cases.issuerId` is NOT NULL, and a case with no issuer
+     * has no playbook (§20.2) to walk, so an owned invoice whose issuer was
+     * never detected (RF-105/RF-106 leaves `invoices.issuerId` nullable)
+     * yields `null` rather than a case that could never be escalated.
+     *
+     * Every rejection returns the same `null` - not owned, does not exist,
+     * already contested, no issuer - so the caller (and therefore the HTTP
+     * response) can never learn which one it was (INV-008). The
+     * `case_created` event is the route's to record, the same division of
+     * labour `editCaseDocument` already follows with `contest_edited`.
+     */
+    async createCase(input: { invoiceId: string; findingIds: string[] }) {
+      if (!userId) return null;
+      // First-seen order preserved: `findingIds` is stored as given and read
+      // back by the dossier, so the order the person picked the charges in
+      // is the order they get argued in.
+      const findingIds = [...new Set(input.findingIds)];
+      if (findingIds.length === 0) return null;
+
+      const contestable = await db.select({ issuerId: invoices.issuerId })
+        .from(findings)
+        .innerJoin(invoices, eq(findings.invoiceId, invoices.id))
+        .where(and(
+          eq(invoices.id, input.invoiceId),
+          ownsInvoice,
+          eq(findings.invoiceId, input.invoiceId),
+          inArray(findings.id, findingIds),
+          eq(findings.shadow, false),
+          inArray(findings.status, [...CONTESTABLE_FINDING_STATUSES]),
+        ));
+      if (contestable.length !== findingIds.length) return null;
+      const issuerId = contestable[0]?.issuerId;
+      if (!issuerId) return null;
+
+      const id = newId("cas");
+      // One transaction - `apps/jobs/src/tasks/ingest.ts`'s pattern. A case
+      // whose findings never flipped to `contested` would leave the same
+      // money open to a second case, which is exactly what
+      // `CONTESTABLE_FINDING_STATUSES` excluding `contested` prevents.
+      await db.transaction(async (tx) => {
+        await tx.insert(cases).values({
+          id,
+          userId,
+          invoiceId: input.invoiceId,
+          issuerId,
+          findingIds,
+          stage: "draft",
+          nextDeadlineAt: null,
+        });
+        await tx.update(findings)
+          .set({ status: "contested", updatedAt: new Date() })
+          .where(inArray(findings.id, findingIds));
+      });
+      return id;
+    },
+
+    /**
+     * Everything one case's screen (and Task 7's dossier) reads, in one
+     * round trip. Ownership is proved once, on the case itself, and the
+     * three lists that hang off it are then scoped by `caseId` alone -
+     * `case_documents` and `case_protocols` both cascade from `cases`, so a
+     * row of either can only exist under a case already proved owned.
+     *
+     * A case belonging to somebody else and a case that never existed both
+     * come back as the same `null` (INV-008): the caller, and therefore the
+     * HTTP response, can never tell the two apart.
+     *
+     * **The timeline is NOT filtered by `ownsEvent`, and must not be.** It
+     * is deliberately scoped on `events.caseId` alone. E5 Task 3's deadline
+     * scan is a *system* caller with no user session: the `deadline_expired`
+     * and `stage_advanced` rows it writes carry neither `userId` nor
+     * `sessionId`, so an `ownsEvent` filter here would silently drop exactly
+     * those - the only events on the timeline that nobody else records - and
+     * a case would look as though its deadline had never passed. This is the
+     * kind of filter that gets added later as a free extra safety; it is not
+     * free, and the ownership it would duplicate has already been proved on
+     * the case one query earlier.
+     */
+    async caseDetail(caseId: string) {
+      if (!userId) return null;
+      const [row] = await db.select({
+        id: cases.id,
+        userId: cases.userId,
+        invoiceId: cases.invoiceId,
+        issuerId: cases.issuerId,
+        findingIds: cases.findingIds,
+        stage: cases.stage,
+        stageEnteredAt: cases.stageEnteredAt,
+        nextDeadlineAt: cases.nextDeadlineAt,
+        workflowRunId: cases.workflowRunId,
+        protocolToken: cases.protocolToken,
+        outcome: cases.outcome,
+        outcomeConfirmedBy: cases.outcomeConfirmedBy,
+        recoveredCents: cases.recoveredCents,
+        closedAt: cases.closedAt,
+        createdAt: cases.createdAt,
+        updatedAt: cases.updatedAt,
+      })
+        .from(cases)
+        .where(and(eq(cases.id, caseId), eq(cases.userId, userId)));
+      if (!row) return null;
+
+      const documents = await db.select({
+        id: caseDocuments.id,
+        caseId: caseDocuments.caseId,
+        stage: caseDocuments.stage,
+        kind: caseDocuments.kind,
+        promptVersion: caseDocuments.promptVersion,
+        variant: caseDocuments.variant,
+        body: caseDocuments.body,
+        userEdited: caseDocuments.userEdited,
+        editedBody: caseDocuments.editedBody,
+        sentAt: caseDocuments.sentAt,
+        createdAt: caseDocuments.createdAt,
+        updatedAt: caseDocuments.updatedAt,
+      })
+        .from(caseDocuments)
+        .where(eq(caseDocuments.caseId, caseId))
+        .orderBy(caseDocuments.createdAt);
+
+      const protocols = await db.select({
+        id: caseProtocols.id,
+        caseId: caseProtocols.caseId,
+        stage: caseProtocols.stage,
+        protocolNumber: caseProtocols.protocolNumber,
+        channel: caseProtocols.channel,
+        registeredAt: caseProtocols.registeredAt,
+        responseDueAt: caseProtocols.responseDueAt,
+        responseReceivedAt: caseProtocols.responseReceivedAt,
+        responseSummary: caseProtocols.responseSummary,
+        createdAt: caseProtocols.createdAt,
+        updatedAt: caseProtocols.updatedAt,
+      })
+        .from(caseProtocols)
+        .where(eq(caseProtocols.caseId, caseId))
+        // `registeredAt` is when the company actually recorded the protocol,
+        // which is the order a person reads their own history in - not
+        // `createdAt`, which is only when this app got told about it.
+        .orderBy(caseProtocols.registeredAt);
+
+      const timeline = await db.select({
+        id: events.id,
+        userId: events.userId,
+        sessionId: events.sessionId,
+        caseId: events.caseId,
+        invoiceId: events.invoiceId,
+        type: events.type,
+        payload: events.payload,
+        occurredAt: events.occurredAt,
+      })
+        .from(events)
+        .where(eq(events.caseId, caseId))
+        .orderBy(events.occurredAt);
+
+      return { case: row, documents, protocols, timeline };
+    },
+
+    /**
+     * Closes a case and settles the findings it was disputing. Returns the
+     * updated row, because the caller needs `invoiceId` and the values as
+     * actually stored for the `outcome_confirmed` event it records.
+     *
+     * **Once, and only once.** `isNull(cases.closedAt)` is folded into the
+     * same predicate as the ownership check rather than tested beforehand,
+     * so the close is decided by the write itself and two concurrent calls
+     * cannot both win it. A second close therefore returns the same `null` a
+     * wrong owner gets, and can never emit a second `outcome_confirmed` -
+     * `recoveredCents` feeds §1.4's north-star metric ("R$ recuperados"),
+     * and a case that could report its recovery twice would inflate the one
+     * number this product is measured by.
+     *
+     * **What happens to the findings.** Findings this case named and that are
+     * still `contested` become `resolved` on a `resolved` outcome and
+     * `unresolved` on `partial`, `denied` and `abandoned`. `partial` landing
+     * on `unresolved` is deliberate: a case records how much money came back
+     * but never *which* findings the partial recovery covered, so marking
+     * them all resolved would erase from the report exactly the charges
+     * nobody actually got refunded. `unresolved` is in
+     * `VISIBLE_FINDING_STATUSES` for that reason - the money stays on the
+     * report, with a failed attempt behind it. The `contested` filter keeps
+     * this case to its own business: a finding some other write already
+     * settled is not this close's to move.
+     *
+     * `note` is not a parameter: `cases` has no column for it, and the route
+     * puts the person's own words in the event payload instead. Accepting it
+     * here would only invite a caller to believe it was stored.
+     */
+    async closeCase(caseId: string, input: { outcome: CaseOutcome; recoveredCents?: number }) {
+      if (!userId) return null;
+      const now = new Date();
+      return db.transaction(async (tx) => {
+        const [updated] = await tx.update(cases)
+          .set({
+            stage: "closed",
+            outcome: input.outcome,
+            outcomeConfirmedBy: "user",
+            recoveredCents: input.recoveredCents ?? 0,
+            closedAt: now,
+            nextDeadlineAt: null,
+            updatedAt: now,
+          })
+          .where(and(eq(cases.id, caseId), eq(cases.userId, userId), isNull(cases.closedAt)))
+          .returning();
+        if (!updated) return null;
+        await tx.update(findings)
+          .set({
+            status: input.outcome === "resolved" ? "resolved" : "unresolved",
+            updatedAt: now,
+          })
+          .where(and(inArray(findings.id, updated.findingIds), eq(findings.status, "contested")));
+        return updated;
+      });
     },
   };
 }
