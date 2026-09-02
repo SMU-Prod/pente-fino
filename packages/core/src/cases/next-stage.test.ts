@@ -141,21 +141,18 @@ describe("nextStage · the enumeration §9.1 requires", () => {
   // "Routes to" means entering the stage from somewhere else. A case already
   // sitting in `ombudsman` or `procon` stays there on the events that do not
   // move it, whatever its category, which is not what these two assert.
-  const entering = (stage: Stage, playbook = TELECOM_PLAYBOOK_V1): string[] =>
+  const entering = (stage: Stage, playbook = TELECOM_PLAYBOOK_V1): Combination[] =>
     COMBINATIONS
       .filter((combination) => combination.stage !== stage)
-      .filter((combination) => transitionFor(combination, playbook).stage === stage)
-      .map(label);
+      .filter((combination) => transitionFor(combination, playbook).stage === stage);
 
   it("routes to `ombudsman` only for `card` (§9.1)", () => {
-    const offenders = entering("ombudsman")
-      .filter((entry) => !entry.includes("× card ×"));
-    expect(offenders).toEqual([]);
+    expect(entering("ombudsman").filter((c) => c.category !== "card").map(label)).toEqual([]);
     expect(entering("ombudsman").length).toBeGreaterThan(0);
   });
 
   it("routes to `procon` only when the playbook declares it (§9.1: opcional)", () => {
-    expect(entering("procon")).toEqual([]);
+    expect(entering("procon").map(label)).toEqual([]);
     expect(entering("procon", PLAYBOOK_WITH_PROCON).length).toBeGreaterThan(0);
   });
 
