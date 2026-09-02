@@ -39,6 +39,7 @@ describe("the public entry point", () => {
       "isBusinessDay",
       "HOLIDAY_CALENDAR_VERSION",
       "STAGE_EVENT_TYPES",
+      "PROTOCOL_WINDOW_DAYS",
       "TELECOM_PLAYBOOK_V1",
       "pairInvoiceItems",
       "extractionQuality",

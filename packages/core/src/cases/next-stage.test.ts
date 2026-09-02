@@ -50,6 +50,15 @@ const COMBINATIONS: Combination[] = STAGES.flatMap((stage) =>
   ),
 );
 
+// Most assertions below filter `COMBINATIONS` down to the offenders and
+// expect an empty list, which an empty enumeration would satisfy for the
+// wrong reason. The size is also asserted in the first test, but a `.only`
+// run skips that one — this runs on import, so every test in the file is
+// covered by it.
+if (COMBINATIONS.length === 0) {
+  throw new Error("the stage x event x category enumeration is empty: every invariant below is vacuous");
+}
+
 function transitionFor(combination: Combination, playbook = TELECOM_PLAYBOOK_V1): StageTransition {
   const { stage, category, hasProtocol, event } = combination;
   return nextStage({ stage, category, hasProtocol }, playbook, { type: event, at: AT });
@@ -205,15 +214,37 @@ describe("nextStage · the enumeration §9.1 requires", () => {
     expect(offenders).toEqual([]);
   });
 
-  it("stamps the deadline exactly when the decision asks for one", () => {
+  it("never asks the caller to clear a deadline the decision wanted to set", () => {
+    // `stampDeadline: true` with a null date writes NULL to
+    // `cases.next_deadline_at`, which drops the case out of the
+    // `cases_next_deadline` partial index for good. That must only happen
+    // where the decision genuinely says `clear` — never for a `wait` whose
+    // instant is missing, which is every wait until Task 1's calculator is
+    // wired in.
     const offenders: string[] = [];
     for (const combination of COMBINATIONS) {
       const { stage, category, hasProtocol, event } = combination;
-      const state = { stage, category, hasProtocol };
-      const decision = decideTransition(state, TELECOM_PLAYBOOK_V1, { type: event, at: AT });
+      const decision = decideTransition(
+        { stage, category, hasProtocol }, TELECOM_PLAYBOOK_V1, { type: event, at: AT },
+      );
       const result = transitionFor(combination);
-      if (result.stampDeadline !== (decision.deadline.kind !== "keep")) {
-        offenders.push(`${label(combination)} → ${decision.deadline.kind}`);
+      const clearing = result.stampDeadline && result.nextDeadlineAt === null;
+      if (clearing && decision.deadline.kind !== "clear") {
+        offenders.push(`${label(combination)} → ${decision.deadline.kind} cleared`);
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it("never touches the column at all for a decision that says `keep`", () => {
+    const offenders: string[] = [];
+    for (const combination of COMBINATIONS) {
+      const { stage, category, hasProtocol, event } = combination;
+      const decision = decideTransition(
+        { stage, category, hasProtocol }, TELECOM_PLAYBOOK_V1, { type: event, at: AT },
+      );
+      if (decision.deadline.kind === "keep" && transitionFor(combination).stampDeadline) {
+        offenders.push(label(combination));
       }
     }
     expect(offenders).toEqual([]);
@@ -308,7 +339,14 @@ describe("nextStage · the §9.1 branches that are easy to miss", () => {
     expect(result.stage).toBe("sac");
   });
 
-  it("reopens a closed case at `sac` when the item comes back (RF-203)", () => {
+  it("reopens a closed case when the item comes back, provisionally at `sac` — NOT RF-203's stage", () => {
+    // RF-203's acceptance is "caso reabre no estágio anterior ao
+    // fechamento", and this function cannot honour it: `current.stage` is
+    // `closed` and §9.1 fixed the signature. `sac` is the safe provisional
+    // answer (a fresh charge needs a fresh protocol, and `sac` is the one
+    // channel that does not require a previous one). E6 owns RF-203 and has
+    // the case's history; it must read the pre-close stage from `events` and
+    // override this rather than treat it as the requirement met.
     const decision = decideTransition(
       { stage: "closed", category: "telecom", hasProtocol: false },
       TELECOM_PLAYBOOK_V1,
@@ -425,17 +463,18 @@ describe("nextStage · which clock a transition starts (RF-181, RF-186)", () => 
  * and delete it, instead of the gap surviving because nothing complained.
  */
 describe("nextStage · MERGE TRIPWIRE: the deadline calculator is not wired yet", () => {
-  it("asks for a wait but cannot yet say when it ends", () => {
+  it("asks for a wait, cannot yet say when it ends, and therefore leaves the column alone", () => {
     const state = { stage: "sac" as Stage, category: "telecom" as Category, hasProtocol: false };
     const event: StageEvent = { type: "protocol_entered", at: AT };
     expect(decideTransition(state, TELECOM_PLAYBOOK_V1, event).deadline).toMatchObject({
-      kind: "wait",
+      kind: "wait", days: 7, businessDays: false,
     });
     const result = nextStage(state, TELECOM_PLAYBOOK_V1, event);
-    expect(result.stampDeadline).toBe(true);
-    // Delete this file's describe block and replace the assertion with the
-    // date Task 1's calculator produces: 7 calendar days after `AT`.
+    // Delete this describe block on merge and replace it with the date Task
+    // 1's `computeDeadline` produces: 7 calendar days after `AT`, rolled
+    // forward off a weekend or holiday, with `stampDeadline` then true.
     expect(result.nextDeadlineAt).toBeNull();
+    expect(result.stampDeadline).toBe(false);
   });
 });
 
@@ -468,5 +507,22 @@ describe("nextStage · a value from outside the declared vocabulary still throws
         { type: "chargeback_filed" as StageEvent["type"], at: AT },
       ),
     ).toThrow(/not mapped.*event=chargeback_filed.*hasProtocol=false/s);
+  });
+
+  it("throws for an unknown event on a CLOSED case too, rather than answering it as a no-op", () => {
+    // `closed` is answered before the event switch, so the vocabulary check
+    // has to run first or an undeclared event here comes back as a
+    // confident "nothing changes". E6's own `case_reopened`, arriving from
+    // an older deploy, is the concrete way that happens.
+    for (const event of ["case_reopened", "chargeback_filed"]) {
+      expect(() =>
+        nextStage(
+          { stage: "closed", category: "telecom", hasProtocol: true },
+          TELECOM_PLAYBOOK_V1,
+          { type: event as StageEvent["type"], at: AT },
+        ),
+        event,
+      ).toThrow(new RegExp(`not mapped.*stage=closed.*event=${event}`, "s"));
+    }
   });
 });

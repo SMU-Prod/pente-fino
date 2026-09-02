@@ -15,12 +15,19 @@ import type { Database } from "../client.js";
  * constant lives in the package that owns the type (`@pentefino/core`), and
  * this file only writes it onto rows.
  *
- * **Only where the column is still null.** `prompts.ts` uses
- * `onConflictDoNothing` for the same reason: a seed run must never overwrite
- * configuration an operator has since tuned for one issuer. That makes this
- * idempotent — a redeploy is a no-op — at the cost that a revised §20.2 does
- * not propagate on its own. Moving an issuer to `TELECOM_PLAYBOOK_V2` will
- * be a deliberate act, not a side effect of deploying.
+ * **Only where the column is still null**, so a seed run can never overwrite
+ * a playbook an operator has since tuned for one issuer. That makes this
+ * idempotent: a redeploy matches zero rows.
+ *
+ * It is a stricter guard than `prompts.ts`'s `onConflictDoNothing`, and the
+ * difference matters. `prompts` is keyed `(slug, version)`, so a v2 prompt
+ * lands as a new row and the v1 stays behind it for rollback —
+ * `onConflictDoNothing` never blocks a new version. `issuers.playbook` has
+ * no version key at all: it is one `jsonb` column, so `IS NULL` blocks
+ * `TELECOM_PLAYBOOK_V2` on **every** issuer, permanently, and nothing here
+ * or anywhere else would move one. Rolling an issuer forward is a deliberate
+ * ops act until `issuers` grows a version column of its own — which is what
+ * it would take for playbooks to be versioned the way prompts are.
  *
  * **Telecom only**, because §20.2's playbook is telecom's: its channels are
  * Anatel and the operator's SAC, and its `legalRefs` are Anatel resolutions.

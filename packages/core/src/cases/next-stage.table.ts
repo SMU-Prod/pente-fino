@@ -67,6 +67,31 @@ import type { CaseOutcome, StageEvent } from "./next-stage.js";
 export const PROTOCOL_WINDOW_DAYS = 30;
 
 /**
+ * The events §9.1's machine answers to.
+ *
+ * A runtime list rather than a bare union, for two reasons. §9.1's required
+ * test — "todas as combinações `stage × event × category`" — enumerates the
+ * product from it, so a seventh event cannot be added without the
+ * enumeration growing to cover it. And `decideTransition` validates against
+ * it, so an event name from outside the vocabulary throws instead of being
+ * answered.
+ *
+ * Declared here rather than beside `StageEvent` in `next-stage.ts` so the
+ * validation and the vocabulary live in one file; `next-stage.ts`
+ * re-exports it.
+ */
+export const STAGE_EVENT_TYPES = [
+  "protocol_entered",
+  "deadline_expired",
+  "response_received",
+  "resolved",
+  "user_abandon",
+  // RF-203: the contested item comes back on invoice N+2. Reopens a
+  // closed case, with the reopening stamped into its history.
+  "item_reappeared",
+] as const;
+
+/**
  * What a transition wants done with `cases.next_deadline_at`.
  *
  *  - `keep` — do not touch the column. The transition changed nothing that
@@ -173,8 +198,18 @@ function escalationTarget(stage: Stage, category: Category, playbook: Playbook):
     case "regulator": return playbookEntry(playbook, "procon") === undefined ? "jec_ready" : "procon";
     case "procon": return "jec_ready";
     // `jec_ready` is the end of the escalation ladder: what follows it is a
-    // court, not another channel this machine drives. `closed` never
-    // reaches here — `decideTransition` answers for it first.
+    // court, not another channel this machine drives.
+    //
+    // §9.1 does draw `jec_ready ──▶ closed`, and every other unlabelled
+    // arrow in that diagram is read here as `deadline_expired`. This one is
+    // not, deliberately: §20.2 gives `jec_ready` `responseDays: 0`, so no
+    // deadline is ever stamped there and no expiry can fire. That arrow is
+    // the court case ending, which reaches this table as `resolved` (or
+    // `user_abandon`) — both already close from `jec_ready`. Escalating an
+    // expiry out of `jec_ready` would have nowhere to go, and closing on one
+    // would need an outcome nobody has decided.
+    //
+    // `closed` never reaches here — `decideTransition` answers for it first.
     case "jec_ready": case "closed": return null;
   }
 }
@@ -212,22 +247,36 @@ export function decideTransition(
   playbook: Playbook,
   event: StageEvent,
 ): StageDecision {
-  if (!STAGES.includes(current.stage) || !CATEGORIES.includes(current.category)) {
+  // Before the `closed` shortcut below, not after: a `closed` case is
+  // answered without reaching the event switch, so without this an
+  // undeclared event on a closed case would come back as a confident no-op
+  // instead of throwing. E6's `case_reopened` arriving from an older deploy
+  // is the concrete way that happens.
+  if (!STAGES.includes(current.stage)
+    || !CATEGORIES.includes(current.category)
+    || !STAGE_EVENT_TYPES.includes(event.type)) {
     throw unmapped(current, event);
   }
 
   // `closed` is terminal. RF-203's `item_reappeared` is the single way out:
-  // the contested item came back on invoice N+2, so there is a fresh charge
-  // and the case restarts at the first channel, needing a new protocol.
+  // the contested item came back on invoice N+2, so there is a fresh charge.
+  //
+  // **This row deviates from RF-203 and E6 must not take it at face value.**
+  // RF-203's acceptance is "caso reabre *no estágio anterior ao
+  // fechamento*", and this function cannot honour that: `current` carries
+  // only the stage the case is in, which is `closed`, and §9.1 fixed that
+  // signature. `sac` is the safe provisional answer — a fresh charge needs a
+  // fresh protocol, and `sac` is the one channel that does not require a
+  // previous one — but a case that had reached `regulator` should not
+  // restart the whole ladder. E6 owns RF-203 and can read the stage before
+  // the close out of `events` (the last `stage_advanced`) or out of
+  // `case_protocols.stage`; it should use that and override this.
   //
   // Everything else is a no-op that deliberately leaves `outcome` null.
   // `outcome` on a transition means "this transition closed the case, and
   // this is why"; a second `resolved` on an already-closed case closed
   // nothing, and returning `resolved` here would let a late event overwrite
   // the outcome the case actually reached.
-  //
-  // E6 owns RF-203's full semantics (`case_reopened`, clearing
-  // `cases.outcome` and `closed_at`); this row exists so the table is total.
   if (current.stage === "closed") {
     return event.type === "item_reappeared"
       ? { stage: "sac", outcome: null, deadline: PROTOCOL_WINDOW }
@@ -291,8 +340,11 @@ export function decideTransition(
       // window is what runs there, not the new stage's `responseDays`.
       return { stage: target, outcome: null, deadline: PROTOCOL_WINDOW };
     }
-
-    default:
-      throw unmapped(current, event);
   }
+  // No `default`, on purpose. An event from outside the vocabulary already
+  // threw at the top of the function, so a default here would be dead code;
+  // and without one, adding a seventh member to `STAGE_EVENT_TYPES` stops
+  // this switch from returning on every path, which `strict` reports as a
+  // compile error against the declared return type. The missing row is
+  // caught when it is written rather than when it is hit.
 }
