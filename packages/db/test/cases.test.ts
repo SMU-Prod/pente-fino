@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { and, eq, inArray } from "drizzle-orm";
-import { newId, type ContestDocument, type EventType } from "@pentefino/core";
+import { computeDeadline, newId, PROTOCOL_WINDOW_DAYS, type ContestDocument, type EventType } from "@pentefino/core";
 import { createTestDb, type TestDb } from "../src/testing.js";
 import {
   anonymousSessions, caseDocuments, caseProtocols, cases, events, findings, invoices, issuers, rules, users,
@@ -123,7 +123,7 @@ beforeEach(async () => {
 afterEach(async () => { await ctx.close(); });
 
 describe("createCase (the case-creation hole E5 Task 4 fills, INV-008)", () => {
-  it("opens the case at draft with no deadline, stamped with the invoice's issuer", async () => {
+  it("opens the case at draft, stamped with the invoice's issuer", async () => {
     const scoped = withUser({ userId: alice }, ctx.db);
     const caseId = await scoped.createCase({ invoiceId: aliceInvoice, findingIds: [aliceFinding] });
     expect(caseId).toEqual(expect.any(String));
@@ -134,11 +134,42 @@ describe("createCase (the case-creation hole E5 Task 4 fills, INV-008)", () => {
       invoiceId: aliceInvoice,
       issuerId,
       stage: "draft",
-      nextDeadlineAt: null,
       findingIds: [aliceFinding],
       outcome: null,
       closedAt: null,
     });
+  });
+
+  // RF-186. This assertion is the reverse of the one E5 Task 4 shipped
+  // (`nextDeadlineAt: null`), and the reversal is the point: a null here
+  // means Task 3's sweep — which scans `next_deadline_at IS NOT NULL` —
+  // never sees the case at all, so the person gets no day-30 nudge and the
+  // case is silently abandoned at day 60 with no event. Three tasks each
+  // assumed another one stamped this window; nobody did.
+  it("starts RF-186's 30-day protocol window, because nothing else ever would", async () => {
+    const before = new Date();
+    const scoped = withUser({ userId: alice }, ctx.db);
+    const caseId = await scoped.createCase({ invoiceId: aliceInvoice, findingIds: [aliceFinding] });
+
+    const [row] = await ctx.db.select().from(cases).where(eq(cases.id, caseId!));
+    const expected = computeDeadline({
+      startedAt: before, days: PROTOCOL_WINDOW_DAYS, businessDays: false,
+    });
+    expect(row?.nextDeadlineAt).toEqual(expected.expiresAt);
+    // Independently of the calculator: the window is thirty-odd days out,
+    // not "now" and not never. The upper bound allows for the roll-forward
+    // to the next business day (`deadline.ts`'s second decision).
+    const days = (row!.nextDeadlineAt!.getTime() - before.getTime()) / 86_400_000;
+    expect(days).toBeGreaterThan(29.9);
+    expect(days).toBeLessThan(33.1);
+  });
+
+  it("puts the window on the case_created event too, so the trail explains the column", async () => {
+    const scoped = withUser({ userId: alice }, ctx.db);
+    const caseId = await scoped.createCase({ invoiceId: aliceInvoice, findingIds: [aliceFinding] });
+    const [row] = await ctx.db.select().from(cases).where(eq(cases.id, caseId!));
+    const [created] = await eventsOfUser(ctx.db, alice, "case_created");
+    expect(created?.payload["nextDeadlineAt"]).toBe(row?.nextDeadlineAt?.toISOString());
   });
 
   it("flips every finding the case names to contested", async () => {

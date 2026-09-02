@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest";
 import { EVENTS } from "./events.js";
 
 describe("EVENTS", () => {
-  it("carries every event named in PRD §15.1, plus the ingest, expiry and finding terminals Tasks 13, 9 and 8 (E1/E2) added, plus invoice_processing_started (Task 2, E3) and RF-187's dossier pair (Task 7, E5)", () => {
-    expect(EVENTS).toHaveLength(35);
+  it("carries every event named in PRD §15.1, plus the ingest, expiry and finding terminals Tasks 13, 9 and 8 (E1/E2) added, plus invoice_processing_started (Task 2, E3), RF-187's dossier pair and RF-184's response_received (Tasks 7 and 5, E5)", () => {
+    expect(EVENTS).toHaveLength(36);
   });
 
   it("has no duplicates, because names are a contract", () => {
@@ -40,5 +40,13 @@ describe("EVENTS", () => {
   it("names both outcomes of RF-187's jec_ready dossier job", () => {
     expect(EVENTS).toContain("dossier_generated");
     expect(EVENTS).toContain("dossier_generation_failed");
+  });
+
+  // §9.1's machine answers to a `response_received` StageEvent — it is what
+  // clears the wait — so A3 needs a name for it, or the one thing that ends
+  // a wait without a deadline having expired leaves no trace at all.
+  it("names both directions of the channel conversation §9.1 tracks", () => {
+    expect(EVENTS).toContain("protocol_entered");
+    expect(EVENTS).toContain("response_received");
   });
 });

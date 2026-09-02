@@ -8,6 +8,15 @@
 export * as schema from "./schema.js";
 export { getUnscopedDb, type Database } from "./client.js";
 export { withUser, ensureAnonymousSession, resolveSession, type Session, type ScopedDb } from "./with-user.js";
+// Deliberately NOT behind `withUser` (INV-008 is about a user's query
+// reaching another user's data; these have no session and no caller-supplied
+// id). E5 Task 5 exists so RF-186's day-60 abandonment sweep can close a
+// case *and settle its findings* in one transaction: `closeCase` was the
+// only code that moved a finding out of `contested`, and being a `withUser`
+// method it was unreachable from a job — which would have left every
+// system-closed case's findings shown on the report as a live dispute and
+// permanently barred from a new case. See `case-close.ts`.
+export { closeCaseAsSystem, settleCaseFindings, SETTLED_FINDING_STATUS } from "./case-close.js";
 export {
   requestClaimCode, confirmClaimCode,
   CLAIM_CODE_TTL_MS, CLAIM_CODE_MAX_ATTEMPTS, CLAIM_RATE_LIMIT_COUNT, CLAIM_RATE_LIMIT_WINDOW_MS,

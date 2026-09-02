@@ -1,6 +1,10 @@
 import { and, desc, eq, inArray, isNull, ne } from "drizzle-orm";
-import { maskText, newId, newPublicToken, type CaseOutcome, type ContestDocument, type EventType, type Stage } from "@pentefino/core";
+import {
+  computeDeadline, maskText, newId, newPublicToken, nextStage, PROTOCOL_WINDOW_DAYS,
+  type CaseOutcome, type Category, type ContestDocument, type EventType, type Playbook, type Stage,
+} from "@pentefino/core";
 import { getUnscopedDb } from "./client.js";
+import { settleCaseFindings } from "./case-close.js";
 import {
   anonymousSessions, caseDocuments, caseProtocols, cases, events, findings, invoiceItems, invoices, issuers, rules,
 } from "./schema.js";
@@ -97,6 +101,84 @@ const CONTESTABLE_FINDING_STATUSES = ["open", "confirmed_by_user", "unresolved"]
  * A `catch {}` around a transaction is how those stop being noticed.
  */
 class CaseFindingRaceLost extends Error {}
+
+/**
+ * The `stage_advanced` payload, in one place so the three writers of it -
+ * `closeCase`, `recordProtocol` and `advanceCase` - cannot drift. E6 reads
+ * `from` to know which stage a reopened case belongs back in (RF-203), and
+ * `next-stage.table.ts` instructs it to.
+ *
+ * `reason` is this task's one addition beyond the `{ from, to, by, outcome }`
+ * shape Task 4 set. It says which §9.1 edge was taken, which is the only
+ * thing separating "the person escalated early" from "a deadline expired" on
+ * a trail where both write the same event - and RF-182 cares about that
+ * difference, because only one of them may put a claim about a company's
+ * silence into a document.
+ */
+type StageAdvanceReason = "protocol_entered" | "response_received" | "user_request";
+
+/**
+ * §9.1's machine needs the issuer's playbook and category; a case carries
+ * only the issuer's id. One read, shared by both methods that apply a
+ * transition.
+ *
+ * A missing `issuers.playbook` degrades to an empty playbook rather than
+ * throwing, the same way `assembleContest` degrades for a stage the playbook
+ * does not declare: `seedPlaybooks` fills the column for every telecom
+ * issuer, but a card, energy or water issuer added before its playbook is
+ * written must not make the person's own protocol unrecordable. What it
+ * costs is stated where it bites, on `recordProtocol` below.
+ */
+async function caseMachineContext(db: Db, issuerId: string): Promise<{ playbook: Playbook; category: Category }> {
+  const [issuer] = await db.select({ playbook: issuers.playbook, category: issuers.category })
+    .from(issuers).where(eq(issuers.id, issuerId));
+  return {
+    playbook: issuer?.playbook ?? { stages: [] },
+    // `cases.issuerId` is NOT NULL with a foreign key, so the row is always
+    // there; the fallback exists only so this returns a total value rather
+    // than a nullable one nobody would check.
+    category: issuer?.category ?? "telecom",
+  };
+}
+
+/**
+ * §9.1's `hasProtocol`, which `next-stage.table.ts` is explicit about being
+ * **per stage, not per case**: has the person pasted the number for the
+ * channel the case is sitting in right now. That is what makes it the
+ * discriminator §9.1 needs - an expired deadline with a protocol is the
+ * company staying silent (escalate), an expired deadline without one is the
+ * person never having written to the channel at all (RF-186's stall).
+ */
+async function stageHasProtocol(db: Db, caseId: string, stage: Stage): Promise<boolean> {
+  const [row] = await db.select({ id: caseProtocols.id })
+    .from(caseProtocols)
+    .where(and(eq(caseProtocols.caseId, caseId), eq(caseProtocols.stage, stage)))
+    .limit(1);
+  return row !== undefined;
+}
+
+/**
+ * The one writer of `stage_advanced` outside `closeCase`, so the payload
+ * `closeCase` established keeps one shape wherever the column changes.
+ * `outcome` is null here by construction: a case that reached an outcome
+ * closed, and closing goes through `closeCase` or `closeCaseAsSystem`.
+ */
+async function recordStageAdvance(
+  db: Db,
+  input: {
+    userId: string; invoiceId: string; caseId: string;
+    from: Stage; to: Stage; reason: StageAdvanceReason;
+  },
+): Promise<void> {
+  await db.insert(events).values({
+    id: newId("evt"),
+    userId: input.userId,
+    invoiceId: input.invoiceId,
+    caseId: input.caseId,
+    type: "stage_advanced" satisfies EventType,
+    payload: { from: input.from, to: input.to, by: "user", outcome: null, reason: input.reason },
+  });
+}
 
 /**
  * Creates the `anonymous_sessions` row a fresh session id needs before any
@@ -511,18 +593,39 @@ export function withUser(session: Session, db: Db = getUnscopedDb()) {
      * Opens a case: the write nothing in this codebase had until E5 Task 4,
      * which is why the `case_created` event had never once been recorded.
      *
-     * **Stage.** A new case starts at `draft` with no deadline, and
-     * `nextStage` is deliberately not consulted. §9.1's only edge out of
-     * `draft` is "usuário cria contestação", which is the contestation
-     * *document* (E4's generator, and the advance route that follows it),
-     * not the case row - `cases.stage` defaults to `draft` in §6.2's schema
-     * for exactly that reason, and `StageEvent` has no member that could
-     * even express "a case was just opened". §20.2's playbook has no `draft`
-     * entry either: its `sac` clock starts on "protocolo colado", not on
-     * entering the stage. Stamping a deadline here would drop a case the
-     * person has not yet acted on into the deadline scan and start expiring
-     * it. `stage` is written explicitly rather than left to the column
-     * default so the decision is visible at the one place that makes it.
+     * **Stage.** A new case starts at `draft`, and `nextStage` is
+     * deliberately not consulted. §9.1's only edge out of `draft` is
+     * "usuário cria contestação", which is the contestation *document*
+     * (E4's generator, and the advance route that follows it), not the case
+     * row - `cases.stage` defaults to `draft` in §6.2's schema for exactly
+     * that reason, and `StageEvent` has no member that could even express
+     * "a case was just opened". `stage` is written explicitly rather than
+     * left to the column default so the decision is visible at the one place
+     * that makes it.
+     *
+     * **The deadline, however, is stamped here, and this is RF-186.** "Caso
+     * sem protocolo por 30 dias entra em `stalled`" - and the moment a case
+     * has no protocol *starts here*, when it is opened. §20.2's playbook has
+     * no `draft` entry and its `sac` clock starts on "protocolo colado", so
+     * there is no *playbook* deadline to stamp; what runs is RF-186's own
+     * `PROTOCOL_WINDOW_DAYS`, which `next-stage.table.ts` documents as
+     * applying to "a freshly created case" and which nothing had ever
+     * stamped.
+     *
+     * Leaving `next_deadline_at` null looked like the cautious choice - a
+     * case the person has not acted on would not be dropped into the
+     * deadline scan - but the scan is what *reminds* them. E5 Task 3's sweep
+     * filters on `next_deadline_at IS NOT NULL`, so a null here means the
+     * case is invisible to it: no day-30 nudge, no day-60 close, no event,
+     * nothing. The case is not protected from the clock, it is abandoned
+     * without one. Every branch of §9.1 that could rescue it -
+     * `escalationTarget("draft") -> "sac"`, the `stalled` sub-state, the
+     * day-60 `abandoned` close - is unreachable in production while this
+     * column is null, which is why all three had been written and none had
+     * ever run.
+     *
+     * Counted from `now` rather than from `stage_entered_at`'s default so
+     * the window and the row are stamped from one instant.
      *
      * **Why one query, and why the count check.** `findingIds` is
      * caller-supplied and is *not* covered by checking `invoiceId`: without
@@ -671,6 +774,16 @@ export function withUser(session: Session, db: Db = getUnscopedDb()) {
 
       const id = newId("cas");
       const now = new Date();
+      // RF-186's window (see this method's doc comment). Calendar days, not
+      // business days: this one counts a *person's* silence, and a person is
+      // silent on Sundays too - `PROTOCOL_WINDOW_DAYS`' own comment in
+      // `next-stage.table.ts` says so, and the playbook's `businessDays`
+      // flag is for the deadlines a company answers under.
+      const protocolWindow = computeDeadline({
+        startedAt: now,
+        days: PROTOCOL_WINDOW_DAYS,
+        businessDays: false,
+      });
       // One transaction - `apps/jobs/src/tasks/ingest.ts`'s pattern - holding
       // the case row, the flip to `contested` and the `case_created` event,
       // so all three commit or none do. A case whose findings never flipped
@@ -685,7 +798,8 @@ export function withUser(session: Session, db: Db = getUnscopedDb()) {
             issuerId,
             findingIds,
             stage: "draft",
-            nextDeadlineAt: null,
+            stageEnteredAt: now,
+            nextDeadlineAt: protocolWindow.expiresAt,
           });
           // The concurrency gate: the same contestability test the SELECT ran,
           // re-applied by the statement that actually takes the rows. A loser
@@ -711,7 +825,14 @@ export function withUser(session: Session, db: Db = getUnscopedDb()) {
             invoiceId: input.invoiceId,
             caseId: id,
             type: "case_created" satisfies EventType,
-            payload: { invoiceId: input.invoiceId, findingIds, stage: "draft" },
+            payload: {
+              invoiceId: input.invoiceId,
+              findingIds,
+              stage: "draft",
+              // RF-186's window, on the trail as well as on the row: A3's
+              // point is that the events explain the columns.
+              nextDeadlineAt: protocolWindow.expiresAt.toISOString(),
+            },
           });
         });
       } catch (error) {
@@ -949,21 +1070,19 @@ export function withUser(session: Session, db: Db = getUnscopedDb()) {
      * the UPDATE below is still the sole decider of whether the close
      * happens at all.
      *
-     * **This is the only code that moves findings out of `contested`, and
-     * that is a problem for whoever closes a case without it.** `closeCase`
-     * is a `withUser` method, so a system job with no user session cannot
-     * call it. E5 Task 3's day-60 abandonment sweep closes cases directly
-     * against `cases`; unless it also settles `findings`, the findings those
-     * cases named stay `contested` forever. Nothing else ever changes them:
-     * they keep appearing on the report as actively disputed
-     * (`VISIBLE_FINDING_STATUSES` includes `contested`), and they can never
-     * enter another case (`CONTESTABLE_FINDING_STATUSES` excludes it). The
-     * money is then unrecoverable through the product - on exactly the
-     * charges §1.4's north-star metric is counted from, and for the people
-     * whose case was abandoned because nothing happened, who are the least
-     * likely to be told why. Any path that closes a case must settle its
-     * findings in the same transaction, with the same mapping this method
-     * uses.
+     * **Settling the findings is shared with the system close, not owned
+     * here.** `closeCase` used to be the only code that moved a finding out
+     * of `contested`, and being a `withUser` method it is unreachable from a
+     * job with no session - so RF-186's day-60 abandonment sweep would have
+     * closed cases and left their findings `contested` forever: still shown
+     * on the report as a live dispute (`VISIBLE_FINDING_STATUSES` includes
+     * `contested`) and permanently barred from a new case
+     * (`CONTESTABLE_FINDING_STATUSES` excludes it), on exactly the money
+     * §1.4's north-star metric is counted from. E5 Task 5 moved the mapping
+     * and the UPDATE into `./case-close.ts` (`settleCaseFindings`,
+     * `SETTLED_FINDING_STATUS`) and gave the system side a whole function of
+     * its own, `closeCaseAsSystem`, so a job cannot close a case *without*
+     * settling it rather than merely being told to remember.
      *
      * **`note` is masked here, not by the caller.** `cases` has no column
      * for it, so it lives only in the event payload - but INV-007 says PII
@@ -1034,12 +1153,11 @@ export function withUser(session: Session, db: Db = getUnscopedDb()) {
           ))
           .returning();
         if (!updated) return null;
-        await tx.update(findings)
-          .set({
-            status: input.outcome === "resolved" ? "resolved" : "unresolved",
-            updatedAt: now,
-          })
-          .where(and(inArray(findings.id, updated.findingIds), eq(findings.status, "contested")));
+        // The shared settlement (`case-close.ts`), not an inline UPDATE. A
+        // system close has to do the identical thing, and the two mappings
+        // drifting apart would mean a finding's fate depended on who closed
+        // the case.
+        await settleCaseFindings(tx, { findingIds: updated.findingIds, outcome: input.outcome, at: now });
         await tx.insert(events).values({
           id: newId("evt"),
           userId,
@@ -1067,6 +1185,311 @@ export function withUser(session: Session, db: Db = getUnscopedDb()) {
           payload: { from: before?.stage ?? null, to: "closed", by: "user", outcome: updated.outcome },
         });
         return updated;
+      });
+    },
+
+    /**
+     * RF-184 / §8.2's `POST /api/cases/:id/protocol`: the person pastes the
+     * protocol number a channel gave them, and the case starts waiting on
+     * that channel's own deadline.
+     *
+     * **"O workflow retoma em menos de 30 s" is satisfied by there being no
+     * workflow to resume.** ADR-02 picked Trigger.dev, whose shape for this
+     * is a run parked on a wait token that a later signal releases; what
+     * exists today is a row in `cases.next_deadline_at` and a job that scans
+     * it (E5 Task 3). So "releasing the wait" is not a message sent to
+     * something that will get round to it - it is this transaction writing
+     * the new stage and the new deadline before the HTTP response is
+     * returned. Nothing is enqueued, nothing is polled, and no scheduled
+     * sweep participates: the next read of the case, by anybody, already
+     * sees the new wait. The 30 s budget is spent on one round trip.
+     *
+     * **One transaction**, holding the `case_protocols` row, the
+     * `protocol_entered` event, the `cases` update and (when the stage
+     * moved) `stage_advanced`. A protocol recorded without its deadline
+     * would leave the person waiting on a clock nobody started; a deadline
+     * without the protocol row would leave RF-182's document with no number
+     * to cite.
+     *
+     * **`responseDueAt` is the transition's own instant, not a second
+     * calculation.** `case_protocols.response_due_at` is NOT NULL and holds
+     * the playbook's `responseDays` counted from `registeredAt`, which is
+     * exactly what `nextStage` already produced for `cases.next_deadline_at`
+     * from the same event instant. Deriving it twice is how the row and the
+     * column come to disagree by a day, and RF-182 prints the row's copy on
+     * a document while Task 3's sweeper acts on the column's. The fallback
+     * for a stage with no wait at all (§20.2 gives `jec_ready`
+     * `responseDays: 0`, and no playbook declares `ombudsman` or `procon`)
+     * is a zero-day deadline from `registeredAt`: the honest reading of "this
+     * channel owes no waiting period", and the only value the NOT NULL
+     * column can carry without inventing a duration.
+     *
+     * **What that costs, said plainly.** For those same stages `nextStage`
+     * answers `clear`, so `cases.next_deadline_at` becomes null - and E5
+     * Task 3's scan filters on that column being non-null. A case sitting in
+     * a stage the playbook does not describe therefore has no clock at all,
+     * exactly as a case with no protocol had none before RF-186's window was
+     * stamped at creation. It is not this method's to fix (the deadline rule
+     * is `next-stage.table.ts`'s), but nothing else says it out loud.
+     *
+     * **The body's `stage` is a staleness check, not a routing
+     * instruction.** §8.2 puts a `stage` in the body; what this method does
+     * with it is require that it equals the stage the protocol will actually
+     * be attached to - which is `nextStage`'s answer, so `draft` and `sac`
+     * are one and the same submission (§9.1: a protocol number *is* the
+     * person having written to the channel, which is the `draft -> sac`
+     * edge). A client whose screen is a stage behind therefore cannot file a
+     * SAC protocol against a case that has already escalated to
+     * consumidor.gov.br, where it would sit as the wrong channel's evidence
+     * for the rest of the case's life.
+     *
+     * **A second protocol for the same stage is allowed**, and restarts that
+     * stage's wait from its own `registeredAt`. A person who calls the SAC
+     * again after silence gets a new number, and that is the number the
+     * channel will look up; refusing it would mean either losing the real
+     * protocol or making them correct a typo by opening a new case. The
+     * escalation clock moving with it is the honest consequence - the
+     * company's deadline runs from the last time they were contacted.
+     *
+     * **INV-008**: ownership is folded into the locking SELECT, so a case
+     * belonging to somebody else and a case that never existed both come
+     * back as the same `null`, exactly as `caseDetail` and `closeCase` do. A
+     * closed case is the same `null` again: §8.1 has no `conflict` code, and
+     * distinguishing it would tell a caller that an id exists.
+     *
+     * `cases` is locked before `case_protocols` and `findings`, the order
+     * `closeCase` takes, so a close and a protocol racing on one case cannot
+     * deadlock.
+     */
+    async recordProtocol(
+      caseId: string,
+      input: { stage: Stage; protocolNumber: string; channel: string; registeredAt: Date },
+    ) {
+      if (!userId) return null;
+      const now = new Date();
+      // A protocol dated in the future would postpone the company's deadline
+      // by however far ahead it was typed, which is the one input error that
+      // makes a case *later* to escalate rather than earlier. Rejected here
+      // rather than only in the route, because the deadline is computed from
+      // this value.
+      if (Number.isNaN(input.registeredAt.getTime()) || input.registeredAt.getTime() > now.getTime()) return null;
+
+      return db.transaction(async (tx) => {
+        const [current] = await tx.select({
+          id: cases.id,
+          invoiceId: cases.invoiceId,
+          issuerId: cases.issuerId,
+          stage: cases.stage,
+          closedAt: cases.closedAt,
+          nextDeadlineAt: cases.nextDeadlineAt,
+        }).from(cases)
+          .where(and(eq(cases.id, caseId), eq(cases.userId, userId)))
+          .for("update");
+        if (!current || current.closedAt !== null || current.stage === "closed") return null;
+
+        const { playbook, category } = await caseMachineContext(tx, current.issuerId);
+        // `hasProtocol` is per-stage (`next-stage.table.ts`'s first reading):
+        // "has the person pasted the number for the channel the case is
+        // sitting in". `protocol_entered` does not branch on it, but it is
+        // read here so both methods build the same `CaseState` from the same
+        // rows rather than one of them passing a constant.
+        const hasProtocol = await stageHasProtocol(tx, caseId, current.stage);
+        const transition = nextStage(
+          { stage: current.stage, category, hasProtocol },
+          playbook,
+          { type: "protocol_entered", at: input.registeredAt },
+        );
+        if (input.stage !== transition.stage) return null;
+
+        const responseDueAt = transition.nextDeadlineAt
+          ?? computeDeadline({ startedAt: input.registeredAt, days: 0, businessDays: false }).expiresAt;
+
+        await tx.insert(caseProtocols).values({
+          id: newId("prt"),
+          caseId,
+          stage: transition.stage,
+          protocolNumber: input.protocolNumber,
+          channel: input.channel,
+          registeredAt: input.registeredAt,
+          responseDueAt,
+        });
+
+        const moved = transition.stage !== current.stage;
+        await tx.update(cases)
+          .set({
+            stage: transition.stage,
+            // Only restamped when the stage actually changed: `stage_entered_at`
+            // says when the case entered the stage it is in, and a second SAC
+            // protocol does not re-enter the SAC.
+            ...(moved ? { stageEnteredAt: now } : {}),
+            ...(transition.stampDeadline ? { nextDeadlineAt: transition.nextDeadlineAt } : {}),
+            updatedAt: now,
+          })
+          .where(eq(cases.id, caseId));
+
+        await tx.insert(events).values({
+          id: newId("evt"),
+          userId,
+          invoiceId: current.invoiceId,
+          caseId,
+          type: "protocol_entered" satisfies EventType,
+          payload: {
+            stage: transition.stage,
+            // INV-007: a protocol number is not PII, but it is free text a
+            // person typed, and `events.payload` is durable.
+            protocolNumber: maskText(input.protocolNumber),
+            channel: maskText(input.channel),
+            registeredAt: input.registeredAt.toISOString(),
+            responseDueAt: responseDueAt.toISOString(),
+          },
+        });
+        if (moved) {
+          await recordStageAdvance(tx, {
+            userId, invoiceId: current.invoiceId, caseId,
+            from: current.stage, to: transition.stage, reason: "protocol_entered",
+          });
+        }
+
+        return {
+          stage: transition.stage,
+          nextDeadlineAt: transition.stampDeadline ? transition.nextDeadlineAt : current.nextDeadlineAt,
+        };
+      });
+    },
+
+    /**
+     * §8.2's `POST /api/cases/:id/advance` - the two ways a case moves that
+     * are neither a protocol nor a close.
+     *
+     * **`response_received`**: the channel answered. §9.1's machine keeps
+     * the stage where it is and clears the wait - the wait existed to detect
+     * silence, and escalating afterwards on a clock that already got its
+     * answer would escalate on a false premise. What moves next is the
+     * person's decision: close the case, or ask for `user_request`. The open
+     * protocol for the current stage is stamped with `responseReceivedAt`
+     * and the summary, which is what RF-187's dossier and E6's diff read.
+     * There must *be* an open protocol: a channel cannot have answered a
+     * message that was never sent, and filling nothing while reporting
+     * success would leave a case claiming an answer that no protocol
+     * records.
+     *
+     * **`user_request`**: the person escalates now rather than waiting out
+     * the clock. §9.1 has no separate edge for that - the graph's only way
+     * onwards from a channel is the one it draws for "prazo vencido" - so
+     * that is the `StageEvent` this passes to the pure function.
+     *
+     * **It emphatically does not write a `deadline_expired` event.** The
+     * transition table's event names describe *edges*; `events` records
+     * *what happened*. RF-182 reads `deadline_expired` rows to decide that a
+     * document may state a company let a deadline pass, and a row written
+     * here would be that claim, made about a deadline that had not expired,
+     * on a document sent to the company that could disprove it in one line.
+     * The stage move is recorded as `stage_advanced` with
+     * `reason: "user_request"`, which is true and is enough for every reader.
+     *
+     * A `user_request` on a case with no protocol for its stage is §9.1's
+     * stall rather than an escalation - the table sends it back to `sac`
+     * with RF-186's window restarted, because every channel past `sac`
+     * requires the previous protocol to file at all (§20.2's
+     * `requiresPreviousProtocol`) and there is no company silence to escalate
+     * against. Nothing here overrides that.
+     *
+     * INV-008 and the lock order are `recordProtocol`'s, unchanged.
+     */
+    async advanceCase(
+      caseId: string,
+      input: { reason: "user_request" | "response_received"; responseSummary?: string },
+    ) {
+      if (!userId) return null;
+      const now = new Date();
+
+      return db.transaction(async (tx) => {
+        const [current] = await tx.select({
+          id: cases.id,
+          invoiceId: cases.invoiceId,
+          issuerId: cases.issuerId,
+          stage: cases.stage,
+          closedAt: cases.closedAt,
+          nextDeadlineAt: cases.nextDeadlineAt,
+        }).from(cases)
+          .where(and(eq(cases.id, caseId), eq(cases.userId, userId)))
+          .for("update");
+        if (!current || current.closedAt !== null || current.stage === "closed") return null;
+
+        // The open protocol for the stage the case is sitting in: the most
+        // recently registered one still waiting for an answer. Ordered
+        // `(registeredAt, id)` for the reason `caseDetail` documents - two
+        // rows written in one transaction carry the same default timestamp,
+        // and without the tiebreak Postgres may return them in either order.
+        const [openProtocol] = await tx.select({ id: caseProtocols.id })
+          .from(caseProtocols)
+          .where(and(
+            eq(caseProtocols.caseId, caseId),
+            eq(caseProtocols.stage, current.stage),
+            isNull(caseProtocols.responseReceivedAt),
+          ))
+          .orderBy(desc(caseProtocols.registeredAt), desc(caseProtocols.id))
+          .limit(1);
+        if (input.reason === "response_received" && !openProtocol) return null;
+
+        const { playbook, category } = await caseMachineContext(tx, current.issuerId);
+        const hasProtocol = await stageHasProtocol(tx, caseId, current.stage);
+        const transition = nextStage(
+          { stage: current.stage, category, hasProtocol },
+          playbook,
+          // `deadline_expired` is the *edge* §9.1 draws out of a channel; the
+          // event row this writes says `user_request`, because that is what
+          // happened. See the doc comment above.
+          { type: input.reason === "response_received" ? "response_received" : "deadline_expired", at: now },
+        );
+
+        if (input.reason === "response_received" && openProtocol) {
+          await tx.update(caseProtocols)
+            .set({
+              responseReceivedAt: now,
+              // INV-007: free text a person typed about their own bill is
+              // exactly where a CPF turns up, and this column is durable.
+              // Masked here rather than in the route for `closeCase`'s
+              // reason: a masking step a caller can forget will be forgotten.
+              ...(input.responseSummary === undefined ? {} : { responseSummary: maskText(input.responseSummary) }),
+              updatedAt: now,
+            })
+            .where(eq(caseProtocols.id, openProtocol.id));
+        }
+
+        const moved = transition.stage !== current.stage;
+        await tx.update(cases)
+          .set({
+            stage: transition.stage,
+            ...(moved ? { stageEnteredAt: now } : {}),
+            ...(transition.stampDeadline ? { nextDeadlineAt: transition.nextDeadlineAt } : {}),
+            updatedAt: now,
+          })
+          .where(eq(cases.id, caseId));
+        if (input.reason === "response_received") {
+          await tx.insert(events).values({
+            id: newId("evt"),
+            userId,
+            invoiceId: current.invoiceId,
+            caseId,
+            type: "response_received" satisfies EventType,
+            payload: {
+              stage: current.stage,
+              ...(input.responseSummary === undefined ? {} : { summary: maskText(input.responseSummary) }),
+            },
+          });
+        }
+        if (moved) {
+          await recordStageAdvance(tx, {
+            userId, invoiceId: current.invoiceId, caseId,
+            from: current.stage, to: transition.stage, reason: input.reason,
+          });
+        }
+
+        return {
+          stage: transition.stage,
+          nextDeadlineAt: transition.stampDeadline ? transition.nextDeadlineAt : current.nextDeadlineAt,
+        };
       });
     },
   };
