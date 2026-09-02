@@ -1,0 +1,9 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "crons": [
+    { "path": "/api/cron/caseDeadlines", "schedule": "0 * * * *" },
+    { "path": "/api/cron/expireFiles", "schedule": "0 6 * * *" },
+    { "path": "/api/cron/ruleMetrics", "schedule": "0 7 * * *" },
+    { "path": "/api/cron/ruleLifecycle", "schedule": "0 8 * * *" }
+  ]
+}
