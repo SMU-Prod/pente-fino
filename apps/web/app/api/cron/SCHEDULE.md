@@ -59,9 +59,17 @@ sobrar handler que não esteja agendado nem explicitamente dispensado (só o
 Quem adicionar um job novo descobre no teste, não em produção seis meses
 depois.
 
-## O que ainda não está ligado
+## Tudo ligado
 
-`caseDeadlines` só aparece em `container.ts` quando a tarefa 3 do E5 for
-mesclada. Até lá a rota responde 500 com `no handler registered for task
-"caseDeadlines"` — que é a resposta certa: alto e verdadeiro, em vez de um
-200 que faria um job inexistente parecer um job sem trabalho a fazer.
+As cinco tarefas estão registradas no `container()` e agendadas aqui. O
+`caseDeadlines` foi o último a entrar — a tarefa 3 do E5 o exportou do
+pacote e não o registrou, então o caminho de cron existia e não chegava em
+lugar nenhum.
+
+Isso aponta o limite da guarda de deriva: ela lê o `container.ts` e pega
+handler registrado que ninguém agenda. **Não pega o contrário** — nome
+agendado que não resolve pra handler nenhum. Esse lado é coberto pelo teste
+`every scheduled name resolves to a handler`, mas com o `container()`
+mockado, então ele prova a rota e não a fiação. O teste que fecha de
+verdade é o `apps/web/test/container-tasks.test.ts`, que enfileira pelo
+nome contra o container real.

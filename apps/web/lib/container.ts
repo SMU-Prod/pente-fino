@@ -2,7 +2,7 @@ import { buildAdapters, createUnpdfReader, type TaskHandler } from "@pentefino/a
 // eslint-disable-next-line pentefino/require-with-user -- the ingest job runs system-wide, with no user session
 import { getUnscopedDb, type Database } from "@pentefino/db";
 import {
-  createDossierTask, createExpireFilesTask, createIngestTask,
+  createCaseDeadlinesTask, createDossierTask, createExpireFilesTask, createIngestTask,
   createRuleLifecycleTask, createRuleMetricsTask,
 } from "@pentefino/jobs";
 
@@ -50,6 +50,13 @@ function buildContainer(overrides: ContainerOverrides): Container {
   // scheduler enqueues it in this slice, and it is registered here anyway so
   // there is no task in this process whose name this map does not know.
   handlers.dossier = createDossierTask({ db, storage: adapters.storage });
+  // RF-180 (Task 3, E5): the deadline sweep. Unlike the four above, this one
+  // is genuinely scheduled - `apps/web/app/api/cron/[task]/route.ts` and
+  // `vercel.json` run it hourly. It was exported from `@pentefino/jobs` and
+  // registered nowhere, which is the same "capable, not live" state every
+  // job on this map was in before the scheduler existed, and the reason
+  // `test/routes/cron.test.ts` now reads this file.
+  handlers.caseDeadlines = createCaseDeadlinesTask({ db });
   return { db, ...adapters };
 }
 
