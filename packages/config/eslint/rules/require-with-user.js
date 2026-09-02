@@ -55,6 +55,12 @@ const FORBIDDEN_MODULES = [
 const ALLOWED_PACKAGE_EXPORTS = new Set([
   "withUser",
   "ensureAnonymousSession",
+  // E4 Task 4: resolves a raw session id (from a signed cookie) to the
+  // `Session` withUser() scopes on, following anonymous_sessions.claimed_by_
+  // user_id the same way requestClaimCode/confirmClaimCode below follow
+  // their own ownership key - it hands out no raw data access of its own,
+  // only the same userId/sessionId union withUser already expects.
+  "resolveSession",
   "Database",
   "Session",
   "ScopedDb",
