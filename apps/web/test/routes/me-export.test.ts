@@ -294,6 +294,41 @@ describe("GET /api/me/export (RF-242)", () => {
     expect(fileEntry.deletedAt).toBe("2026-01-01T00:00:00.000Z");
   });
 
+  // --- Finding 2 (Task 4 review): a file that exists but cannot be linked
+  // must not vanish from a dump whose entire point is completeness - it
+  // would then be indistinguishable from a file that never existed. The
+  // entry must stay, carrying an explicit "could not be produced" state.
+  it("keeps a retained file's entry, marked unavailable with a masked reason, when signDownload throws", async () => {
+    const seeded = await seedFullAccount(alice);
+    const realStorage = createLocalStorage({ root: storageRoot, secret: "test-upload-secret" });
+    const throwingStorage = {
+      ...realStorage,
+      async signDownload(fileKey: string) {
+        if (fileKey === seeded.fileKey) throw new Error("simulated storage outage");
+        return realStorage.signDownload(fileKey);
+      },
+    };
+    vi.mocked(container).mockReturnValue({
+      ...buildTestContainer({ db: ctx.db, storageRoot, mailRoot }),
+      storage: throwingStorage,
+    });
+    useCookies(createCookieStore({ pf_session: signSession(sessionAlice, SECRET) }));
+
+    const response = await GET(request());
+    expect(response.status).toBe(200);
+    const body = await response.json();
+
+    const fileEntry = body.files.find(
+      (f: { source: string; invoiceId?: string }) => f.source === "invoice" && f.invoiceId === seeded.retainedInvoiceId,
+    );
+    // Present, not silently dropped - the whole point of this test.
+    expect(fileEntry).toBeDefined();
+    expect(fileEntry.url).toBeUndefined();
+    expect(fileEntry.deletedAt).toBeUndefined();
+    expect(fileEntry.unavailable).toBe(copy.FILE_LINK_UNAVAILABLE);
+    expect(fileEntry.reason).toContain("simulated storage outage");
+  });
+
   it("gives no file entry at all for an invoice that never had a stored file", async () => {
     const csvInvoiceId = newId("inv");
     await ctx.db.insert(invoices).values({
@@ -313,7 +348,7 @@ describe("GET /api/me/export (RF-242)", () => {
 
 describe("copy (INV-004/INV-005)", () => {
   it("every user-facing string this route can produce passes lintUserFacingText", () => {
-    for (const text of [copy.AVISO]) {
+    for (const text of [copy.AVISO, copy.FILE_LINK_UNAVAILABLE]) {
       const result = lintUserFacingText(text);
       expect(result.ok, `"${text}" violated: ${JSON.stringify(result.violations)}`).toBe(true);
     }

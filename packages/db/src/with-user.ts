@@ -448,18 +448,90 @@ export function withUser(session: Session, db: Db = getUnscopedDb()) {
      * `account()` and `cases()` use above and for the same reason: §8.2
      * puts this endpoint under `/api/me`, and a session with no `users` row
      * has no "me" to export.
+     *
+     * **`cases.protocolToken` is stripped from every row this returns.**
+     * `GET /api/cases/:id` (`apps/web/app/api/cases/[id]/route.ts`) already
+     * strips this exact column before it ever reaches a browser, and its own
+     * doc comment says why: it is `wait.forToken`'s handle - a capability,
+     * not a fact about the dispute - and whoever holds it can resume the
+     * run the case is waiting on. That route was, until this method
+     * existed, the only place a `cases` row was ever serialised to a client
+     * at all. This bundle is worse ground to hand it out on, not better: it
+     * is a file the person downloads and may keep or forward indefinitely,
+     * with no expiry of its own - unlike the signed download links the
+     * route wrapping this method stamps with a 15-minute TTL precisely
+     * because they, too, are bearer capabilities. Completeness ("every
+     * table the account owns") does not extend to a column whose only
+     * purpose is letting a *server* resume a workflow run; `caseRows`
+     * further down still comes from a plain `select()`, the same as every
+     * other table here, so the strip happens once, after the query, rather
+     * than by hand-listing every other `cases` column the way `caseDetail`
+     * does.
+     *
+     * **`ai_calls`, `claim_codes` and `anonymous_sessions` are the three
+     * tables in `schema.ts` this bundle does not reach, and none of the
+     * three fits the two shapes every included table above does.**
+     *
+     *   - `ai_calls` carries `invoiceId`/`caseId` columns, but - unlike
+     *     `invoiceItems.invoiceId`, `findings.invoiceId`,
+     *     `caseDocuments.caseId` and `caseProtocols.caseId`, every one of
+     *     which is `NOT NULL` and a real foreign key with `onDelete:
+     *     "cascade"` - `ai_calls.invoiceId`/`caseId` are plain, nullable
+     *     text columns with no `.references()` at all. The join-through
+     *     proof this method relies on for its four child tables ("an id can
+     *     only appear in `invoiceIds`/`caseIds` by having already passed
+     *     `eq(invoices.userId, userId)`/`eq(cases.userId, userId)`") is only
+     *     sound because the database itself enforces that the child's id
+     *     names a real, live parent row; `ai_calls` gives no such guarantee,
+     *     so `inArray(aiCalls.invoiceId, invoiceIds)` would not be proving
+     *     ownership the way it does for the other four. What the table
+     *     holds - `provider`, `model`, `tokensIn`/`tokensOut`, `costUsd`,
+     *     `latencyMs`, `traceId` - is also not a fact about the person or
+     *     the dispute; it is telemetry about what this system paid a
+     *     vendor to do its own job, the same category of internal
+     *     operating detail RF-242's export was never asked to disclose.
+     *   - `claim_codes` has no `userId` column either; its one foreign key
+     *     is `sessionId -> anonymous_sessions.id`, not `-> users.id`, and
+     *     rows are kept forever, successful or not (see the table's own doc
+     *     comment in `schema.ts`) - a code some *other* visitor requested
+     *     while typing this account's e-mail address by mistake, or while
+     *     probing it, lives in this table exactly as durably as the code
+     *     that actually worked. Reaching "this user's own" rows would mean
+     *     matching on `email`, which is precisely the shortcut INV-008
+     *     exists to forbid elsewhere in this file: an unverified, attacker-
+     *     or typo-controlled column is not an ownership proof. And what a
+     *     matched row would add - a `codeHash`, an `attempts` counter - is
+     *     credential-shaped in the same way `protocolToken` is, for the
+     *     export's reader to gain nothing from.
+     *   - `anonymous_sessions` has no `userId` column at all, only an
+     *     inbound `claimedByUserId` pointing the other way from `users`. The
+     *     more telling reason is `claim.ts`'s `migrate()`: the moment a
+     *     session is claimed, it rewrites every `invoices`/`events` row that
+     *     carried that `sessionId` to carry `userId` instead and sets
+     *     `sessionId` back to `null` - so the raw session identifier is
+     *     deliberately scrubbed from every other table an account's data
+     *     lives in. Selecting `anonymous_sessions` here, keyed off the very
+     *     `claimedByUserId` that migration writes, would reintroduce into
+     *     the export the one identifier the rest of the schema was written
+     *     to stop carrying - for a row (`id`, `expiresAt`, its own
+     *     timestamps) that is cookie/session plumbing from before the
+     *     account existed, not a fact about an invoice, a case, or the
+     *     dispute the way every included table is.
      */
     async exportBundle() {
       if (!userId) return null;
       const account = await accountRow(db, userId);
       if (!account) return null;
 
-      const [invoiceRows, caseRows, entitlementRows, eventRows] = await Promise.all([
+      const [invoiceRows, rawCaseRows, entitlementRows, eventRows] = await Promise.all([
         db.select().from(invoices).where(eq(invoices.userId, userId)).orderBy(desc(invoices.createdAt)),
         db.select().from(cases).where(eq(cases.userId, userId)).orderBy(desc(cases.createdAt)),
         db.select().from(entitlements).where(eq(entitlements.userId, userId)).orderBy(desc(entitlements.createdAt)),
         db.select().from(events).where(eq(events.userId, userId)).orderBy(desc(events.occurredAt)),
       ]);
+
+      // See the doc comment above: `protocolToken` never leaves this method.
+      const caseRows = rawCaseRows.map(({ protocolToken: _protocolToken, ...rest }) => rest);
 
       const invoiceIds = invoiceRows.map((row) => row.id);
       const caseIds = caseRows.map((row) => row.id);

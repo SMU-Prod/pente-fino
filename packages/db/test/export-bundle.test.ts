@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { eq } from "drizzle-orm";
 import { newId, TELECOM_PLAYBOOK_V1, type ContestDocument } from "@pentefino/core";
 import { createTestDb, type TestDb } from "../src/testing.js";
 import {
@@ -154,5 +155,27 @@ describe("exportBundle (RF-242, INV-008)", () => {
     ]) {
       expect(raw).not.toContain(leaked);
     }
+  });
+
+  // --- Finding 1 (Task 4 review): `protocolToken` is `wait.forToken`'s
+  // handle - a capability, not a fact about the dispute, the same reason
+  // `GET /api/cases/:id` strips it before ever serialising a `cases` row to
+  // a browser. Checked on the raw serialised string, not on the parsed
+  // bundle's own shape (e.g. `expect(bundle.cases[0].protocolToken).toBeUndefined()`),
+  // since a shape check alone would not catch the token surviving somewhere
+  // else in the payload - nested in an event's payload, say.
+  it("never includes a case's protocolToken anywhere in the serialised bundle", async () => {
+    const seeded = await seedFullAccount(alice);
+    const distinctiveToken = "tok_never_leave_this_package_9f3ac1";
+    await ctx.db.update(cases).set({ protocolToken: distinctiveToken }).where(eq(cases.id, seeded.caseId));
+
+    const bundle = await withUser({ userId: alice }, ctx.db).exportBundle();
+    const raw = JSON.stringify(bundle);
+
+    // Sanity: this is not a false pass from an empty bundle, or from the
+    // case itself being missing.
+    expect(raw).toContain(seeded.caseId);
+    expect(bundle!.cases.some((c) => c.id === seeded.caseId)).toBe(true);
+    expect(raw).not.toContain(distinctiveToken);
   });
 });

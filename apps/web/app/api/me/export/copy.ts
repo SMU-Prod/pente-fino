@@ -26,3 +26,18 @@ const DOWNLOAD_TTL_MINUTES = Math.round(DOWNLOAD_TTL_MS / 60_000);
 export const AVISO =
   `Os links de download deste arquivo valem por ${DOWNLOAD_TTL_MINUTES} minutos a partir de agora. ` +
   "Depois disso, peça um novo export para baixar os arquivos de novo.";
+
+/**
+ * The `unavailable` state of a `files[]` entry (`route.ts`) - what a person
+ * reads when a file is known to exist (or to have existed) but the signed
+ * link for it could not be produced right now. Deliberately does not say
+ * why: the entry's own `reason` field carries the masked, length-capped
+ * detail for support/debugging, the same split
+ * `apps/jobs/src/tasks/expire-files.ts` and `dossier.ts` already use for a
+ * per-subject failure - this sentence is the one thing a person needs to
+ * know (the link did not come out; the underlying file is not necessarily
+ * lost), not a diagnosis.
+ */
+export const FILE_LINK_UNAVAILABLE =
+  "Não foi possível gerar o link de download deste arquivo agora. Ele pode ainda existir - " +
+  "peça um novo export mais tarde para tentar de novo.";

@@ -1,25 +1,44 @@
 import { cookies } from "next/headers";
 import { resolveSession, withUser } from "@pentefino/db";
+import { maskText } from "@pentefino/core";
 import type { Storage } from "@pentefino/core/ports";
 import { container } from "@/lib/container.js";
 import { apiError } from "@/lib/errors.js";
 import { SESSION_COOKIE, getSessionSecret, readSession } from "@/lib/session.js";
-import { AVISO } from "./copy.js";
+import { AVISO, FILE_LINK_UNAVAILABLE } from "./copy.js";
+
+// Same cap `apps/jobs/src/tasks/expire-files.ts` and `dossier.ts` use for a
+// per-subject failure message (INV-007): a storage error is attacker- or
+// provider-influenced text, not something to trust verbatim into a response
+// the person downloads and may forward.
+const MAX_FAILURE_MESSAGE_LENGTH = 500;
 
 /**
  * One entry of the response's `files` array - a download link for a stored
- * object this account owns, or (when the object is already gone) an honest
- * marker instead of a dead link. `source` says which part of the bundle the
- * file belongs to; `invoiceId`/`caseId` plus `eventId` (for a dossier, whose
- * only pointer is the `dossier_generated` event's payload, not a column) are
- * what let the person - or a tool reading the export later - match a file
- * back to the row it came from.
+ * object this account owns, an honest marker when the object is already
+ * gone, or an honest marker when the link could not be produced at all.
+ * `source` says which part of the bundle the file belongs to;
+ * `invoiceId`/`caseId` plus `eventId` (for a dossier, whose only pointer is
+ * the `dossier_generated` event's payload, not a column) are what let the
+ * person - or a tool reading the export later - match a file back to the
+ * row it came from.
+ *
+ * **The `dossier`/`deletedAt` variant is never constructed today.** No job
+ * in this repo expires or deletes a dossier PDF the way
+ * `apps/jobs/src/tasks/expire-files.ts` does for an invoice's file - `store`
+ * in `dossier.ts` writes it once and nothing since ever removes it. The
+ * variant is kept, not dropped, because it is exactly the shape a future
+ * dossier-expiry job would need to report an already-deleted dossier the
+ * same honest way `invoiceFile` reports one below; deleting it now would
+ * only mean re-adding the identical shape the day that job exists.
  */
 type ExportFile =
   | { source: "invoice"; invoiceId: string; url: string; expiresAt: string }
   | { source: "invoice"; invoiceId: string; deletedAt: string }
+  | { source: "invoice"; invoiceId: string; unavailable: string; reason: string }
   | { source: "dossier"; caseId: string; eventId: string; url: string; expiresAt: string }
-  | { source: "dossier"; caseId: string; eventId: string; deletedAt: string };
+  | { source: "dossier"; caseId: string; eventId: string; deletedAt: string }
+  | { source: "dossier"; caseId: string; eventId: string; unavailable: string; reason: string };
 
 /**
  * `storage.exists` first, `storage.signDownload` second - the split the
@@ -46,12 +65,20 @@ async function invoiceFile(
     try {
       const { url, expiresAt } = await storage.signDownload(invoice.fileKey);
       return { source: "invoice", invoiceId: invoice.id, url, expiresAt };
-    } catch {
+    } catch (error) {
       // signDownload refuses any fileKey outside uploads/<owner>/<hash>.<ext>
       // (packages/adapters/src/storage/local.ts) - should never happen for a
       // key this storage minted itself, but one malformed row must not sink
-      // the rest of the export.
-      return null;
+      // the rest of the export. It must also not simply vanish from a dump
+      // whose entire point is completeness: a file that exists but cannot be
+      // linked right now would then be indistinguishable from one that never
+      // existed. So the entry stays, carrying the same masked, length-capped
+      // failure shape `apps/jobs/src/tasks/expire-files.ts` and `dossier.ts`
+      // already use for a per-subject failure, rather than a `catch { return
+      // null; }` that drops it.
+      const reason = maskText(error instanceof Error ? error.message : String(error))
+        .slice(0, MAX_FAILURE_MESSAGE_LENGTH);
+      return { source: "invoice", invoiceId: invoice.id, unavailable: FILE_LINK_UNAVAILABLE, reason };
     }
   }
   if (invoice.fileExpiresAt) {
@@ -78,8 +105,13 @@ async function dossierFile(
   try {
     const { url, expiresAt } = await storage.signDownload(fileKey);
     return { source: "dossier", caseId: event.caseId, eventId: event.id, url, expiresAt };
-  } catch {
-    return null;
+  } catch (error) {
+    // Same reasoning as `invoiceFile`'s catch above: an entry that vanishes
+    // here is indistinguishable from a dossier that was never generated, so
+    // it stays, with the same masked, length-capped reason.
+    const reason = maskText(error instanceof Error ? error.message : String(error))
+      .slice(0, MAX_FAILURE_MESSAGE_LENGTH);
+    return { source: "dossier", caseId: event.caseId, eventId: event.id, unavailable: FILE_LINK_UNAVAILABLE, reason };
   }
 }
 
