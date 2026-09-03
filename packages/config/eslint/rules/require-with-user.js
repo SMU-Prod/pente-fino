@@ -82,6 +82,21 @@ const ALLOWED_PACKAGE_EXPORTS = new Set([
   // session to scope it to and nothing it can be pointed at that the caller
   // did not already have.
   "closeCaseAsSystem",
+  // E6 Task 3's reopen, called by Task 4's diff job the moment a closed
+  // case's contested item reappears on invoice N+2 (RF-203). Same
+  // justification as `closeCaseAsSystem` just above: it hands out no raw
+  // data access, takes one case id the caller already read out of `cases`,
+  // and exists so a job cannot reopen a case its own way and forget half of
+  // what a reopen has to do (clear the outcome, reset `recoveredCents`,
+  // move the findings back, write the trail).
+  //
+  // `confirmedRecoveredCents` (RF-204's metric, `metrics.ts`) is
+  // deliberately NOT added here: nothing outside packages/db imports it as
+  // of this task, and this allowlist is for names a real caller needs past
+  // the gate, not every export this package happens to expose (the seeds
+  // re-exported from `index.ts` follow the same rule - see that file's own
+  // comment). Whoever builds the first consumer adds it then.
+  "reopenCase",
 ]);
 
 const PACKAGE_ENTRY = "@pentefino/db";
