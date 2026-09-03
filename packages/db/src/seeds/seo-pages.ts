@@ -78,6 +78,11 @@ export async function seedSeoPages(db: Database): Promise<void> {
       );
     }
 
+    // Serialised once and used by both the insert and the update branch: the
+    // two must write the same bytes, and computing it twice is one edit away
+    // from them not doing so.
+    const bodyMd = serializeSeoContent(page.content);
+
     await db
       .insert(seoPages)
       .values({
@@ -85,14 +90,14 @@ export async function seedSeoPages(db: Database): Promise<void> {
         issuerId,
         chargeSlug: page.chargeSlug,
         title: page.title,
-        bodyMd: serializeSeoContent(page.content),
+        bodyMd,
         status: "published",
       })
       .onConflictDoUpdate({
         target: [seoPages.issuerId, seoPages.chargeSlug],
         set: {
           title: page.title,
-          bodyMd: serializeSeoContent(page.content),
+          bodyMd,
           status: "published",
           updatedAt: sql`now()`,
         },

@@ -107,10 +107,21 @@ function sectionsPhrase(names: readonly string[]): string {
  *
  * One constant rather than nineteen near-identical paragraphs, because the
  * disclosure losing a clause on one page is exactly the failure it exists to
- * prevent.
+ * prevent. It is the one block that is deliberately identical everywhere:
+ * every page rests on the same four classes of source, and a page-specific
+ * rewording of a disclosure is how a disclosure gets weaker on the page that
+ * needed it most.
+ *
+ * All four of §7.0's source classes are named, not two. The TDATA page in
+ * particular rests principally on the jus.com.br article, so a provenance
+ * paragraph that said only "complaint reports and companies' own pages"
+ * would understate its own sourcing on the page carrying the most weight.
+ * "artigos jurídicos" is §7.0's own wording and cannot be used here —
+ * "jurídico" is on PRD §14.3's forbidden list — so the clause says what
+ * those articles are instead of what they are called.
  */
 export const SEO_PROVENANCE =
-  "Esta página foi montada a partir de relatos públicos de clientes e das páginas que as próprias empresas publicam sobre os seus serviços. Nenhuma fatura real foi lida para escrevê-la, e nomes de produto mudam com o tempo. Por isso ela descreve o que costuma aparecer, não o que está na sua conta: um serviço citado aqui não é uma afirmação de que alguma empresa fez algo errado. O único jeito de saber se a cobrança da sua fatura está certa é conferir se você contratou aquele serviço — e é isso que os passos acima ajudam a fazer.";
+  "Esta página foi montada a partir de relatos públicos de clientes, das páginas que as próprias empresas publicam sobre os seus serviços, de artigos e notícias que descrevem casos concretos e de um processo do Ministério Público sobre esse tipo de cobrança. Nenhuma fatura real foi lida para escrevê-la, e nomes de produto mudam com o tempo. Por isso ela descreve o que costuma aparecer, não o que está na sua conta: um serviço citado aqui não é uma afirmação de que alguma empresa fez algo errado. O único jeito de saber se a cobrança da sua fatura está certa é conferir se você contratou aquele serviço — e é isso que os passos acima ajudam a fazer.";
 
 /**
  * The mechanism, told as a mechanism. Third-party billing is an ordinary,
@@ -200,14 +211,22 @@ function chargePage(input: {
 // ---------------------------------------------------------------------------
 
 /**
- * The per-issuer paragraph of the "onde ele aparece" section. Only three
- * issuers have a finding of their own in CLAUDE.md §7.1.1 (Claro's catalogue
- * size and its streaming partnerships, Vivo's extra section plus its
- * combined package, Algar's use of the acronym in its own support
- * vocabulary). For TIM, Oi and Sky the research corroborates the section
- * name and nothing else, and the page says exactly that instead of padding
- * itself out — a page claiming to list items it does not have would be the
- * §7.0 ceiling being crossed for the sake of word count.
+ * The per-issuer paragraph of the "onde ele aparece" section.
+ *
+ * Claro, Vivo and Algar have a finding of their own in CLAUDE.md §7.1.1
+ * (Claro's catalogue size and its streaming partnerships, Vivo's extra
+ * section plus its combined package, the acronym appearing in an Algar
+ * customer's own words). Oi and Sky have only the section name corroborated,
+ * and their notes say exactly that instead of padding themselves out — a
+ * page claiming to list items it does not have would be the §7.0 ceiling
+ * being crossed for the sake of word count.
+ *
+ * **TIM is neither.** This note used to say the research had confirmed no
+ * item list at TIM, which the corpus itself contradicted: §7.1.2's Ubook row
+ * is ✅ confirmed at TIM under the operator's own "TIM Livros" branding, and
+ * `tim-movel/ubook` ships. A reader on the TIM page was being told there was
+ * nothing to name while the one confirmed thing sat a click away. The note
+ * names it.
  */
 const SVA_ISSUER_NOTE: Record<string, string> = {
   "claro-movel":
@@ -215,11 +234,134 @@ const SVA_ISSUER_NOTE: Record<string, string> = {
   "vivo-movel":
     "A Vivo usa mais de um nome de seção para esse tipo de item, e itens somados podem aparecer sob um pacote com nome próprio em vez de linha a linha. Quando o valor de uma linha for alto demais para uma assinatura só, o primeiro pedido ao atendimento é o detalhamento: quais itens estão dentro e quanto custa cada um.",
   "tim-movel":
-    "A TIM usa a sigla no próprio nome da seção, o que facilita a busca: a expressão “serviços de valor adicionado” impressa na fatura já indica o bloco a conferir. A pesquisa que originou este site não confirmou uma lista de itens cobrados nessa seção na TIM, então o que está descrito aqui é o mecanismo, não um catálogo.",
+    "A TIM usa a sigla no próprio nome da seção, o que facilita a busca: a expressão “serviços de valor adicionado” impressa na fatura já indica o bloco a conferir. Entre os itens que podem aparecer aí, a pesquisa que originou este site confirmou um: o serviço de audiolivros Ubook, vendido na TIM com a marca TIM Livros, que tem página própria neste site. Fora ele, o que está descrito aqui é o mecanismo, e não um catálogo fechado.",
   oi: "A Oi usa mais de um nome de seção para esse tipo de item, então vale olhar as duas antes de concluir que não há nada a conferir. A pesquisa que originou este site não confirmou uma lista de itens cobrados nessas seções na Oi — o que está descrito aqui é o mecanismo, não um catálogo.",
   sky: "A pesquisa que originou este site não confirmou nenhum item específico cobrado nessa seção na Sky. O que está descrito aqui é o mecanismo, não uma lista: se houver uma linha que você não reconhece, o caminho de conferência abaixo é o mesmo, e a seção é o lugar por onde começar.",
+  // §7.1.1's Algar row evidences the acronym in the title of a *customer's*
+  // complaint, not in Algar's support vocabulary — so the note says the
+  // acronym is how people describe this kind of charge, and drops the
+  // "tende a encurtar a conversa" advice, which had no source behind it.
   algar:
-    "Na Algar, a sigla SVA aparece também no vocabulário do atendimento, então usá-la ao ligar tende a encurtar a conversa. A operadora usa mais de um nome de seção para esse tipo de item, e vale olhar todas antes de concluir que não há nada a conferir.",
+    "Na Algar, a sigla SVA aparece nos relatos de clientes que descrevem esse tipo de cobrança, ainda que os nomes de seção impressos na fatura sejam outros. A operadora usa mais de um nome de seção para esse tipo de item, e vale olhar todas antes de concluir que não há nada a conferir.",
+};
+
+/**
+ * The FAQ of each "what is an SVA section" page, per issuer.
+ *
+ * These used to be one shared array of three questions, which meant six URLs
+ * emitting a byte-identical JSON-LD `FAQPage`. PRD §18's gate for this block
+ * is "Rich results válidos", and six identical FAQ payloads across six URLs
+ * is the shape that gets a rich result dropped — the duplication is not a
+ * style problem here, it is the acceptance criterion.
+ *
+ * Each is grounded in what §7 confirms about *that* issuer and nothing else:
+ * its own section names (§20.1/§7.1.1), its own §7.1.1 finding if it has
+ * one, and whether this corpus actually has an item page to point at. Where
+ * an issuer honestly has less to say the FAQ is shorter — Oi, Sky and Algar
+ * get two questions, because a third would have to be invented, and an
+ * invented question is worse than a short page.
+ *
+ * The other three shared blocks were left alone, deliberately:
+ *
+ *  - `whatTheNormSays` is byte-identical on all nineteen pages and stays
+ *    that way. Anatel Res. 765/2023 and CDC art. 42 do not say a different
+ *    thing on the Sky page than on the Vivo page, and rewording a norm six
+ *    ways to look different to a crawler is how a norm gets misstated.
+ *  - `whyItAppears` and `howToCheck` already vary by issuer name and by
+ *    section name, which is exactly where the issuers' facts actually
+ *    differ. They repeat within one issuer's pages (all nine Vivo item pages
+ *    share them), and that is the same mechanism explained the same way to
+ *    someone who landed on a different item — not a claim that differs.
+ *  - `SEO_PROVENANCE` is identical everywhere on purpose; see its own note.
+ */
+const SVA_ISSUER_FAQ: Record<string, SeoPageContent["faq"]> = {
+  "claro-movel": [
+    {
+      question: "O que costuma estar na seção “Aplicativos Digitais”?",
+      answer:
+        "Em boa parte, parcerias de streaming e de conteúdo vendidas pela operadora — o catálogo de serviços digitais da Claro passou de mais de cem produtos para cerca de sessenta, com nomes conhecidos entre eles. São produtos vendidos de forma aberta, e a pergunta que sobra é sempre a mesma: se aquela assinatura em particular foi contratada por você.",
+    },
+    {
+      question: "Algum item dessa seção tem página própria neste site?",
+      answer:
+        "Sim, um: o Ubook, serviço de audiolivros por assinatura. Os outros itens que podem aparecer aí não entraram neste site porque a pesquisa que o originou não os confirmou na Claro, e não porque não existam.",
+    },
+    {
+      question: "O item é de uma marca que eu conheço. Ainda vale conferir?",
+      answer:
+        "Vale, e por um motivo simples: o que a conferência responde não é se o produto é bom, e sim se a assinatura foi contratada, quando e por qual canal. Uma marca conhecida não muda nenhuma dessas três respostas.",
+    },
+  ],
+  "vivo-movel": [
+    {
+      question: "A Vivo usa mais de um nome de seção. Preciso olhar todas?",
+      answer:
+        "Sim. Esse tipo de item pode aparecer em “Serviços Digitais”, em “Serviços Digitais avulsos”, em “Cobrança de Serviços de terceiros” ou em “Adicionais Contratados”, e olhar só uma delas costuma deixar item para trás. Faça a lista com o texto exato e o valor de cada linha antes de ligar.",
+    },
+    {
+      question: "Uma linha só pode estar somando várias assinaturas?",
+      answer:
+        "Pode. Existe um agrupamento chamado “Serviços Digitais III” que aparece com o valor de vários itens somados em uma linha só. Se o valor de uma linha for alto demais para uma assinatura sozinha, o primeiro pedido ao atendimento é o detalhamento: quais itens estão dentro e quanto custa cada um.",
+    },
+    {
+      question: "Quais itens dessa parte da conta têm página própria neste site?",
+      answer:
+        "Skeelo, GoRead, Hube Jornais, NBA Básico, Clube de Revistas, FunKids, McAfee, Vivo Meditação Lite e os itens escritos como “Serviços de Terceiro TDATA”. São os que a pesquisa que originou este site confirmou na Vivo; a seção pode conter outros.",
+    },
+  ],
+  "tim-movel": [
+    {
+      question: "Por que a sigla já está no nome da seção?",
+      answer:
+        "Porque a TIM nomeia o bloco pela categoria: a expressão “serviços de valor adicionado” impressa na fatura já é o próprio bloco a conferir. Isso facilita a busca no papel ou no PDF, mas não diz nada sobre uma linha específica dentro dele.",
+    },
+    {
+      question: "Que item já se sabe que aparece nessa seção na TIM?",
+      answer:
+        "O serviço de audiolivros Ubook, vendido na TIM com a marca TIM Livros, que tem página própria neste site. É o único que a pesquisa que originou este site confirmou na TIM, o que não quer dizer que seja o único que existe.",
+    },
+    {
+      question: "O nome na fatura pode ser diferente do nome do aplicativo?",
+      answer:
+        "Pode, e nessa seção é comum: o mesmo serviço costuma ser vendido em cada operadora com uma marca própria. Ao falar com o atendimento, cite as duas coisas, o texto exato da fatura e o nome do aplicativo instalado no aparelho.",
+    },
+  ],
+  oi: [
+    {
+      question: "São dois nomes de seção. Preciso olhar os dois?",
+      answer:
+        "Sim: esse tipo de item pode estar em “Serviços Digitais” ou em “Outros Pacotes e Serviços Mensais”, e o mesmo tipo de assinatura pode cair em qualquer um dos dois. Olhe os dois antes de concluir que não há nada a conferir.",
+    },
+    {
+      question: "Não reconheço o nome de nenhuma linha. Por onde começo?",
+      answer:
+        "Pelo texto, não pelo valor. Copie o texto exato do item, anote o valor e conte há quantos ciclos ele aparece, comparando as faturas anteriores. Com esses três dados o pedido ao atendimento fica objetivo, mesmo sem saber de antemão que serviço é.",
+    },
+  ],
+  sky: [
+    {
+      question: "“lançamentos diversos” quer dizer o quê?",
+      answer:
+        "É um nome de seção genérico: ele descreve onde a cobrança foi lançada, não o que foi contratado. Por isso a leitura útil é linha a linha, cada uma com o seu texto e o seu valor, e não pelo total da seção.",
+    },
+    {
+      question: "Este site tem página para algum item cobrado na Sky?",
+      answer:
+        "Não. A pesquisa que originou este site corroborou o nome dessa seção e nenhum item dentro dela, então o que está aqui é o mecanismo e o caminho de conferência. Isso não quer dizer que a seção esteja vazia na sua conta.",
+    },
+  ],
+  algar: [
+    {
+      question: "São três nomes de seção. Por onde eu começo?",
+      answer:
+        "Comece por “Outros Valores”, “SERVICOS FACILIDADES” e “OUTRAS COBRANCAS” — os três agrupam cobrança que não é do plano em si. Percorra os três e monte uma lista única, com o texto exato e o valor de cada linha, antes de falar com o atendimento.",
+    },
+    {
+      question: "Posso usar a sigla SVA ao falar com o atendimento?",
+      answer:
+        "A sigla é como muita gente descreve esse tipo de cobrança, então ela costuma ser entendida. Ainda assim, o que identifica a linha é o texto exato impresso na fatura: leve os dois, a sigla para explicar o assunto e o texto para localizar o item.",
+    },
+  ],
 };
 
 function svaSectionPage(issuerSlug: string): SeoPageSeed {
@@ -227,6 +369,8 @@ function svaSectionPage(issuerSlug: string): SeoPageSeed {
   const sectionText = sectionsPhrase(sections);
   const note = SVA_ISSUER_NOTE[issuerSlug];
   if (note === undefined) throw new Error(`no SVA note for ${JSON.stringify(issuerSlug)}`);
+  const faq = SVA_ISSUER_FAQ[issuerSlug];
+  if (faq === undefined) throw new Error(`no SVA faq for ${JSON.stringify(issuerSlug)}`);
 
   return {
     issuerSlug,
@@ -245,30 +389,21 @@ function svaSectionPage(issuerSlug: string): SeoPageSeed {
         {
           heading: `Onde ele aparece na conta da ${name}`,
           paragraphs: [
-            `Na ${name}, esse tipo de item fica n${sectionText}. O nome da seção é o melhor ponto de partida: em vez de ler a conta inteira, vá direto até essa parte da fatura e trate as linhas uma por uma, cada uma com o seu texto e o seu valor.`,
+            // The idiomatic phrase for "the best place to start" cannot be
+            // used here: it collides with INV-006's political-affiliation
+            // stem, which `test/invariants/sensitive.spec.ts` matches over
+            // every line of every seed source file — comments included, which
+            // is why this note cannot name the word either. Narrowing that
+            // vocabulary to let a nicer phrase through is not a trade this
+            // corpus gets to make.
+            `Na ${name}, esse tipo de item fica n${sectionText}. O nome da seção é o melhor lugar para começar: em vez de ler a conta inteira, vá direto até essa parte da fatura e trate as linhas uma por uma, cada uma com o seu texto e o seu valor.`,
             note,
           ],
         },
         howToCheck(issuerSlug, sectionText),
         whatTheNormSays(),
       ],
-      faq: [
-        {
-          question: "Um item nessa seção quer dizer que tem algo errado na minha conta?",
-          answer:
-            "Não. A seção agrupa assinaturas vendidas através da operadora, e muitas delas foram contratadas normalmente pelo próprio cliente. O que a seção indica é onde olhar: são as linhas que existem por fora do plano e que têm contratação e cancelamento próprios.",
-        },
-        {
-          question: "Como eu descubro se contratei?",
-          answer:
-            "Procure o registro em três lugares: a área de serviços e assinaturas no aplicativo ou site da operadora, o e-mail ou SMS de confirmação da ativação, e a área de conta da empresa que presta o serviço. Se não achar em nenhum, peça ao atendimento a data e o canal da contratação, com número de protocolo.",
-        },
-        {
-          question: "Dá para pedir que a linha não aceite esse tipo de contratação?",
-          answer:
-            "Vale perguntar ao atendimento se a sua linha aceita bloqueio de contratação de serviços adicionais. É um pedido separado do cancelamento de um item que já está na conta, e também gera número de protocolo — anote os dois, com as datas.",
-        },
-      ],
+      faq,
       provenance: SEO_PROVENANCE,
     },
   };
@@ -428,7 +563,11 @@ export const SEO_PAGES: readonly SeoPageSeed[] = [
     intro:
       "FunKids é um serviço de conteúdo infantil que pode ser cobrado dentro da conta da Vivo, na parte da fatura reservada aos serviços digitais. Esta página explica o que costuma ser essa linha e como conferir a sua.",
     whatItIs: [
-      "É uma assinatura de conteúdo para crianças, vendida através da operadora e cobrada junto da conta de celular. A empresa que presta o serviço mantém canal próprio de atendimento, o que dá dois caminhos possíveis para dúvida e para cancelamento: o da operadora e o dela.",
+      // §7.1.2's FunKids row evidences "página própria da empresa no RA" —
+      // a profile on a complaints platform, which is not the same thing as a
+      // support channel the company runs. The earlier wording inferred one;
+      // this says only that two cancellation paths are worth asking about.
+      "É uma assinatura de conteúdo para crianças, vendida através da operadora e cobrada junto da conta de celular. Como em todo serviço vendido dessa forma, o cancelamento pode ter dois caminhos, o da operadora e o da empresa que presta o serviço, e vale perguntar ao atendimento qual dos dois vale para o seu caso.",
       "Serviços infantis costumam ser contratados a partir do próprio aparelho, às vezes em poucos toques dentro de um aplicativo ou de uma página de campanha. Se a linha apareceu e ninguém em casa lembra de ter assinado, a pergunta útil ao atendimento é a data e o canal da contratação.",
     ],
     faq: [

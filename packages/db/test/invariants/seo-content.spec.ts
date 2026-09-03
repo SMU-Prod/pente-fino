@@ -91,22 +91,75 @@ function lintFailures(entries: readonly Labeled[]): string[] {
 // ---------------------------------------------------------------------------
 
 /**
- * Words that turn a description into a charge against whoever is named
- * beside them. Not a style list — every one of these, said of a named
- * company, asserts conduct this project has no basis to assert: CLAUDE.md
- * §7.0 built its lexicon from complaint text with no real invoice in hand,
- * which is evidence that a *kind of line* exists, never evidence that a
- * company did anything.
+ * Words and constructions that turn a description into a charge against
+ * whoever is named beside them. Not a style list — every one of these, said
+ * of a named company, asserts conduct this project has no basis to assert:
+ * CLAUDE.md §7.0 built its lexicon from complaint text with no real invoice
+ * in hand, which is evidence that a *kind of line* exists, never evidence
+ * that a company did anything.
  *
- * "sem autorização" and "sem consentimento" are on the list even though
- * they are the natural way to describe the problem, because that is exactly
- * the trap: they read as neutral and land as an accusation. The corpus says
- * "confira se você contratou" instead — the §14.2 move, one level up.
+ * Three shapes, because an accusation has three shapes.
+ *
+ * **Stems.** The first version of this list held lemmas — "enganou",
+ * "lesou", "descumpriu" — and matched them whole-word with the regular
+ * plural. That caught the past tense and nothing else: "a TIM engana o
+ * consumidor" and "a Claro descumpre a norma" walked straight through the
+ * check written to stop them. Portuguese verbs inflect far past what an "s"
+ * covers, so the verbs and the deverbal adjectives are matched by root plus
+ * whatever letters follow. That is deliberately over-inclusive: "les" also
+ * matches "leste", and "golp" also matches "golpear". A false positive here
+ * fails the build loudly on a sentence a human then reads; a false negative
+ * publishes an accusation nobody re-reads.
  */
-const ACCUSATORY_TERMS = [
-  "cobrou sem", "fraude", "fraudou", "golpe", "enganou", "lesou",
-  "abusiva", "abusivo", "irregular", "má-fé", "descumpriu",
-  "sem autorização", "sem consentimento", "escondido", "esconde",
+const ACCUSATORY_STEMS = [
+  "engan", // engana, enganou, enganoso, engano
+  "les", // lesa, lesou, lesado, lesivo, lesão
+  "descumpr", // descumpre, descumpriu, descumprindo, descumprido
+  "fraud", // fraude, fraudou, fraudulento, fraudada
+  "golp", // golpe, golpes, golpista, golpear
+  "abusiv", // abusiva, abusivo, abusivamente
+  "irregular", // irregular, irregulares, irregularidade
+  "escond", // esconde, escondeu, escondido, escondendo
+  "ocult", // oculta, ocultou, ocultado, ocultação
+  "ludibri", // ludibria, ludibriou, ludibriado
+  "deliberad", // deliberado, deliberadamente
+  "proposital", // proposital, propositalmente
+  "intencional", // intencional, intencionalmente
+];
+
+/** Fixed phrases, matched whole-word with the regular Portuguese plural, as before. */
+const ACCUSATORY_PHRASES = ["má-fé", "de propósito"];
+
+/**
+ * **Constructions.** "sem autorização" and "sem consentimento" used to be
+ * two literal entries, and they are the natural way to describe the problem
+ * — which is exactly the trap: they read as neutral and land as an
+ * accusation. But they are two members of an open family, and the other
+ * members were passing: "sem que o cliente pedisse", "sem avisar", "sem
+ * pedido do cliente" all say the same thing about a named company. What is
+ * matched is therefore the shape, not the wording.
+ *
+ * The corpus says "confira se você contratou" and "peça a data e o canal da
+ * contratação" instead — the §14.2 move, one level up. It also legitimately
+ * writes "sem cancelar", "sem mexer no plano" and "sem abreviar", which is
+ * why the verb and noun lists below are enumerated rather than left as a
+ * wildcard after "sem".
+ */
+const ACCUSATORY_CONSTRUCTIONS: ReadonlyArray<{ label: string; source: string }> = [
+  {
+    label: "sem que <alguém> …",
+    source: "sem\\s+que\\s+(?:o|a|os|as|voce|voces|ninguem|nenhum|nenhuma|alguem)\\b",
+  },
+  {
+    label: "sem <verbo>",
+    source:
+      "sem\\s+(?:pedir|solicitar|avisar|informar|comunicar|autorizar|consentir|saber|perceber|combinar|contratar|querer|assinar)\\b",
+  },
+  {
+    label: "sem <substantivo>",
+    source:
+      "sem\\s+(?:autorizacao|consentimento|aviso|permissao|aceite|conhecimento|contratacao|pedido|solicitacao|anuencia|previo\\s+aviso)\\b",
+  },
 ];
 
 /**
@@ -115,6 +168,15 @@ const ACCUSATORY_TERMS = [
  * of the seeded `issuers` rows at assertion time, so adding an issuer or an
  * alias widens this check automatically instead of leaving a company
  * silently unprotected by a list nobody remembered to update.
+ *
+ * This half cannot be read from anywhere — the corpus is prose, and the
+ * names it puts in play are whatever the author typed. So it is guarded from
+ * both ends instead, by "the corpus names nobody this file has not been told
+ * about" below: every list here must still be present in the corpus, and
+ * every capitalised word in the corpus must be accounted for by one of these
+ * two lists. Adding a page that names a new partner therefore fails the
+ * suite until the name is classified, which is the only way this list can be
+ * kept honest without a name extractor nobody would trust.
  */
 const CORPUS_COMPANY_NAMES = [
   "Skeelo", "Ubook", "TIM Livros", "GoRead", "Go Read",
@@ -123,6 +185,50 @@ const CORPUS_COMPANY_NAMES = [
   "TDATA", "Telefônica Data", "Editora Abril", "Brisanet",
   "Netflix", "YouTube", "Prime Video", "HBO", "Telecine Play",
   "Anatel",
+];
+
+/**
+ * Product-name words that are not themselves a company: the plan and edition
+ * words the corpus quotes off a bill line ("Skeelo Top", "McAfee Safe
+ * Connect", "Ubook Jornais"). They belong to a name in the list above, so
+ * they are not separate companies, but they are capitalised and so must be
+ * declared somewhere for the drift guard to pass.
+ */
+const CORPUS_PRODUCT_WORDS = [
+  "Top", "Promo", "Premium", "Intermediário", "Audiobooks", // Skeelo's plan names
+  "Proteção", "Safe", "Connect", // McAfee Proteção, McAfee Safe Connect
+];
+
+/**
+ * Capitalised words the corpus writes that name no company at all: ordinary
+ * Portuguese words at the start of a sentence, the bill-section names quoted
+ * verbatim off `issuers.sections`, and the norms and file formats the pages
+ * mention. Long and boring on purpose — its length is what makes the guard
+ * above cheap to satisfy honestly and impossible to satisfy by accident. A
+ * new word here is one line; a new *company* here would be a mistake a
+ * reviewer can see, which is the whole point of making them separate lists.
+ */
+const NOT_A_COMPANY = [
+  // Ordinary words, almost all of them sentence-initial.
+  "A", "Ainda", "Algum", "Anote", "Antes", "Ao", "As", "Assinaturas", "Cada",
+  "Cancelar", "Cancelei", "Com", "Comece", "Como", "Compare", "Confira",
+  "Copie", "Dá", "Depende", "Depois", "É", "Ela", "Ele", "Em", "Entre",
+  "Essa", "Esse", "Esta", "Estão", "Este", "Eu", "Existe", "Faça", "Fora",
+  "Isso", "Ler", "Meu", "Muda", "Multiplique", "Na", "Nada", "Não", "Nem",
+  "Nenhum", "Nenhuma", "No", "Nos", "O", "Olhe", "Onde", "Os", "Para",
+  "Peça", "Pedidos", "Pedindo", "Pela", "Pelo", "Percorra", "Pode", "Por",
+  "Porque", "Posso", "Preciso", "Procure", "Quais", "Qual", "Quando", "Que",
+  "Renovação", "São", "Se", "Sem", "Sim", "Sob", "Tenho", "Terceiro",
+  "Terceiros", "Um", "Uma", "Vale", "Valor", "Vi",
+  // Bill-section vocabulary, quoted verbatim from `issuers.sections`.
+  "Adicionais", "Aplicativos", "Cobrança", "COBRANCAS", "Contratados",
+  "Digitais", "FACILIDADES", "Mensais", "OUTRAS", "Outros", "Pacotes",
+  "SERVICOS", "Serviço", "Serviços", "SVA", "Valores", "III",
+  // Norms, institutions, channels and file formats. "Ministério Público" is
+  // named by `SEO_PROVENANCE` as one of §7.0's four source classes — the
+  // body that brought the case, never a company this corpus describes.
+  "CDC", "Decreto", "Ministério", "Público", "Resolução", "PDF", "PDFs",
+  "SMS", "R",
 ];
 
 /** Accent-folding and lowercasing, the same normalisation `lintUserFacingText` applies. */
@@ -174,6 +280,27 @@ function matchesWord(foldedHaystack: string, term: string, withPlural: boolean):
 }
 
 /**
+ * Root plus whatever letters follow it, anchored at a word start. `engan`
+ * matches "engana", "enganou" and "enganoso" and does not match "desengano"
+ * or a word that merely contains the letters.
+ */
+function matchesStem(foldedHaystack: string, stem: string): boolean {
+  const pattern = `(?<![\\p{L}\\p{N}])${escapeRegExp(fold(stem))}\\p{L}*(?![\\p{L}\\p{N}])`;
+  return new RegExp(pattern, "u").test(foldedHaystack);
+}
+
+/** Every accusatory shape present in one already-folded sentence, by label. */
+function accusatoryTermsIn(foldedSentence: string): string[] {
+  return [
+    ...ACCUSATORY_STEMS.filter((stem) => matchesStem(foldedSentence, stem)).map((s) => `${s}…`),
+    ...ACCUSATORY_PHRASES.filter((phrase) => matchesWord(foldedSentence, phrase, true)),
+    ...ACCUSATORY_CONSTRUCTIONS.filter((c) => new RegExp(c.source, "u").test(foldedSentence)).map(
+      (c) => c.label,
+    ),
+  ];
+}
+
+/**
  * Sentence-scoped, not document-scoped. A page that explains the mechanism
  * of third-party billing will inevitably contain both company names and
  * words about things going wrong; asserting they never co-occur anywhere on
@@ -187,7 +314,7 @@ function accusationHits(entries: readonly Labeled[], names: readonly string[]): 
   for (const entry of entries) {
     for (const sentence of splitSentences(entry.text)) {
       const folded = fold(sentence);
-      const accusatory = ACCUSATORY_TERMS.filter((term) => matchesWord(folded, term, true));
+      const accusatory = accusatoryTermsIn(folded);
       if (accusatory.length === 0) continue;
       const named = names.filter((name) => matchesWord(folded, name, false));
       if (named.length === 0) continue;
@@ -242,6 +369,60 @@ function unconfirmedTermHits(entries: readonly Labeled[]): string[] {
     }
   }
   return hits;
+}
+
+// ---------------------------------------------------------------------------
+// 4 · the corpus names nobody this file has not been told about
+// ---------------------------------------------------------------------------
+
+/**
+ * Every capitalised word the corpus writes. Word-level rather than
+ * phrase-level on purpose: a phrase extractor has to guess where a name ends
+ * ("Skeelo Top, Skeelo Promo e Skeelo Audiobooks" is three names, not one),
+ * and a guess is exactly what must not sit between a new company name and
+ * the check that protects it. One capitalised word is a fact; whether it is
+ * a company is a judgement, and this file makes that judgement explicit by
+ * requiring every such word to be in one of three declared lists.
+ */
+function capitalisedWords(entries: readonly Labeled[]): Map<string, string[]> {
+  const byWord = new Map<string, string[]>();
+  for (const entry of entries) {
+    for (const match of entry.text.matchAll(/\p{Lu}[\p{L}\p{N}]*/gu)) {
+      const word = match[0];
+      const seen = byWord.get(word) ?? [];
+      if (!seen.includes(entry.label)) seen.push(entry.label);
+      byWord.set(word, seen);
+    }
+  }
+  return byWord;
+}
+
+/** Every word of every declared name, folded — the vocabulary a candidate is checked against. */
+function declaredWords(companyNames: readonly string[]): Set<string> {
+  const words = new Set<string>();
+  for (const name of [...companyNames, ...CORPUS_PRODUCT_WORDS, ...NOT_A_COMPANY]) {
+    for (const part of fold(name).split(/[\s.]+/)) if (part.length > 0) words.add(part);
+  }
+  return words;
+}
+
+/**
+ * Capitalised words the corpus writes that no declared list accounts for.
+ * This is the drift guard the company-name half was missing: the issuer half
+ * is read from `issuers` and widens on its own, so a new operator is
+ * protected the moment it is seeded, while `CORPUS_COMPANY_NAMES` is typed by
+ * hand and a page added later could name a partner nothing protects. It
+ * cannot now: the new name is a capitalised word, no list claims it, and the
+ * suite fails until somebody decides which list it belongs in.
+ */
+function undeclaredNames(entries: readonly Labeled[], companyNames: readonly string[]): string[] {
+  const declared = declaredWords(companyNames);
+  const out: string[] = [];
+  for (const [word, labels] of capitalisedWords(entries)) {
+    if (declared.has(fold(word))) continue;
+    out.push(`${word} (in ${labels.slice(0, 2).join(", ")}${labels.length > 2 ? ", …" : ""})`);
+  }
+  return out.sort();
 }
 
 // ---------------------------------------------------------------------------
@@ -310,6 +491,51 @@ describe("the checks themselves catch a deliberately bad string", () => {
     expect(accusationHits(fixture("As cobranças da TIM são abusivas."), COMPANY_NAMES)).toHaveLength(1);
   });
 
+  /**
+   * One poisoned sentence per construction the check must catch. Every one of
+   * these was written *before* the matcher could catch it and watched failing:
+   * a lemma list ("enganou", "lesou", "descumpriu") lets every other
+   * conjugation of the same verb through, and the two "sem …" entries let
+   * every other way of saying the same thing through. The last row is the
+   * §7.1.2 phrase about TDATA's label that this corpus consciously declined
+   * to publish — the check that exists to stop it being published could not
+   * have seen it.
+   *
+   * A row here is a sentence a reader would recognise instantly as an
+   * accusation against a named company. If one of them ever stops failing to
+   * be caught, the matcher lost coverage.
+   */
+  const POISONED: Array<[string, string]> = [
+    ["conjugated -ar verb (engana)", "A TIM engana o consumidor com o nome do serviço."],
+    ["conjugated -ar verb (lesa)", "A Vivo lesa os clientes que não conferem a fatura."],
+    ["conjugated -ir verb (descumpre)", "A Claro descumpre a norma quando não responde."],
+    ["adjectival form (fraudulentas)", "As cobranças da Vivo são fraudulentas."],
+    ["past tense (escondeu)", "A TIM escondeu o valor real do TIM Livros."],
+    ["synonym stem (oculta)", "A Claro oculta o item do Ubook na fatura."],
+    ["nominalisation (irregularidades)", "A Sky cometeu irregularidades na cobrança do cliente."],
+    ["agent noun (golpista)", "A Oi agiu como golpista com quem assinou."],
+    ["sem que <alguém> <verbo>", "A Claro ativou o Ubook sem que o cliente pedisse."],
+    ["sem <verbo>", "A Vivo ativou o McAfee sem avisar o cliente."],
+    ["sem <substantivo>", "O Skeelo entrou na conta sem pedido do cliente."],
+    ["intent adverb (deliberadamente)", "O nome TDATA é deliberadamente pouco claro."],
+    ["intent adverb (propositalmente)", "A Vivo cobrou o Skeelo propositalmente."],
+  ];
+
+  it.each(POISONED)("accusation check flags %s", (_label, text) => {
+    expect(accusationHits(fixture(text), COMPANY_NAMES)).toHaveLength(1);
+  });
+
+  // The mirror of the table above: ordinary sentences this corpus actually
+  // wants to write, which the widened matcher must still let through. "sem
+  // cancelar", "sem abreviar" and "sem mexer" are all in the shipped corpus.
+  it.each([
+    "Dá para cancelar o item sem mexer no plano, e sem cancelar o resto.",
+    "Use o texto exato da fatura da Vivo, sem abreviar.",
+    "O Skeelo segue na conta sem nenhuma outra ação depois da contratação.",
+  ])("accusation check leaves ordinary prose alone: %s", (text) => {
+    expect(accusationHits(fixture(text), COMPANY_NAMES)).toEqual([]);
+  });
+
   // Scoping is the whole point: a document-wide check would flag the two
   // sentences below, and a page that explains the mechanism honestly cannot
   // avoid having a company name in one paragraph and the word "fraude" in
@@ -338,6 +564,18 @@ describe("the checks themselves catch a deliberately bad string", () => {
     // would write about an antivirus without thinking about it.
     expect(unconfirmedTermHits(fixture("O antivírus promete mais proteção para o aparelho."))).toHaveLength(1);
   });
+
+  it("drift guard flags a partner named by a page but by no list", () => {
+    const newPartner = fixture("O pacote inclui uma assinatura do Deezer, cobrada na mesma fatura.");
+    expect(undeclaredNames(newPartner, COMPANY_NAMES)).toHaveLength(1);
+  });
+
+  it("drift guard flags a name at the start of a sentence, where a new page would put it", () => {
+    // The realistic shape of the miss: a new charge page's title and intro
+    // both open with the product's name.
+    expect(undeclaredNames(fixture("Spotify na conta da Vivo: o que é essa linha"), COMPANY_NAMES))
+      .toHaveLength(1);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -358,6 +596,21 @@ describe("INV-004/INV-005 · the public corpus carries no forbidden vocabulary",
 describe("no company in the public corpus is named as having done something wrong", () => {
   it("never puts a company name in the same sentence as an accusatory term", () => {
     expect(accusationHits(CORPUS_STRINGS, COMPANY_NAMES)).toEqual([]);
+  });
+
+  // The two halves of the protected-name set drift in opposite directions.
+  // The issuer half is read from `issuers` and widens on its own. The corpus
+  // half is typed by hand, so it is pinned from both ends here: nothing the
+  // corpus names may be missing from it, and nothing in it may have stopped
+  // being named.
+  it("names no company the accusation check has not been told about", () => {
+    expect(undeclaredNames(CORPUS_STRINGS, COMPANY_NAMES)).toEqual([]);
+  });
+
+  it("keeps no company name the corpus no longer uses", () => {
+    const corpus = fold(CORPUS_STRINGS.map((entry) => entry.text).join("\n"));
+    const stale = CORPUS_COMPANY_NAMES.filter((name) => !matchesWord(corpus, name, false));
+    expect(stale).toEqual([]);
   });
 });
 

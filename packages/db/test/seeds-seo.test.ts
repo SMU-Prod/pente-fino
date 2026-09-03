@@ -132,6 +132,56 @@ describe("seo_pages seed", () => {
     }
   });
 
+  // The six "what is an SVA section" pages name the items this corpus has a
+  // page for, so a reader on the TIM page is not told there is nothing to
+  // name while `tim-movel/ubook` ships. A pointer to a page that does *not*
+  // exist is the same defect the other way round, and would be invisible —
+  // nothing renders these as links, so nothing would 404.
+  it("points only at item pages that exist at the same issuer", () => {
+    const ITEM_PAGE_BY_NAME: Record<string, string> = {
+      Skeelo: "skeelo",
+      GoRead: "goread",
+      "Hube Jornais": "hube-jornais",
+      "NBA Básico": "nba-basico",
+      "Clube de Revistas": "clube-de-revistas",
+      FunKids: "funkids",
+      McAfee: "mcafee",
+      "Vivo Meditação Lite": "vivo-meditacao-lite",
+      TDATA: "tdata",
+      Ubook: "ubook",
+      "TIM Livros": "ubook",
+    };
+    const have = new Set(SEO_PAGES.map((p) => `${p.issuerSlug}/${p.chargeSlug}`));
+
+    for (const page of SEO_PAGES.filter((p) => p.chargeSlug === "servicos-de-valor-adicionado")) {
+      const text = [
+        page.content.intro,
+        ...page.content.sections.flatMap((s) => s.paragraphs),
+        ...page.content.faq.flatMap((f) => [f.question, f.answer]),
+      ].join(" ");
+      for (const [name, chargeSlug] of Object.entries(ITEM_PAGE_BY_NAME)) {
+        if (!text.includes(name)) continue;
+        const target = `${page.issuerSlug}/${chargeSlug}`;
+        expect(have.has(target), `${page.issuerSlug} SVA page names ${name}, but ${target} has no page`)
+          .toBe(true);
+      }
+    }
+  });
+
+  // Six URLs emitting the same JSON-LD `FAQPage` is what gets a rich result
+  // dropped, and §18's gate for E10 is "Rich results válidos". The FAQ is the
+  // one block that must not repeat across pages.
+  it("gives no two pages the same FAQ, so no two emit the same FAQPage", () => {
+    const seen = new Map<string, string>();
+    for (const page of SEO_PAGES) {
+      const key = `${page.issuerSlug}/${page.chargeSlug}`;
+      const fingerprint = JSON.stringify(page.content.faq);
+      const previous = seen.get(fingerprint);
+      expect(previous, `${key} has the same FAQ as ${previous}`).toBeUndefined();
+      seen.set(fingerprint, key);
+    }
+  });
+
   it("gives every page a non-empty title and an FAQ the JSON-LD can be built from", async () => {
     for (const page of SEO_PAGES) {
       const key = `${page.issuerSlug}/${page.chargeSlug}`;
