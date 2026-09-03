@@ -30,6 +30,13 @@
 // there is no listing UI here, no audit view, no queue. It is the manual
 // path the author said would be the manual path.
 //
+// The E11 admin panel now exists and calls the same
+// `applyRulePromotionProposal` this script calls — including the
+// double-firing fix (Task 5) that retires a promoted rule's own
+// predecessor version — so this script's behaviour is unchanged and it
+// inherits that fix for free; this script remains the break-glass path
+// for when the panel itself is unavailable.
+//
 // ---------------------------------------------------------------------
 // USAGE
 // ---------------------------------------------------------------------

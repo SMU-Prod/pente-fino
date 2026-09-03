@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, ne } from "drizzle-orm";
 import { newId } from "@pentefino/core";
 import type { TaskHandler } from "@pentefino/adapters";
 // eslint-disable-next-line pentefino/require-with-user -- system job with no user session; writes go through the caller-injected `Database` (deps.db), not a client this module creates itself
@@ -68,6 +68,51 @@ async function recordTransition(
     type,
     payload: { ruleId: rule.id, ruleSlug: rule.slug, ruleVersion: rule.version, ...totals },
   });
+}
+
+/**
+ * RF-301 opened a hole `ingest.ts`'s rule query does not close: it loads
+ * every row whose status is `active` *or* `shadow` for a slug with no
+ * "latest version only" filter, which is exactly right while v2 sits in
+ * `shadow` (that is the whole point of shadow mode — v2's findings stay
+ * invisible while v1 keeps serving real reports) and exactly wrong the
+ * moment v2 becomes `active` too: both versions now match the same item
+ * and each writes its own finding, double-counting one charge on a real
+ * person's report. `applyRulePromotionProposal` is the only function that
+ * can set a rule `active` (global constraint 7), so it is the only place
+ * that can know, at the moment it creates a second `active` row for a
+ * slug, that a first one now has to step aside — see this function's own
+ * call to `retireSupersededVersions` below for where that happens and why
+ * it happens *after* the promotion, not before or instead of it.
+ *
+ * Keyed on `slug`, not "every currently active rule": an unrelated slug's
+ * `active` row is a different rule entirely and must never be touched by
+ * promoting this one. Only a row that is *currently* `active` is retired —
+ * a predecessor a human already paused, or one still sitting in `shadow`,
+ * is left exactly as it is; this call does not resurrect or reinterpret
+ * either state, it only closes the one specific hole promotion itself just
+ * opened.
+ */
+async function retireSupersededVersions(db: Database, promoted: Rule, proposalId: string): Promise<void> {
+  const predecessors = await db
+    .select()
+    .from(rules)
+    .where(and(eq(rules.slug, promoted.slug), eq(rules.status, "active"), ne(rules.id, promoted.id)));
+
+  for (const predecessor of predecessors) {
+    await setStatus(db, predecessor.id, "paused");
+    await db.insert(events).values({
+      id: newId("evt"),
+      type: "rule_version_superseded",
+      payload: {
+        ruleId: predecessor.id,
+        ruleSlug: predecessor.slug,
+        supersededVersion: predecessor.version,
+        bySupersedingVersion: promoted.version,
+        proposalId,
+      },
+    });
+  }
 }
 
 /**
@@ -345,6 +390,26 @@ export type ApplyRulePromotionProposalInput = {
  * comment), and the event recording the moment a rule actually went live
  * should describe the totals true at that moment, not a snapshot from
  * whenever the proposal happened to be written.
+ *
+ * After the promotion, this is also the one place that can retire a
+ * superseded predecessor (`retireSupersededVersions`, above) — RF-301
+ * versioning lets a slug carry v1 `active` and v2 `shadow` at once, which
+ * is correct while v2 stays invisible, but the instant this function makes
+ * v2 `active` too, `ingest.ts`'s no-latest-version-filter query starts
+ * matching both rows against the same item and double-counts a real
+ * charge. This function is the only one that can see that moment happen,
+ * because it is the only one allowed to cause it (global constraint 7).
+ *
+ * Deliberately promote-then-retire, not the other way round or a single
+ * transaction: if the process crashes between the two writes, the visible
+ * failure is two `active` versions both firing — duplicate findings a
+ * human can spot and fix by pausing one manually. Retiring first (or
+ * failing partway through a combined step that leaves the predecessor
+ * paused before the successor is confirmed active) risks the opposite
+ * failure — a window, or a crash, that leaves a slug with *no* `active`
+ * version — which is a detection silently gone with nothing in the UI to
+ * say so. Loud-and-duplicated beats quiet-and-missing, so promotion is
+ * unconditionally first.
  */
 export async function applyRulePromotionProposal(
   deps: RuleLifecycleDeps,
@@ -386,6 +451,11 @@ export async function applyRulePromotionProposal(
 
   await setStatus(db, rule.id, "active");
   await recordTransition(db, rule, "rule_promoted", totals);
+
+  // Promote first, retire second — see this function's doc comment for why
+  // that order, not the reverse, is what keeps a crash mid-way visible
+  // (duplicate findings) instead of silent (a detection gone).
+  await retireSupersededVersions(db, rule, proposalId);
 
   await db
     .update(agentProposals)

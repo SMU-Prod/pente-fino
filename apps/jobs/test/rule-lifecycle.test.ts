@@ -389,3 +389,93 @@ describe("applyRulePromotionProposal — the only path that can flip a shadow ru
     ).rejects.toThrow();
   });
 });
+
+describe("applyRulePromotionProposal — retiring a superseded version (RF-301 double-firing close)", () => {
+  it("pauses the same slug's other active version and records rule_version_superseded", async () => {
+    const v1 = await insertRule({ slug: "rn-supersede", version: 1, status: "active" });
+    const v2 = await insertRule({ slug: "rn-supersede", version: 2, status: "shadow" });
+    await insertMetrics("rn-supersede", 2, "2026-08-01", 30, 0);
+    await task()({}); // writes the pending proposal for v2
+
+    const [proposal] = await proposalsFor("promote_rule");
+    if (!proposal) throw new Error("expected a pending promote_rule proposal");
+
+    await applyRulePromotionProposal(
+      { db: ctx.db },
+      { proposalId: proposal.id, decidedBy: "admin:erick", decisionReason: "v2 supera v1" },
+    );
+
+    expect((await ruleRow(v2))?.status).toBe("active");
+    expect((await ruleRow(v1))?.status).toBe("paused");
+
+    const superseded = await eventsFor("rule_version_superseded");
+    expect(superseded).toHaveLength(1);
+    expect(superseded[0]?.payload).toMatchObject({
+      ruleId: v1,
+      ruleSlug: "rn-supersede",
+      supersededVersion: 1,
+      bySupersedingVersion: 2,
+      proposalId: proposal.id,
+    });
+  });
+
+  it("leaves a predecessor that is already paused untouched, and writes no superseded event for it", async () => {
+    const v1 = await insertRule({ slug: "rn-supersede-paused", version: 1, status: "paused" });
+    const v2 = await insertRule({ slug: "rn-supersede-paused", version: 2, status: "shadow" });
+    await insertMetrics("rn-supersede-paused", 2, "2026-08-01", 30, 0);
+    await task()({});
+
+    const [proposal] = await proposalsFor("promote_rule");
+    if (!proposal) throw new Error("expected a pending promote_rule proposal");
+
+    await applyRulePromotionProposal(
+      { db: ctx.db },
+      { proposalId: proposal.id, decidedBy: "admin:erick", decisionReason: "ok" },
+    );
+
+    expect((await ruleRow(v2))?.status).toBe("active");
+    expect((await ruleRow(v1))?.status).toBe("paused");
+    expect(await eventsFor("rule_version_superseded")).toHaveLength(0);
+  });
+
+  it("promotes a rule with only one version with no superseded event — proves the new code does not fire spuriously", async () => {
+    const ruleId = await insertRule({ slug: "rn-only-version", status: "shadow" });
+    await insertMetrics("rn-only-version", 1, "2026-08-01", 30, 0);
+    await task()({});
+
+    const [proposal] = await proposalsFor("promote_rule");
+    if (!proposal) throw new Error("expected a pending promote_rule proposal");
+
+    await applyRulePromotionProposal(
+      { db: ctx.db },
+      { proposalId: proposal.id, decidedBy: "admin:erick", decisionReason: "ok" },
+    );
+
+    expect((await ruleRow(ruleId))?.status).toBe("active");
+    expect(await eventsFor("rule_version_superseded")).toHaveLength(0);
+  });
+
+  it("leaves an unrelated slug's active rule untouched — retirement is keyed on slug, not on every active rule", async () => {
+    const unrelatedId = await insertRule({ slug: "rn-unrelated", status: "active" });
+
+    const v1 = await insertRule({ slug: "rn-keyed", version: 1, status: "active" });
+    const v2 = await insertRule({ slug: "rn-keyed", version: 2, status: "shadow" });
+    await insertMetrics("rn-keyed", 2, "2026-08-01", 30, 0);
+    await task()({});
+
+    const [proposal] = await proposalsFor("promote_rule");
+    if (!proposal) throw new Error("expected a pending promote_rule proposal");
+
+    await applyRulePromotionProposal(
+      { db: ctx.db },
+      { proposalId: proposal.id, decidedBy: "admin:erick", decisionReason: "ok" },
+    );
+
+    expect((await ruleRow(v1))?.status).toBe("paused");
+    expect((await ruleRow(unrelatedId))?.status).toBe("active");
+
+    const superseded = await eventsFor("rule_version_superseded");
+    expect(superseded).toHaveLength(1);
+    expect(superseded[0]?.payload).toMatchObject({ ruleId: v1, ruleSlug: "rn-keyed" });
+  });
+});
