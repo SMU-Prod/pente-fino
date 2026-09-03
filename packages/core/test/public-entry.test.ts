@@ -44,6 +44,9 @@ describe("the public entry point", () => {
       "pairInvoiceItems",
       "trigramSimilarity",
       "TRIGRAM_THRESHOLD",
+      // RF-201 (E6 Task 2): the diff job that will call this next lives
+      // outside this package, the same way RF-200's `pairInvoiceItems` does.
+      "classifyContestedItems",
       "extractionQuality",
       "VISION_THRESHOLD",
       "detectIssuer",

@@ -1,0 +1,18 @@
+{
+  "_note": "Fatura sintética para o caso 'still-charged' do RF-201 (Task 2, E6): a N+1 da mesma linha, com o SVA contestado ainda cobrado (valor reduzido, mas ainda cobrado) e nenhum crédito. NÃO é golden set.",
+  "issuer": { "name": "Vivo", "category": "telecom" },
+  "period": { "start": "2026-08-01", "end": "2026-08-31" },
+  "dueDate": "2026-09-10",
+  "totalCents": 8985,
+  "sections": [
+    {
+      "name": "Serviços",
+      "items": [{ "description": "Plano Controle 20GB", "amountCents": 7990 }]
+    },
+    {
+      "name": "Serviços Digitais",
+      "items": [{ "description": "NBA Básico", "amountCents": 995 }]
+    }
+  ],
+  "extraction": { "confidence": 0.95, "warnings": [] }
+}
