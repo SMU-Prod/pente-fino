@@ -4,6 +4,8 @@ import { newId } from "@pentefino/core";
 import { createTestDb, type TestDb } from "../src/testing.js";
 import { caseProtocols, cases, findings, invoices, issuers, rules, users } from "../src/schema.js";
 import { withUser } from "../src/with-user.js";
+import { closeCaseAsSystem } from "../src/case-close.js";
+import { reopenCase } from "../src/case-reopen.js";
 import { confirmedRecoveredCents } from "../src/metrics.js";
 
 // ---------------------------------------------------------------------------
@@ -88,6 +90,19 @@ describe("confirmedRecoveredCents · RF-204's public metric", () => {
     expect(await confirmedRecoveredCents(ctx.db)).toBe(0);
   });
 
+  // `outcomeConfirmedBy` has three values - `diff`, `user`, `none` - and only
+  // `user` was ever exercised as an excluded value above. Writing
+  // `ne(cases.outcomeConfirmedBy, "user")` instead of `eq(..., "diff")`
+  // would pass every other test in this file while letting RF-186's
+  // abandonment shape (`none`, no confirmation at all) leak into the
+  // metric.
+  it("excludes a none-confirmed close - RF-186's abandonment shape - even with a protocol and a positive recoveredCents", async () => {
+    const { caseId } = await seedCase(alice);
+    await setCaseClosed(caseId, { outcomeConfirmedBy: "none", recoveredCents: 12_345 });
+    await addProtocol(caseId);
+    expect(await confirmedRecoveredCents(ctx.db)).toBe(0);
+  });
+
   it("excludes a diff-confirmed close with no protocol row - RF-204's acceptance, verbatim", async () => {
     const { caseId } = await seedCase(alice);
     await setCaseClosed(caseId, { outcomeConfirmedBy: "diff", recoveredCents: 5_000 });
@@ -162,5 +177,45 @@ describe("confirmedRecoveredCents · RF-204's public metric", () => {
       responseDueAt: new Date("2026-02-20T12:00:00.000Z"),
     });
     expect(await confirmedRecoveredCents(ctx.db)).toBe(5_000);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Every test above bypasses closeCaseAsSystem and reopenCase on purpose
+// (`setCaseClosed`'s own comment): this file is about the *query*, proven
+// correct independent of who writes the rows. That is exactly what RF-204's
+// acceptance demands, and none of those tests are touched here.
+//
+// But RF-203 and RF-204 also make a joint promise - a diff-confirmed close
+// counts towards the metric, and a reopen (the charge coming back) makes it
+// stop counting - and nothing exercises that promise through the real
+// writers. This is the one test that does: `closeCaseAsSystem` and
+// `reopenCase` from `case-close.ts`/`case-reopen.ts`, read back through
+// `confirmedRecoveredCents`.
+// ---------------------------------------------------------------------------
+describe("confirmedRecoveredCents · the end-to-end promise RF-203 and RF-204 jointly make", () => {
+  it("counts a diff-confirmed close's recoveredCents, then stops counting it once the case reopens", async () => {
+    const { caseId } = await seedCase(alice);
+    await addProtocol(caseId);
+
+    await closeCaseAsSystem(ctx.db, caseId, {
+      outcome: "resolved", confirmedBy: "diff", recoveredCents: 5_000,
+    });
+    expect(await confirmedRecoveredCents(ctx.db)).toBe(5_000);
+
+    await reopenCase(ctx.db, caseId, { stage: "sac" });
+    expect(await confirmedRecoveredCents(ctx.db)).toBe(0);
+
+    // The metric assertion just above cannot, on its own, tell a properly
+    // reset `recoveredCents` apart from a stale one: `reopenCase` also
+    // clears `outcomeConfirmedBy` in the same write, and that alone already
+    // excludes the row from the sum regardless of what `recoveredCents`
+    // holds. Reading the column directly is what actually exercises
+    // `case-reopen.ts`'s own reset line - see this test's own mutation
+    // record in the task report for why the metric-only version of this
+    // assertion does not.
+    const [row] = await ctx.db.select({ recoveredCents: cases.recoveredCents })
+      .from(cases).where(eq(cases.id, caseId));
+    expect(row?.recoveredCents).toBe(0);
   });
 });

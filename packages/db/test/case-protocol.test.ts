@@ -494,6 +494,22 @@ describe("closeCaseAsSystem · diff-confirmed close (E6)", () => {
       .rejects.toThrow();
   });
 
+  // The favourable-outcome guard is `outcome === "resolved" || outcome ===
+  // "partial"`. Every other test in this block that carries a positive
+  // `recoveredCents` uses `resolved`, so without this test the `partial`
+  // half of that guard is never exercised by a positive amount and a
+  // narrowing to `resolved` alone would pass the whole suite.
+  it("accepts a positive recoveredCents on a partial outcome, the other favourable branch", async () => {
+    const { caseId } = await seedCase(alice);
+    const closed = await closeCaseAsSystem(ctx.db, caseId, {
+      outcome: "partial", confirmedBy: "diff", recoveredCents: 2_500,
+    });
+    expect(closed?.recoveredCents).toBe(2_500);
+
+    const row = await caseRow(ctx.db, caseId);
+    expect(row?.recoveredCents).toBe(2_500);
+  });
+
   it("accepts an explicit zero recoveredCents on an unfavourable outcome - that is an honest statement", async () => {
     const { caseId } = await seedCase(alice);
     const closed = await closeCaseAsSystem(ctx.db, caseId, { outcome: "abandoned", confirmedBy: "diff", recoveredCents: 0 });

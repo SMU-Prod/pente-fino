@@ -118,6 +118,32 @@ describe("reopenCase · RF-203, the item comes back on invoice N+2", () => {
     for (const id of findingIds) expect(await statusOf(ctx.db, id)).toBe("contested");
   });
 
+  // `reopenCaseFindings` is scoped to `status = 'resolved'` only, not the
+  // full settled range `resolved`/`unresolved` a close can produce (see that
+  // function's own doc comment in `case-close.ts`). A finding already
+  // `unresolved` never stopped reading as live, so a reopen has nothing to
+  // undo for it - only a `resolved` finding, whose "fixed" claim the
+  // reappearing charge falsifies, needs to go back to `contested`.
+  it("moves only the resolved finding back to contested, leaving an unresolved one exactly as it was", async () => {
+    const { caseId, findingIds } = await seedCase(alice, 2);
+    // Simulate a finding that was already settled a different way before
+    // this close ever ran - `settleCaseFindings` only ever touches findings
+    // still `contested`, so this one is untouched by the close below and
+    // stays `unresolved` straight through it.
+    await ctx.db.update(findings).set({ status: "unresolved" }).where(eq(findings.id, findingIds[1]!));
+
+    await closeCaseAsSystem(ctx.db, caseId, {
+      outcome: "resolved", confirmedBy: "diff", recoveredCents: 5_000,
+      at: new Date("2026-01-10T12:00:00.000Z"),
+    });
+    expect(await statusOf(ctx.db, findingIds[0]!)).toBe("resolved");
+    expect(await statusOf(ctx.db, findingIds[1]!)).toBe("unresolved");
+
+    await reopenCase(ctx.db, caseId, { stage: "sac", at: REOPEN_AT });
+    expect(await statusOf(ctx.db, findingIds[0]!)).toBe("contested");
+    expect(await statusOf(ctx.db, findingIds[1]!)).toBe("unresolved");
+  });
+
   it("leaves a finding the person has since dismissed exactly as they left it", async () => {
     const { caseId, findingIds } = await seedClosedCase(alice, 1);
     // Simulate the person dismissing the (already-resolved) finding by hand
@@ -141,13 +167,22 @@ describe("reopenCase · RF-203, the item comes back on invoice N+2", () => {
     });
   });
 
-  it("omits reason and evidence from the payload when neither is given", async () => {
-    const { caseId } = await seedClosedCase(alice);
-    await reopenCase(ctx.db, caseId, { stage: "sac", at: REOPEN_AT });
-    const [reopenedEvt] = await eventsOfCase(ctx.db, caseId, "case_reopened");
-    expect(reopenedEvt?.payload).not.toHaveProperty("reason");
-    expect(reopenedEvt?.payload).not.toHaveProperty("evidence");
-  });
+  // A prior version of this test asserted
+  // `expect(payload).not.toHaveProperty("reason")` when neither `reason`
+  // nor `evidence` is given. That assertion could never fail: the payload
+  // round-trips through `jsonb`, and `JSON.stringify` drops any key whose
+  // value is `undefined` before it ever reaches Postgres. Had
+  // `reopenCase`'s conditional spread instead been written as an
+  // unconditional `{ reason: input.reason, evidence: input.evidence }`,
+  // both keys would still be `undefined` in the JS object and still vanish
+  // on the way to storage - the stored payload would be byte-identical and
+  // the assertion would still pass. There is no way to observe "the key was
+  // never set" versus "the key was set to `undefined`" once a value has
+  // gone through this column, so the distinction the conditional spread
+  // exists to make is untestable at this boundary and the assertion was
+  // deleted rather than kept as an assertion that reads as coverage it
+  // cannot provide. The positive case - `reason`/`evidence` present when
+  // given - is still covered by the test just above.
 
   it("also writes stage_advanced in the same shape closeCaseAsSystem writes, so both trails agree", async () => {
     const { caseId } = await seedClosedCase(alice);
