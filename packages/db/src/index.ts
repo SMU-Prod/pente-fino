@@ -17,6 +17,20 @@ export { withUser, ensureAnonymousSession, resolveSession, type Session, type Sc
 // system-closed case's findings shown on the report as a live dispute and
 // permanently barred from a new case. See `case-close.ts`.
 export { closeCaseAsSystem, settleCaseFindings, SETTLED_FINDING_STATUS } from "./case-close.js";
+// E6 Task 3's other system write, for the opposite transition: RF-203
+// reopens a case `closeCaseAsSystem` (or `closeCase`) already closed, once
+// Task 4's job finds the disputed charge back on invoice N+2. Same shape as
+// `closeCaseAsSystem` for the same reason - no session, a case id the
+// caller already read out of `cases`. See `case-reopen.ts`.
+export { reopenCase } from "./case-reopen.js";
+// RF-204's public metric. Not yet on `require-with-user.js`'s
+// ALLOWED_PACKAGE_EXPORTS: nothing outside packages/db imports it as of this
+// task, and the same rule the seeds re-exports below follow applies here -
+// exporting it from this package's entry point does not by itself let a
+// caller outside packages/db past the lint gate. Whoever builds the first
+// consumer (an admin dashboard, say) adds its own name to that allowlist
+// then, with its own justification.
+export { confirmedRecoveredCents } from "./metrics.js";
 export {
   requestClaimCode, confirmClaimCode,
   CLAIM_CODE_TTL_MS, CLAIM_CODE_MAX_ATTEMPTS, CLAIM_RATE_LIMIT_COUNT, CLAIM_RATE_LIMIT_WINDOW_MS,

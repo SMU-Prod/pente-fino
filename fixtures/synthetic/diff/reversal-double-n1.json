@@ -1,0 +1,18 @@
+{
+  "_note": "Fatura sintética para o caso 'reversal-double' do RF-201 (Task 2, E6): a N+1 da mesma linha, com o SVA contestado ausente (desapareceu) mas um crédito do dobro do valor contestado - a reversão deve vencer a desaparição. NÃO é golden set.",
+  "issuer": { "name": "Vivo", "category": "telecom" },
+  "period": { "start": "2026-08-01", "end": "2026-08-31" },
+  "dueDate": "2026-09-10",
+  "totalCents": 6000,
+  "sections": [
+    {
+      "name": "Serviços",
+      "items": [{ "description": "Plano Controle 20GB", "amountCents": 7990 }]
+    },
+    {
+      "name": "Ajustes",
+      "items": [{ "description": "Crédito referente a acordo", "amountCents": -1990 }]
+    }
+  ],
+  "extraction": { "confidence": 0.95, "warnings": [] }
+}

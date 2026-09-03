@@ -436,6 +436,98 @@ describe("closeCaseAsSystem · RF-186's day-60 close, reachable without a sessio
   });
 });
 
+// ---------------------------------------------------------------------------
+// E6 Task 3 — the other system close. RF-186's sweep above confirmed nothing
+// (`confirmedBy: "none"`) because nobody ever came back; E6's diff close
+// confirms an outcome *from evidence* and, when the news is good, recovered
+// real money. Same function, same one-shot guarantee, widened input.
+// ---------------------------------------------------------------------------
+describe("closeCaseAsSystem · diff-confirmed close (E6)", () => {
+  it("stamps outcomeConfirmedBy and recoveredCents from a diff run", async () => {
+    const { caseId } = await seedCase(alice);
+    const closed = await closeCaseAsSystem(ctx.db, caseId, {
+      outcome: "resolved", confirmedBy: "diff", recoveredCents: 5_000,
+    });
+    expect(closed?.outcomeConfirmedBy).toBe("diff");
+    expect(closed?.recoveredCents).toBe(5_000);
+
+    const row = await caseRow(ctx.db, caseId);
+    expect(row?.outcomeConfirmedBy).toBe("diff");
+    expect(row?.recoveredCents).toBe(5_000);
+  });
+
+  it("carries confirmedBy and recoveredCents into outcome_confirmed's payload", async () => {
+    const { caseId } = await seedCase(alice);
+    await closeCaseAsSystem(ctx.db, caseId, { outcome: "resolved", confirmedBy: "diff", recoveredCents: 5_000 });
+    const [confirmed] = await eventsOfCase(ctx.db, caseId, "outcome_confirmed");
+    expect(confirmed?.payload).toMatchObject({ outcome: "resolved", confirmedBy: "diff", recoveredCents: 5_000 });
+  });
+
+  it("still writes stage_advanced with by: system, unchanged by the new fields", async () => {
+    const { caseId } = await seedCase(alice);
+    await closeCaseAsSystem(ctx.db, caseId, { outcome: "resolved", confirmedBy: "diff", recoveredCents: 5_000 });
+    const [advanced] = await eventsOfCase(ctx.db, caseId, "stage_advanced");
+    expect(advanced?.payload).toMatchObject({ from: "draft", to: "closed", by: "system", outcome: "resolved" });
+  });
+
+  it("defaults recoveredCents to zero when a diff close carries none", async () => {
+    const { caseId } = await seedCase(alice);
+    const closed = await closeCaseAsSystem(ctx.db, caseId, { outcome: "denied", confirmedBy: "diff" });
+    expect(closed?.recoveredCents).toBe(0);
+  });
+
+  it("refuses recoveredCents unless confirmedBy is diff", async () => {
+    const { caseId } = await seedCase(alice);
+    await expect(closeCaseAsSystem(ctx.db, caseId, { outcome: "resolved", recoveredCents: 5_000 }))
+      .rejects.toThrow(/confirmedBy/);
+  });
+
+  it.each([-1, -5_000, 12.5])("refuses a non-negative-integer recoveredCents (%s)", async (bad) => {
+    const { caseId } = await seedCase(alice);
+    await expect(closeCaseAsSystem(ctx.db, caseId, { outcome: "resolved", confirmedBy: "diff", recoveredCents: bad }))
+      .rejects.toThrow();
+  });
+
+  it("refuses a positive recoveredCents on an unfavourable outcome, agreeing with the route's cross-field rule", async () => {
+    const { caseId } = await seedCase(alice);
+    await expect(closeCaseAsSystem(ctx.db, caseId, { outcome: "denied", confirmedBy: "diff", recoveredCents: 1 }))
+      .rejects.toThrow();
+  });
+
+  // The favourable-outcome guard is `outcome === "resolved" || outcome ===
+  // "partial"`. Every other test in this block that carries a positive
+  // `recoveredCents` uses `resolved`, so without this test the `partial`
+  // half of that guard is never exercised by a positive amount and a
+  // narrowing to `resolved` alone would pass the whole suite.
+  it("accepts a positive recoveredCents on a partial outcome, the other favourable branch", async () => {
+    const { caseId } = await seedCase(alice);
+    const closed = await closeCaseAsSystem(ctx.db, caseId, {
+      outcome: "partial", confirmedBy: "diff", recoveredCents: 2_500,
+    });
+    expect(closed?.recoveredCents).toBe(2_500);
+
+    const row = await caseRow(ctx.db, caseId);
+    expect(row?.recoveredCents).toBe(2_500);
+  });
+
+  it("accepts an explicit zero recoveredCents on an unfavourable outcome - that is an honest statement", async () => {
+    const { caseId } = await seedCase(alice);
+    const closed = await closeCaseAsSystem(ctx.db, caseId, { outcome: "abandoned", confirmedBy: "diff", recoveredCents: 0 });
+    expect(closed?.recoveredCents).toBe(0);
+  });
+
+  it("leaves every existing caller's exact behaviour untouched: no confirmedBy still means none, recoveredCents untouched", async () => {
+    const { caseId } = await seedCase(alice);
+    const closed = await closeCaseAsSystem(ctx.db, caseId, { outcome: "abandoned" });
+    expect(closed?.outcomeConfirmedBy).toBe("none");
+    // Column is never written on a `none` close - it stays exactly what it
+    // was before this close touched the row (never set), which is `null`,
+    // not a defaulted `0`. `apps/jobs/test/case-deadlines.test.ts` asserts
+    // this same fact for the real caller, RF-186's sweep.
+    expect(closed?.recoveredCents).toBeNull();
+  });
+});
+
 describe("settleCaseFindings · the mapping both closes share", () => {
   it("maps every outcome the way a report can honestly show it", () => {
     expect(SETTLED_FINDING_STATUS).toEqual({

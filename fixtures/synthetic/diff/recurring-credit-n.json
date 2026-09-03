@@ -1,0 +1,22 @@
+{
+  "_note": "Fatura sintética para o caso 'recurring-credit' do RF-201 (Task 2, E6): um desconto de fidelidade recorrente, presente em N e em N+1 com a mesma descrição e o mesmo valor. NÃO é golden set: não veio de fatura real.",
+  "issuer": { "name": "Vivo", "category": "telecom" },
+  "period": { "start": "2026-07-01", "end": "2026-07-31" },
+  "dueDate": "2026-08-10",
+  "totalCents": 7990,
+  "sections": [
+    {
+      "name": "Serviços",
+      "items": [{ "description": "Plano Controle 20GB", "amountCents": 7990 }]
+    },
+    {
+      "name": "Serviços Digitais",
+      "items": [{ "description": "Skeelo Premium", "amountCents": 1990 }]
+    },
+    {
+      "name": "Ajustes",
+      "items": [{ "description": "Desconto Fidelidade", "amountCents": -1990 }]
+    }
+  ],
+  "extraction": { "confidence": 0.95, "warnings": [] }
+}

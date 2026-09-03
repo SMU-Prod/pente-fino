@@ -1,0 +1,18 @@
+{
+  "_note": "Fatura sintética: a N+2 do caso 'disappeared' (fixtures/synthetic/diff/disappeared-n.json e disappeared-n1.json), com o SVA de volta. Usada pelo teste de RF-203 da Task 4, não por esta task. NÃO é golden set.",
+  "issuer": { "name": "Vivo", "category": "telecom" },
+  "period": { "start": "2026-09-01", "end": "2026-09-30" },
+  "dueDate": "2026-10-10",
+  "totalCents": 9980,
+  "sections": [
+    {
+      "name": "Serviços",
+      "items": [{ "description": "Plano Controle 20GB", "amountCents": 7990 }]
+    },
+    {
+      "name": "Serviços Digitais",
+      "items": [{ "description": "Skeelo Premium", "amountCents": 1990 }]
+    }
+  ],
+  "extraction": { "confidence": 0.95, "warnings": [] }
+}
