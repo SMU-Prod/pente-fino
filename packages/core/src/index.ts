@@ -78,3 +78,13 @@ export {
   sniffMimeType, MAX_PAGES,
   type SniffedType,
 } from "./invoice/file-gate.js";
+// E10 Task 1: the content model both `packages/db`'s seed (writes
+// `serializeSeoContent(content)` into `seo_pages.body_md`) and
+// `apps/web`'s `/cobranca/[issuer]/[charge]` route (reads it back with
+// `parseSeoContent`) share, plus the charge-slug shape both sides must
+// agree on to avoid a 404 caused by two different definitions of "valid".
+export {
+  isSeoChargeSlug, parseSeoContent, seoChargeSlug, serializeSeoContent,
+  SEO_FAQ_HEADING, SEO_PROVENANCE_HEADING, SeoContentParseError,
+  type SeoFaqEntry, type SeoPageContent, type SeoSection,
+} from "./seo/content.js";
