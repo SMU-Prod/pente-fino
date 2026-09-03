@@ -41,6 +41,19 @@ export {
   requestClaimCode, confirmClaimCode,
   CLAIM_CODE_TTL_MS, CLAIM_CODE_MAX_ATTEMPTS, CLAIM_RATE_LIMIT_COUNT, CLAIM_RATE_LIMIT_WINDOW_MS,
 } from "./claim.js";
+// E11 Task 2: the admin panel's data layer. Also not behind `withUser` — the
+// same reasoning as `closeCaseAsSystem` above, one level removed: rules,
+// proposals and the overview counters are system configuration, not one
+// user's data, so there is no session to scope any of these to. See
+// `admin.ts`'s own header for the two invariants (append-only rule content,
+// single promotion path) that hold across every function here.
+export {
+  RuleDraftError, adminAccount, createRuleVersion, activateRuleVersion, pauseRuleVersion,
+  listRuleFamilies, listProposals, rejectProposal, adminOverview,
+  type CreateRuleVersionResult, type ActivateRuleVersionInput, type PauseRuleVersionInput,
+  type RuleVersionMetrics, type RuleFamilyVersion, type RuleFamily,
+  type ProposalRow, type RejectProposalInput, type AdminOverview,
+} from "./admin.js";
 // Exported for a future deploy/ops seeding step against the real database;
 // `testing.ts` calls `seedAll` directly from `./seeds/index.js` and does not
 // need this re-export. A caller outside packages/db still has to add its own

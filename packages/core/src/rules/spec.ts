@@ -32,3 +32,20 @@ export type RuleKind = (typeof RULE_KINDS)[number];
 type AssertEqual<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
 const _ruleKindsCoverRuleSpecExactly: AssertEqual<RuleKind, RuleSpec["kind"]> = true;
 void _ruleKindsCoverRuleSpecExactly;
+
+/**
+ * `LegalRef["effect"]`'s six literals, mirrored as a runtime array the same
+ * way `RULE_KINDS` mirrors `RuleSpec["kind"]` above — `validateRuleDraft`
+ * (`draft.ts`) needs an array to check an admin-submitted `effect` string
+ * against, and `LegalRef` itself has no runtime representation to read that
+ * from. The `AssertEqual` check below is what keeps the two from silently
+ * drifting apart the moment a seventh `effect` is added to one but not the
+ * other.
+ */
+export const LEGAL_REF_EFFECTS = [
+  "dobro", "suspensao", "cancelamento", "amostra_gratis", "vedada", "limite",
+] as const;
+export type LegalRefEffect = (typeof LEGAL_REF_EFFECTS)[number];
+
+const _legalRefEffectsCoverExactly: AssertEqual<LegalRefEffect, LegalRef["effect"]> = true;
+void _legalRefEffectsCoverExactly;

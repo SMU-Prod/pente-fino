@@ -91,6 +91,27 @@ export const EVENTS = [
   "monitor_email_received", "monthly_digest_sent",
   "session_claimed", "subscription_started", "subscription_failed",
   "rule_promoted", "rule_paused", "proposal_created", "proposal_decided",
+  // `rule_version_created`, `rule_version_activated` and
+  // `rule_version_superseded` are Task 1 (E11)'s addition, for RF-301's
+  // admin CRUD ("editar cria nova versão, a anterior vira histórico") -
+  // global constraint 6 makes `rules` rows append-only in content, so every
+  // edit an admin makes is a brand-new `(slug, version)` row, never a
+  // mutation of an old one, and each of the three moments that sentence
+  // describes is a real state transition A3 ("toda transição grava events")
+  // requires be readable from `events` alone: a version being written
+  // (`rule_version_created`), a version becoming the one the engine actually
+  // evaluates (`rule_version_activated` - distinct from the existing
+  // `rule_promoted`, which names a single row's own shadow-to-active status
+  // flip, not a new row appearing), and the version it replaced stepping
+  // aside (`rule_version_superseded`). Without these three, "a rule's
+  // content changed" would leave no trace at all - only the pre-existing
+  // status transition on a single row would remain visible.
+  //
+  // A manual pause does not get a fourth name here: pausing is not a new
+  // version, it is the existing `status` column flipping on the same row
+  // (`rule-lifecycle.ts`'s `setStatus`), and `rule_paused` already names
+  // that transition.
+  "rule_version_created", "rule_version_activated", "rule_version_superseded",
   // RF-187's dossier job (Task 7, E5), for the same A3 reason as the pair
   // above: producing the JEC dossier is a real transition on the case - the
   // moment it becomes something a person can take to a Juizado - and it has

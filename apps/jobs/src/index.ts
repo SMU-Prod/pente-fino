@@ -7,7 +7,10 @@ export {
   type CaseDeadlinesDeps,
 } from "./tasks/case-deadlines.js";
 export { createRuleMetricsTask, type RuleMetricsDeps } from "./tasks/rule-metrics.js";
-export { createRuleLifecycleTask, type RuleLifecycleDeps } from "./tasks/rule-lifecycle.js";
+export {
+  createRuleLifecycleTask, applyRulePromotionProposal,
+  type RuleLifecycleDeps, type ApplyRulePromotionProposalInput,
+} from "./tasks/rule-lifecycle.js";
 // `renderDossierPdf` is deliberately NOT re-exported here. Its only
 // production consumer is `tasks/dossier.ts`, which imports it relatively,
 // and both of its test files do the same — so keeping it off the barrel

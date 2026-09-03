@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest";
 import { EVENTS } from "./events.js";
 
 describe("EVENTS", () => {
-  it("carries every event named in PRD §15.1, plus the ingest, expiry and finding terminals Tasks 13, 9 and 8 (E1/E2) added, plus invoice_processing_started (Task 2, E3), RF-187's dossier pair, RF-184's response_received and RF-186's case_stalled (Tasks 7, 5 and 3, E5), plus RF-185's case_viewed (Task 6, E5), plus RF-245's consent pair, RF-243's deletion pair and RF-242's export (Task 1, E8)", () => {
-    expect(EVENTS).toHaveLength(45);
+  it("carries every event named in PRD §15.1, plus the ingest, expiry and finding terminals Tasks 13, 9 and 8 (E1/E2) added, plus invoice_processing_started (Task 2, E3), RF-187's dossier pair, RF-184's response_received and RF-186's case_stalled (Tasks 7, 5 and 3, E5), plus RF-185's case_viewed (Task 6, E5), plus RF-245's consent pair, RF-243's deletion pair and RF-242's export (Task 1, E8), plus RF-301's version-lifecycle trio (Task 1, E11)", () => {
+    expect(EVENTS).toHaveLength(48);
   });
 
   it("has no duplicates, because names are a contract", () => {
@@ -84,5 +84,11 @@ describe("EVENTS", () => {
 
   it("names RF-242's export, the only trace left if a compromised session's copy is ever in question", () => {
     expect(EVENTS).toContain("data_exported");
+  });
+
+  it("names RF-301's rule-versioning lifecycle: a version written, one becoming live, and an older one stepping aside (Task 1, E11)", () => {
+    expect(EVENTS).toContain("rule_version_created");
+    expect(EVENTS).toContain("rule_version_activated");
+    expect(EVENTS).toContain("rule_version_superseded");
   });
 });
