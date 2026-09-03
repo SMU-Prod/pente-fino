@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { createHash } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -35,6 +35,13 @@ function pdfBody(...trailing: number[]): Uint8Array {
 }
 
 const owner = "ses_owner00000000000000";
+
+// signDownload only ever accepts the shape this storage actually mints -
+// uploads/<owner>/<contentHash>.<ext> - so every "signed downloads" test
+// below signs a key of that shape rather than an arbitrary string, the way
+// a real caller (RF-242's export handler, reading invoices.fileKey or a
+// dossier_generated event's payload.fileKey) always would.
+const downloadKey = `uploads/${owner}/reporthash123.pdf`;
 
 describe("local storage", () => {
   it("signs an upload and returns a file key", async () => {
@@ -358,6 +365,165 @@ describe("local storage", () => {
         // expected: the adapter must refuse, not write outside root.
       }
       expect(existsSync(outsideMarker)).toBe(false);
+    });
+  });
+
+  // --- RF-242: signDownload/verifyDownload. signDownload does not check
+  // exists() - that is deliberately the caller's question (Task 4 checks it
+  // first, so an already-expired file gets an honest "deleted on" marker
+  // instead of a dead link) - so these tests sign fileKeys that were never
+  // put(), the same way a real export would sign a key it read off an old
+  // events row without touching the file first.
+
+  describe("signed downloads", () => {
+    it("signs a download and returns a url carrying the file key and a signature", async () => {
+      const s = storage();
+      const signed = await s.signDownload(downloadKey);
+      expect(signed.url).toContain(downloadKey);
+      expect(signed.url).toContain("sig=");
+    });
+
+    it("accepts a fresh download signature", async () => {
+      const s = storage();
+      const signed = await s.signDownload(downloadKey);
+      expect(s.verifyDownload(signed.url)).toMatchObject({
+        fileKey: downloadKey,
+        valid: true,
+      });
+    });
+
+    it("rejects the download signature after fifteen minutes, because the fake honours the real contract", async () => {
+      const s = storage();
+      const signed = await s.signDownload(downloadKey);
+      clock += 15 * 60 * 1000 + 1;
+      expect(s.verifyDownload(signed.url)).toMatchObject({ valid: false, reason: "expired" });
+    });
+
+    it("accepts a download signature at exactly the fifteen-minute boundary", async () => {
+      const s = storage();
+      const signed = await s.signDownload(downloadKey);
+      clock += 15 * 60 * 1000;
+      expect(s.verifyDownload(signed.url)).toMatchObject({ valid: true });
+    });
+
+    it("rejects a tampered download signature", async () => {
+      const s = storage();
+      const signed = await s.signDownload(downloadKey);
+      expect(s.verifyDownload(signed.url.replace(/sig=[0-9a-f]+/, "sig=deadbeef"))).toMatchObject({
+        valid: false,
+        reason: "bad_signature",
+      });
+    });
+
+    it("rejects a modified file key", async () => {
+      const s = storage();
+      const signed = await s.signDownload(downloadKey);
+      const tampered = signed.url.replace("reporthash123", "otherhash456");
+      expect(s.verifyDownload(tampered)).toMatchObject({ valid: false, reason: "bad_signature" });
+    });
+
+    it("rejects a malformed download URL without throwing", () => {
+      const s = storage();
+      expect(() => s.verifyDownload("not-a-url-at-all")).not.toThrow();
+      expect(s.verifyDownload("not-a-url-at-all")).toMatchObject({ valid: false });
+      expect(() => s.verifyDownload("")).not.toThrow();
+      expect(() => s.verifyDownload("local://dossiers/x.pdf?exp=notanumber&sig=zz")).not.toThrow();
+    });
+
+    it("rejects a fileKey that escapes the storage root before it is ever signed", async () => {
+      const s = storage();
+      await expect(s.signDownload("../../evil.bin")).rejects.toThrow();
+    });
+
+    // --- Critical finding: signDownload used to accept any string that
+    // merely didn't escape the storage root - far looser than the shape
+    // this storage actually mints (uploads/<owner>/<contentHash>.<ext>) -
+    // and that gap is exactly what let a caller-controlled fileKey with
+    // embedded colons turn a download signature into a forged upload
+    // signature. isSafeFileKey must refuse anything outside that shape
+    // before signDownload ever signs it.
+
+    describe("fileKey validation on signDownload", () => {
+      it("rejects a fileKey containing a colon", async () => {
+        const s = storage();
+        await expect(s.signDownload(`uploads/${owner}/abc:def.pdf`)).rejects.toThrow();
+      });
+
+      it("rejects a fileKey containing a character outside the safe class", async () => {
+        const s = storage();
+        await expect(s.signDownload(`uploads/${owner}/abc def.pdf`)).rejects.toThrow(); // space
+        await expect(s.signDownload(`uploads/${owner}/abc$def.pdf`)).rejects.toThrow(); // $
+        await expect(s.signDownload(`uploads/bad owner/abc.pdf`)).rejects.toThrow(); // space in owner
+      });
+
+      it("rejects a fileKey outside the uploads/<owner>/<hash>.<ext> shape this storage mints", async () => {
+        const s = storage();
+        // Not under uploads/ at all.
+        await expect(s.signDownload("dossiers/case123/report.pdf")).rejects.toThrow();
+        // No extension to separate from the hash.
+        await expect(s.signDownload(`uploads/${owner}/no-extension`)).rejects.toThrow();
+        // One extra path segment.
+        await expect(s.signDownload(`uploads/${owner}/sub/abc.pdf`)).rejects.toThrow();
+      });
+    });
+
+    it("the reviewer's exploit: a download signature can no longer be forged into a valid upload signature", async () => {
+      const s = storage();
+      // The exact Critical-finding reproduction: a caller-controlled fileKey
+      // carrying its own colons and digit groups, chosen so that (once
+      // signed for download) the resulting HMAC input is byte-for-byte
+      // identical to the upload HMAC input for fileKey "download:somefile.pdf",
+      // sizeBytes 1, contentHash "9999999999999" - under the OLD naive
+      // colon-joined framing, both messages were literally
+      // "download:somefile.pdf:9999999999999:1:<exp>".
+      const maliciousKey = "somefile.pdf:9999999999999:1";
+
+      // Fix 1 (validate the key): isSafeFileKey refuses this before
+      // signDownload ever signs it - the exploit's first step can no longer
+      // even produce a signature.
+      await expect(s.signDownload(maliciousKey)).rejects.toThrow();
+
+      // Fix 2 (unambiguous framing): even setting validation aside, replay
+      // exactly what the pre-fix naive-concatenation digest would have
+      // produced for this exploit, and confirm the new length-prefixed
+      // framing in verify() refuses it too - so this class of bug cannot
+      // come back through some future caller that skips isSafeFileKey.
+      const exp = 9_999_999_999_999;
+      const oldStyleDownloadDigestInput = `download:${maliciousKey}:${exp}`;
+      const forgedSig = createHmac("sha256", "test-secret").update(oldStyleDownloadDigestInput).digest("hex");
+      const forgedUploadUrl = `local://download:somefile.pdf?exp=${exp}&size=1&hash=${exp}&sig=${forgedSig}`;
+      expect(s.verify(forgedUploadUrl)).toMatchObject({ valid: false });
+    });
+
+    // --- Domain separation: a download signature must never be replayed as
+    // an upload signature, and vice versa (see the comment on
+    // `signForDownload` in local.ts).
+
+    it("refuses a genuine upload URL's signature when it is presented to verifyDownload", async () => {
+      const s = storage();
+      const upload = await s.signUpload({
+        owner, contentHash: "abc", mimeType: "application/pdf", sizeBytes: 1000,
+      });
+      expect(s.verifyDownload(upload.uploadUrl)).toMatchObject({ valid: false });
+    });
+
+    it("refuses a genuine download URL's signature when it is presented to verify", async () => {
+      const s = storage();
+      const download = await s.signDownload(`uploads/${owner}/abc.pdf`);
+      expect(s.verify(download.url)).toMatchObject({ valid: false });
+    });
+
+    it("refuses a signature computed without the 'download' purpose tag, proving the tag is load-bearing", async () => {
+      const s = storage();
+      const fileKey = "dossiers/case123/report.pdf";
+      const expiresAt = clock + 15 * 60 * 1000;
+      // What signForDownload's digest would be if the literal "download:"
+      // prefix were dropped from its HMAC input - simulating a signature
+      // minted for some other purpose under the same secret over the bare
+      // (fileKey, expiresAt) pair that domain separation exists to keep out.
+      const forgedSig = createHmac("sha256", "test-secret").update(`${fileKey}:${expiresAt}`).digest("hex");
+      const forgedUrl = `local://${fileKey}?exp=${expiresAt}&sig=${forgedSig}`;
+      expect(s.verifyDownload(forgedUrl)).toMatchObject({ valid: false, reason: "bad_signature" });
     });
   });
 });

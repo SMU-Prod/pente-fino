@@ -180,6 +180,27 @@ describe("schema", () => {
     ).resolves.toBeTruthy();
   });
 
+  it("defaults aggregate_consent_at to null - refusal is the default by construction, not by a value someone could change", async () => {
+    const id = newId("usr");
+    await ctx.db.insert(users).values({ id, email: `${id}@g.com` });
+    const [row] = await ctx.db.select().from(users).where(eq(users.id, id));
+    expect(row?.aggregateConsentAt).toBeNull();
+  });
+
+  it("records the instant consent was granted, and withdrawal clears it back to null (RF-245)", async () => {
+    const id = newId("usr");
+    await ctx.db.insert(users).values({ id, email: `${id}@h.com` });
+
+    const grantedAt = new Date();
+    await ctx.db.update(users).set({ aggregateConsentAt: grantedAt }).where(eq(users.id, id));
+    const [granted] = await ctx.db.select().from(users).where(eq(users.id, id));
+    expect(granted?.aggregateConsentAt?.getTime()).toBe(grantedAt.getTime());
+
+    await ctx.db.update(users).set({ aggregateConsentAt: null }).where(eq(users.id, id));
+    const [withdrawn] = await ctx.db.select().from(users).where(eq(users.id, id));
+    expect(withdrawn?.aggregateConsentAt).toBeNull();
+  });
+
   it("cascades: deleting an invoice removes its invoice_items and findings", async () => {
     const userId = await seedUser(ctx.db);
     const issuerId = await seedIssuer(ctx.db);

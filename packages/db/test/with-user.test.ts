@@ -348,4 +348,93 @@ describe("withUser", () => {
     const [second] = await ctx.db.select().from(invoices).where(eq(invoices.id, secondId));
     expect(first?.publicToken).not.toBe(second?.publicToken);
   });
+
+  // --- RF-245 (E8 Task 2): account() and setAggregateConsent() ---
+
+  describe("account", () => {
+    it("returns the caller's own account row", async () => {
+      const scoped = withUser({ userId: alice }, ctx.db);
+      const account = await scoped.account();
+      expect(account).toMatchObject({ id: alice, email: "alice@example.com", plan: "free" });
+      expect(account?.aggregateConsentAt).toBeNull();
+      expect(account?.deletedAt).toBeNull();
+    });
+
+    it("returns null for an anonymous session - it owns no users row", async () => {
+      const sessionId = newId("ses");
+      await ctx.db.insert(anonymousSessions).values({ id: sessionId, expiresAt: new Date(Date.now() + 60_000) });
+      const scoped = withUser({ sessionId }, ctx.db);
+      expect(await scoped.account()).toBeNull();
+    });
+
+    it("never returns another user's account", async () => {
+      const scoped = withUser({ userId: alice }, ctx.db);
+      const account = await scoped.account();
+      expect(account?.id).not.toBe(bob);
+    });
+  });
+
+  describe("setAggregateConsent", () => {
+    it("returns null for an anonymous session, writing nothing", async () => {
+      const sessionId = newId("ses");
+      await ctx.db.insert(anonymousSessions).values({ id: sessionId, expiresAt: new Date(Date.now() + 60_000) });
+      const scoped = withUser({ sessionId }, ctx.db);
+      expect(await scoped.setAggregateConsent(true)).toBeNull();
+      expect(await ctx.db.select().from(events)).toHaveLength(0);
+    });
+
+    it("grants consent: sets aggregate_consent_at and writes consent_granted", async () => {
+      const scoped = withUser({ userId: alice }, ctx.db);
+      const result = await scoped.setAggregateConsent(true);
+      expect(result).toBeInstanceOf(Date);
+
+      const [row] = await ctx.db.select().from(users).where(eq(users.id, alice));
+      expect(row?.aggregateConsentAt).toBeInstanceOf(Date);
+
+      const evts = await ctx.db.select().from(events).where(eq(events.userId, alice));
+      expect(evts.map((e) => e.type)).toEqual(["consent_granted"]);
+    });
+
+    it("withdraws consent: clears aggregate_consent_at and writes consent_withdrawn", async () => {
+      const scoped = withUser({ userId: alice }, ctx.db);
+      await scoped.setAggregateConsent(true);
+      const result = await scoped.setAggregateConsent(false);
+      expect(result).toBeNull();
+
+      const [row] = await ctx.db.select().from(users).where(eq(users.id, alice));
+      expect(row?.aggregateConsentAt).toBeNull();
+
+      const evts = await ctx.db.select().from(events).where(eq(events.userId, alice));
+      expect(evts.map((e) => e.type)).toEqual(["consent_granted", "consent_withdrawn"]);
+    });
+
+    // The one behaviour this method exists to get right: a re-submit or a
+    // double click must not fill the audit trail with a second event for a
+    // state that was already true.
+    it("writes no second event when consent is granted twice in a row", async () => {
+      const scoped = withUser({ userId: alice }, ctx.db);
+      const first = await scoped.setAggregateConsent(true);
+      const second = await scoped.setAggregateConsent(true);
+
+      expect(second).toEqual(first);
+      const evts = await ctx.db.select().from(events).where(eq(events.userId, alice));
+      expect(evts.map((e) => e.type)).toEqual(["consent_granted"]);
+    });
+
+    it("writes no event when withdrawing consent that was never granted", async () => {
+      const scoped = withUser({ userId: alice }, ctx.db);
+      const result = await scoped.setAggregateConsent(false);
+
+      expect(result).toBeNull();
+      expect(await ctx.db.select().from(events).where(eq(events.userId, alice))).toHaveLength(0);
+    });
+
+    it("scopes the write to the caller's own users row and nobody else's", async () => {
+      const scoped = withUser({ userId: alice }, ctx.db);
+      await scoped.setAggregateConsent(true);
+
+      const [bobRow] = await ctx.db.select().from(users).where(eq(users.id, bob));
+      expect(bobRow?.aggregateConsentAt).toBeNull();
+    });
+  });
 });

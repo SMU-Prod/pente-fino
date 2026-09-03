@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, isNull, ne } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, isNull, ne } from "drizzle-orm";
 import {
   computeDeadline, maskText, newId, newPublicToken, nextStage, PROTOCOL_WINDOW_DAYS,
   type CaseOutcome, type Category, type ContestDocument, type EventType, type Playbook, type Stage,
@@ -6,7 +6,8 @@ import {
 import { getUnscopedDb } from "./client.js";
 import { settleCaseFindings } from "./case-close.js";
 import {
-  anonymousSessions, caseDocuments, caseProtocols, cases, events, findings, invoiceItems, invoices, issuers, rules,
+  anonymousSessions, caseDocuments, caseProtocols, cases, entitlements, events, findings, invoiceItems, invoices,
+  issuers, rules, users,
 } from "./schema.js";
 
 export type Session = { userId: string } | { sessionId: string };
@@ -247,6 +248,26 @@ type NewCaseDocument = {
 };
 
 /**
+ * The exact column list `account()` (Task 2) and `exportBundle()` (RF-242,
+ * Task 4) both need, factored out so the second caller reuses this select
+ * rather than repeating it - see `account()`'s own doc comment for what is
+ * included here and why. `userId` is assumed already proven non-null by
+ * both callers (the `{ sessionId }` short-circuit happens before either one
+ * reaches here), so this always queries for a real caller.
+ */
+async function accountRow(db: Db, userId: string) {
+  const [row] = await db.select({
+    id: users.id,
+    email: users.email,
+    plan: users.plan,
+    createdAt: users.createdAt,
+    aggregateConsentAt: users.aggregateConsentAt,
+    deletedAt: users.deletedAt,
+  }).from(users).where(eq(users.id, userId));
+  return row ?? null;
+}
+
+/**
  * The single door to user data (INV-008). Every read and write here carries
  * the ownership filter, and the eslint rule `require-with-user` stops any
  * other module outside `packages/db` from reaching around it, in four ways:
@@ -297,6 +318,251 @@ export function withUser(session: Session, db: Db = getUnscopedDb()) {
     async cases() {
       if (!userId) return [];
       return db.select().from(cases).where(eq(cases.userId, userId)).orderBy(desc(cases.createdAt));
+    },
+
+    /**
+     * The account row a settings screen (Task 4) and RF-242's export (Task 7)
+     * both need: `id`, `email`, `plan`, `createdAt`, plus the two consent/
+     * lifecycle facts this block exists to expose — `aggregateConsentAt`
+     * (RF-245, null means off) and `deletedAt` (RF-243's "exclusão em
+     * andamento" marker). Listed explicitly, the same way `caseDocument`
+     * below lists its columns, rather than `select()`ing the whole row: this
+     * is the shape a caller outside `packages/db` is allowed to see, and a
+     * future column added to `users` should not silently start leaving this
+     * package without someone deciding it belongs here.
+     *
+     * An anonymous session (`{ sessionId }`) owns no `users` row at all —
+     * `userId` is `null` here exactly when that is true — so this returns
+     * `null` before ever building a query, the same short-circuit `cases()`
+     * just above and `caseDocument()` below both use, for the same reason:
+     * a query joined or filtered on a `null` id could only ever come back
+     * empty, and skipping it says so directly instead of making every
+     * caller infer it from an empty result.
+     */
+    async account() {
+      if (!userId) return null;
+      return accountRow(db, userId);
+    },
+
+    /**
+     * RF-245's consent to feed the anonymous aggregate base — the write half
+     * of `account()`'s `aggregateConsentAt`. `granted: true` sets the column
+     * to now; `granted: false` clears it back to `null`, which is what makes
+     * `invoicesEligibleForAggregation` (`aggregation.ts`) stop seeing this
+     * caller's invoices the moment withdrawal commits, with no separate flag
+     * to keep in sync.
+     *
+     * **Idempotent by construction, not by an `if` before the write.** The
+     * `UPDATE` folds the caller's current state into its own `WHERE`
+     * (`isNull`/`isNotNull` on `aggregateConsentAt`, mirroring the one-shot
+     * predicate `closeCase` above and `closeCaseAsSystem` use for the same
+     * reason): a request that asks for the state the row is already in
+     * matches no row, `updated` comes back `undefined`, and the branch below
+     * reads the current value back without writing a second event. This is
+     * the whole point — a screen that re-submits, or a genuine double click,
+     * must not fill `events` with `consent_granted`/`consent_withdrawn`
+     * noise that would make a real withdrawal impossible to find later, and
+     * a database-level guard is one a network retry racing this exact call
+     * cannot slip past the way a plain "read, compare, then write" could.
+     *
+     * Wrapped in a transaction for the same reason `closeCase` is: the state
+     * change and the event that records it (A3) must commit together, or a
+     * crash between the two would leave a consent flip nobody can see in the
+     * audit trail.
+     *
+     * Returns the account's consent state *after* the call — a `Date` when
+     * on, `null` when off — for both the state-changed and the
+     * already-in-that-state branches, so a caller never has to make a second
+     * round trip just to learn what it already caused. `null` for an
+     * anonymous session, same as `account()`.
+     */
+    async setAggregateConsent(granted: boolean) {
+      if (!userId) return null;
+      const now = new Date();
+      return db.transaction(async (tx) => {
+        const wasInThatState = granted ? isNull(users.aggregateConsentAt) : isNotNull(users.aggregateConsentAt);
+        const [updated] = await tx.update(users)
+          .set({ aggregateConsentAt: granted ? now : null, updatedAt: now })
+          .where(and(eq(users.id, userId), wasInThatState))
+          .returning({ aggregateConsentAt: users.aggregateConsentAt });
+        if (updated) {
+          await tx.insert(events).values({
+            id: newId("evt"),
+            userId,
+            type: (granted ? "consent_granted" : "consent_withdrawn") satisfies EventType,
+            occurredAt: now,
+            payload: {},
+          });
+          return updated.aggregateConsentAt;
+        }
+        // Already in the requested state (see doc comment above) — read the
+        // current value back, write nothing.
+        const [current] = await tx.select({ aggregateConsentAt: users.aggregateConsentAt })
+          .from(users).where(eq(users.id, userId));
+        return current?.aggregateConsentAt ?? null;
+      });
+    },
+
+    /**
+     * RF-242's complete export (Task 4, E8) - everything this account owns,
+     * assembled in one place inside `packages/db` rather than as eight
+     * calls stitched together in a route. Every table here is reached
+     * through the same ownership filter the rest of this file already uses
+     * for it: `invoices` and `events` by their own `userId` (same predicate
+     * `invoices()`/`events()` use above); `cases` by `userId` (same as
+     * `cases()`); `entitlements` by `userId`, new to this method because
+     * nothing before it ever needed a caller's own entitlements back.
+     * `invoiceItems`/`findings` and `caseDocuments`/`caseProtocols` have no
+     * owner column of their own - the same reason `findingsForInvoice` and
+     * `caseDetail` join through `invoices`/`cases` to reach them - so they
+     * are filtered here to the id lists the owned `invoices`/`cases`
+     * queries just produced. That is the same join-through proof those two
+     * methods make, applied once over every owned parent at once instead of
+     * one invoice or case at a time: an id can only appear in
+     * `invoiceIds`/`caseIds` by having already passed `eq(invoices.userId,
+     * userId)` / `eq(cases.userId, userId)` immediately above, so a child
+     * row can only be pulled in by way of a parent this call already proved
+     * belongs to the caller. `inArray(col, [])` compiles to `false`
+     * (`createCase`'s own note on the same point), so an account with no
+     * invoices or cases yet gets empty arrays back rather than a query
+     * needing to special-case them.
+     *
+     * **Plain data only - no signed links, no storage access.** This
+     * package has no `Storage` dependency today, and RF-242's honest
+     * "deleted on X" marker for an already-expired file needs
+     * `storage.exists`, which only the route - holding the real adapter -
+     * can call. Handing back `invoices` and `events` exactly as stored
+     * (`fileKey` included, `dossier_generated`'s `payload.fileKey` included)
+     * is what lets the route do that work without a second round trip back
+     * into this file.
+     *
+     * **`formatVersion`** is a plain integer, unrelated to any count or id
+     * already in this bundle, so a person who keeps an old export - or a
+     * future tool built to read one - can tell a later shape change apart
+     * from this one without guessing from which keys happen to be present.
+     * It is bumped only when a key is removed, renamed, or changes meaning;
+     * adding a key is free, the same rule `events.ts`'s own header states
+     * for event names.
+     *
+     * **An anonymous session returns `null`**, the same short-circuit
+     * `account()` and `cases()` use above and for the same reason: §8.2
+     * puts this endpoint under `/api/me`, and a session with no `users` row
+     * has no "me" to export.
+     *
+     * **`cases.protocolToken` is stripped from every row this returns.**
+     * `GET /api/cases/:id` (`apps/web/app/api/cases/[id]/route.ts`) already
+     * strips this exact column before it ever reaches a browser, and its own
+     * doc comment says why: it is `wait.forToken`'s handle - a capability,
+     * not a fact about the dispute - and whoever holds it can resume the
+     * run the case is waiting on. That route was, until this method
+     * existed, the only place a `cases` row was ever serialised to a client
+     * at all. This bundle is worse ground to hand it out on, not better: it
+     * is a file the person downloads and may keep or forward indefinitely,
+     * with no expiry of its own - unlike the signed download links the
+     * route wrapping this method stamps with a 15-minute TTL precisely
+     * because they, too, are bearer capabilities. Completeness ("every
+     * table the account owns") does not extend to a column whose only
+     * purpose is letting a *server* resume a workflow run; `caseRows`
+     * further down still comes from a plain `select()`, the same as every
+     * other table here, so the strip happens once, after the query, rather
+     * than by hand-listing every other `cases` column the way `caseDetail`
+     * does.
+     *
+     * **`ai_calls`, `claim_codes` and `anonymous_sessions` are the three
+     * tables in `schema.ts` this bundle does not reach, and none of the
+     * three fits the two shapes every included table above does.**
+     *
+     *   - `ai_calls` carries `invoiceId`/`caseId` columns, but - unlike
+     *     `invoiceItems.invoiceId`, `findings.invoiceId`,
+     *     `caseDocuments.caseId` and `caseProtocols.caseId`, every one of
+     *     which is `NOT NULL` and a real foreign key with `onDelete:
+     *     "cascade"` - `ai_calls.invoiceId`/`caseId` are plain, nullable
+     *     text columns with no `.references()` at all. The join-through
+     *     proof this method relies on for its four child tables ("an id can
+     *     only appear in `invoiceIds`/`caseIds` by having already passed
+     *     `eq(invoices.userId, userId)`/`eq(cases.userId, userId)`") is only
+     *     sound because the database itself enforces that the child's id
+     *     names a real, live parent row; `ai_calls` gives no such guarantee,
+     *     so `inArray(aiCalls.invoiceId, invoiceIds)` would not be proving
+     *     ownership the way it does for the other four. What the table
+     *     holds - `provider`, `model`, `tokensIn`/`tokensOut`, `costUsd`,
+     *     `latencyMs`, `traceId` - is also not a fact about the person or
+     *     the dispute; it is telemetry about what this system paid a
+     *     vendor to do its own job, the same category of internal
+     *     operating detail RF-242's export was never asked to disclose.
+     *   - `claim_codes` has no `userId` column either; its one foreign key
+     *     is `sessionId -> anonymous_sessions.id`, not `-> users.id`, and
+     *     rows are kept forever, successful or not (see the table's own doc
+     *     comment in `schema.ts`) - a code some *other* visitor requested
+     *     while typing this account's e-mail address by mistake, or while
+     *     probing it, lives in this table exactly as durably as the code
+     *     that actually worked. Reaching "this user's own" rows would mean
+     *     matching on `email`, which is precisely the shortcut INV-008
+     *     exists to forbid elsewhere in this file: an unverified, attacker-
+     *     or typo-controlled column is not an ownership proof. And what a
+     *     matched row would add - a `codeHash`, an `attempts` counter - is
+     *     credential-shaped in the same way `protocolToken` is, for the
+     *     export's reader to gain nothing from.
+     *   - `anonymous_sessions` has no `userId` column at all, only an
+     *     inbound `claimedByUserId` pointing the other way from `users`. The
+     *     more telling reason is `claim.ts`'s `migrate()`: the moment a
+     *     session is claimed, it rewrites every `invoices`/`events` row that
+     *     carried that `sessionId` to carry `userId` instead and sets
+     *     `sessionId` back to `null` - so the raw session identifier is
+     *     deliberately scrubbed from every other table an account's data
+     *     lives in. Selecting `anonymous_sessions` here, keyed off the very
+     *     `claimedByUserId` that migration writes, would reintroduce into
+     *     the export the one identifier the rest of the schema was written
+     *     to stop carrying - for a row (`id`, `expiresAt`, its own
+     *     timestamps) that is cookie/session plumbing from before the
+     *     account existed, not a fact about an invoice, a case, or the
+     *     dispute the way every included table is.
+     */
+    async exportBundle() {
+      if (!userId) return null;
+      const account = await accountRow(db, userId);
+      if (!account) return null;
+
+      const [invoiceRows, rawCaseRows, entitlementRows, eventRows] = await Promise.all([
+        db.select().from(invoices).where(eq(invoices.userId, userId)).orderBy(desc(invoices.createdAt)),
+        db.select().from(cases).where(eq(cases.userId, userId)).orderBy(desc(cases.createdAt)),
+        db.select().from(entitlements).where(eq(entitlements.userId, userId)).orderBy(desc(entitlements.createdAt)),
+        db.select().from(events).where(eq(events.userId, userId)).orderBy(desc(events.occurredAt)),
+      ]);
+
+      // See the doc comment above: `protocolToken` never leaves this method.
+      const caseRows = rawCaseRows.map(({ protocolToken: _protocolToken, ...rest }) => rest);
+
+      const invoiceIds = invoiceRows.map((row) => row.id);
+      const caseIds = caseRows.map((row) => row.id);
+
+      const [itemRows, findingRows, documentRows, protocolRows] = await Promise.all([
+        db.select().from(invoiceItems)
+          .where(inArray(invoiceItems.invoiceId, invoiceIds))
+          .orderBy(invoiceItems.invoiceId, invoiceItems.lineNo),
+        db.select().from(findings)
+          .where(inArray(findings.invoiceId, invoiceIds))
+          .orderBy(findings.createdAt, findings.id),
+        db.select().from(caseDocuments)
+          .where(inArray(caseDocuments.caseId, caseIds))
+          .orderBy(caseDocuments.createdAt, caseDocuments.id),
+        db.select().from(caseProtocols)
+          .where(inArray(caseProtocols.caseId, caseIds))
+          .orderBy(caseProtocols.registeredAt, caseProtocols.id),
+      ]);
+
+      return {
+        formatVersion: 1,
+        account,
+        invoices: invoiceRows,
+        invoiceItems: itemRows,
+        findings: findingRows,
+        cases: caseRows,
+        caseDocuments: documentRows,
+        caseProtocols: protocolRows,
+        entitlements: entitlementRows,
+        events: eventRows,
+      };
     },
 
     /**

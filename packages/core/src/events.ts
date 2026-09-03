@@ -134,6 +134,44 @@ export const EVENTS = [
   // its owner first — RF-187's dossier and any support conversation both
   // need that to be a fact rather than an assumption.
   "case_reminder_sent",
+  // RF-245's aggregate-base consent (Task 1, E8). `users.aggregate_consent_at`
+  // only ever holds the current answer - a timestamp or NULL - so neither
+  // value alone can show that a *withdrawal* happened: NULL means either
+  // "never granted" or "granted, then taken back", and those are different
+  // facts for anyone auditing consent later. Both directions need a name
+  // for the same A3 reason `protocol_entered`/`response_received` do - a
+  // column is a snapshot, and a snapshot cannot reconstruct the history of
+  // even two changes to it.
+  "consent_granted", "consent_withdrawn",
+  // `account_deletion_requested` (Task 1, E8) names the moment the person
+  // actually asked. §13.2's "exclusão em andamento" state has to be
+  // readable from somewhere durable - `users.deleted_at` being set is the
+  // *current* fact, but says nothing about when it was set - and RF-243
+  // promises the purge completes within 24 hours of that moment, so the
+  // purge job needs this row's `occurred_at` to report how long a run took
+  // against that promise.
+  "account_deletion_requested",
+  // `account_deleted` is RF-243's audit event, and the one row in this
+  // whole catalogue that is *designed* to survive the deletion it records.
+  // The purge removes every other trace of the account - rows, files,
+  // everything derived - so this event has to carry no PII to protect:
+  // `user_id` is NULL on the row, and the payload holds a hashed user id,
+  // never the real one, while still proving to anyone who asks later that
+  // the deletion happened and when.
+  "account_deleted",
+  // Same reason `invoice_file_expiry_failed` exists: purging one account is
+  // a per-subject operation, and a per-subject failure that silently
+  // repeats forever - never surfacing, never getting fixed - must still be
+  // visible to whoever reads the event stream. `account_purge_failed`
+  // fills that role for the deletion job; the subject stays eligible for
+  // the next run, same as expire-files.ts's precedent.
+  "account_purge_failed",
+  // RF-242's export. `data_exported` is what lets a later question -
+  // "did somebody else download my data?" - have an answer. An export
+  // hands over a complete copy of everything the person has; if the
+  // session that requested it is later found to have been compromised,
+  // this event is the only trace that the copy was ever made, and when.
+  "data_exported",
 ] as const;
 
 export type EventType = (typeof EVENTS)[number];
