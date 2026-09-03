@@ -29,9 +29,13 @@ function singleSection(items: ItemInput[], name = "Serviços"): InvoiceCanonical
 describe("pairInvoiceItems", () => {
   // RF-200 acceptance, exact-pass half: "Plano Móvel Controle" and
   // "PLANO MOVEL CONTROLE!!" differ in accents, case and punctuation, but
-  // normalizeDescription (RF-122) folds all three away, so they land on
-  // the exact pass and score 1 — not merely score >= 0.8.
-  it("pairs items that differ only in accent, case and punctuation, via the exact pass", () => {
+  // normalizeDescription (RF-122) folds all three away, so their
+  // normalised descriptions are equal and the pair scores 1. (Score 1
+  // alone does not prove *which* pass produced the pair — the exact pass
+  // and the trigram pass both score an equal pair of non-empty normalised
+  // descriptions at 1 — so this test observes only the score, not the
+  // pass.)
+  it("pairs items that differ only in accent, case and punctuation, with score 1", () => {
     const previous = singleSection([{ description: "Plano Móvel Controle", amountCents: 8990 }]);
     const current = singleSection([{ description: "PLANO MOVEL CONTROLE!!", amountCents: 8990 }]);
 
@@ -45,25 +49,29 @@ describe("pairInvoiceItems", () => {
     expect(diff.appeared).toEqual([]);
   });
 
-  // A description that is entirely letterless (a bare reference code, per
-  // normalizeDescription's decision 1) normalises to "". Two such items
-  // are equal strings ("" === ""), so the exact pass pairs them with score
-  // 1 — but trigramSimilarity("", "") is defined as 0, not 1 (an empty
-  // description is no evidence of sameness). This is the one case where
-  // the exact pass and the trigram pass provably disagree: it proves the
-  // exact pass — not trigram scoring identical strings as 1 — did the
-  // pairing here, unlike the accent/case/punctuation case above, where
-  // both passes would reach the same score.
-  it("pairs two items with an empty normalised description via the exact pass", () => {
+  // RULING: an item whose normalised description is empty pairs with
+  // nothing — never with another empty one. "000123-456" and "000987-654"
+  // are two unrelated code-only lines (a bare reference code, per
+  // normalizeDescription's decision 1) that both normalise to "". An
+  // empty normalised description is the *absence* of a description, not
+  // a description two items share (see the doc comment above
+  // pairInvoiceItems for the full rationale, including why this matches
+  // trigramSimilarity("", "") being defined as 0, not 1). Before this
+  // ruling, two such items paired on the exact pass at score 1 — the
+  // maximum-confidence signal — so a genuinely disappeared charge would
+  // never reach `disappeared` and a genuinely new one would never reach
+  // `appeared`.
+  it("does not pair two items whose normalised description is both empty", () => {
     const previous = singleSection([{ description: "000123-456", amountCents: 500 }]);
     const current = singleSection([{ description: "000987-654", amountCents: 500 }]);
 
     const diff = pairInvoiceItems(previous, current);
 
-    expect(diff.paired).toHaveLength(1);
-    expect(diff.paired[0]?.score).toBe(1);
-    expect(diff.disappeared).toEqual([]);
-    expect(diff.appeared).toEqual([]);
+    expect(diff.paired).toEqual([]);
+    expect(diff.disappeared).toHaveLength(1);
+    expect(diff.disappeared[0]?.description).toBe("000123-456");
+    expect(diff.appeared).toHaveLength(1);
+    expect(diff.appeared[0]?.description).toBe("000987-654");
   });
 
   // RF-200 acceptance, trigram-pass half: "Serviço Mega" vs "Serviço
@@ -246,5 +254,32 @@ describe("pairInvoiceItems", () => {
     expect(diff.paired[0]?.previous.description).toBe("Suporte Técnico");
     expect(diff.disappeared.map((i) => i.description)).toEqual(["Anuidade Cartão Adicional"]);
     expect(diff.appeared.map((i) => i.description)).toEqual(["Assinatura Revista Mensal"]);
+  });
+
+  // `paired` must be ordered by previous-side document order, even when
+  // the pairs come from different passes. "Serviço Mega" sits at previous
+  // index 0 but only clears the trigram pass (paired with "Serviço
+  // Megas" at score 0.8); "Plano Base" sits at previous index 1 but
+  // clears the exact pass first (paired with score 1). The exact pass
+  // runs before the trigram pass and pushes its pairs first, so without
+  // the final sort by previous-side index, `paired` would come out as
+  // [Plano Base (index 1), Serviço Mega (index 0)] — reflecting pass
+  // order, not document order. `amountCents` tags each pair so the order
+  // is checked directly, not merely inferred from length.
+  it("orders paired by previous-side document order, even when the trigram pair precedes the exact pair", () => {
+    const previous = singleSection([
+      { description: "Serviço Mega", amountCents: 100 },
+      { description: "Plano Base", amountCents: 200 },
+    ]);
+    const current = singleSection([
+      { description: "Plano Base", amountCents: 300 },
+      { description: "Serviço Megas", amountCents: 400 },
+    ]);
+
+    const diff = pairInvoiceItems(previous, current);
+
+    expect(diff.paired.map((p) => p.previous.amountCents)).toEqual([100, 200]);
+    expect(diff.disappeared).toEqual([]);
+    expect(diff.appeared).toEqual([]);
   });
 });

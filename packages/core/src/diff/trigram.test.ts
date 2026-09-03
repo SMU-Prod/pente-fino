@@ -56,4 +56,23 @@ describe("trigramSimilarity", () => {
   it("pins the PRD's 0.8 threshold", () => {
     expect(TRIGRAM_THRESHOLD).toBe(0.8);
   });
+
+  it("counts a word's repeated trigram once, per set semantics, not once per occurrence", () => {
+    // "BANANA" padded is "  BANANA " (9 chars) -> 7 (= n + 1) trigrams in
+    // order: "  B", " BA", "BAN", "ANA", "NAN", "ANA", "NA " — "ANA"
+    // occurs twice (positions 3 and 5), so as a *set* it has only 6
+    // distinct members: {"  B", " BA", "BAN", "ANA", "NAN", "NA "}.
+    // "BAN" padded is "  BAN " (6 chars) -> 4 distinct trigrams:
+    //   {"  B", " BA", "BAN", "AN "}.
+    // Intersection (as sets): "  B", " BA", "BAN" -> 3.
+    // Union = 6 + 4 - 3 = 7. similarity = 3 / 7.
+    //
+    // A multiset (plain-array, no dedup) implementation would instead
+    // count "BANANA"'s raw trigram total as 7 (the duplicate "ANA" kept
+    // both times). The intersection is unaffected (neither copy of "ANA"
+    // appears in "BAN"'s trigrams), but the union becomes 7 + 4 - 3 = 8,
+    // giving 3 / 8 instead of 3 / 7 — this is what pins set semantics
+    // over multiset semantics.
+    expect(trigramSimilarity("BANANA", "BAN")).toBe(3 / 7);
+  });
 });

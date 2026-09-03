@@ -59,6 +59,28 @@ type Candidate = { previous: IndexedItem; current: IndexedItem; score: number };
  *    current-side leftovers are `appeared`.
  *
  * `paired` is ordered by previous-side document order.
+ *
+ * An item whose normalised description is empty pairs with nothing, on
+ * either pass — it always lands in `disappeared` (previous side) or
+ * `appeared` (current side). RF-200 pairs on "normalizedDesc exata", an
+ * equal *description* — and an empty normalised description is the
+ * absence of one, not a description two items share. Empty is the
+ * extreme case of the trade-off `normalizeDescription` already documents:
+ * its decision 1 drops every letterless token, so two unrelated
+ * code-only lines (e.g. "000123-456" and "000987-654") both normalise to
+ * "" and would otherwise look identical to the exact pass.
+ * `normalizeDescription`'s own doc comment warns that a consumer "must
+ * not treat equal normalised descriptions as proof of the same billable
+ * item" — an empty result is that warning taken to its limit. This also
+ * makes the exact pass consistent with the trigram pass, where
+ * `trigramSimilarity("", "")` is already defined as 0, not 1: an empty
+ * description carries no evidence of sameness on either pass. Without
+ * this exclusion, two unrelated code-only lines at the same amount would
+ * pair at score 1 — the maximum-confidence signal — so a genuinely
+ * disappeared charge would never reach `disappeared`, a genuinely new one
+ * would never reach `appeared`, and RF-201/RF-202 downstream would read
+ * them as the same recurring charge and feed `recoveredCents`, the
+ * metric §1.4 is computed from.
  */
 export function pairInvoiceItems(previous: InvoiceCanonical, current: InvoiceCanonical): InvoiceDiff {
   const previousItems = indexItems(previous);
@@ -68,8 +90,11 @@ export function pairInvoiceItems(previous: InvoiceCanonical, current: InvoiceCan
   const pairedCurrent = new Set<number>();
   const pairs: Candidate[] = [];
 
-  // Exact pass.
+  // Exact pass. An empty normalised description never pairs (see the doc
+  // comment above): skipping it here means it is never added to
+  // `pairedPrevious`, so it always falls through to `disappeared` below.
   for (const prev of previousItems) {
+    if (prev.normalized === "") continue;
     const match = currentItems.find(
       (cur) => !pairedCurrent.has(cur.index) && cur.normalized === prev.normalized,
     );

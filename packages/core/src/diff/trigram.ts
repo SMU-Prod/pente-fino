@@ -1,3 +1,42 @@
+/** The trigram-similarity cutoff RF-200 specifies: pairs scoring below this on the trigram pass are left unpaired. */
+export const TRIGRAM_THRESHOLD = 0.8;
+
+/**
+ * A run of characters that are not ASCII letters or digits.
+ *
+ * ASCII-only: this ties `trigramSimilarity`'s notion of a "word boundary"
+ * to plain `A-Za-z0-9`, not the encoding-aware word-character notion
+ * `pg_trgm` itself uses. Production input is always `normalizeDescription`
+ * output — guaranteed uppercase ASCII alphanumerics and spaces — so this
+ * never matters today. But `trigramSimilarity` is a public barrel export:
+ * an unnormalised caller passing e.g. `"AÇÃO"` would be split into the
+ * words `"A"` and `"O"` here (the `Ç` and `Ã` are non-ASCII and so match
+ * this regex), where Postgres would keep `"AÇÃO"` as one word.
+ */
+const NON_ALPHANUMERIC = /[^A-Za-z0-9]+/;
+
+/** Every 3-character substring of the padded word, in order (with repeats). */
+function trigramsOfWord(word: string): string[] {
+  const padded = `  ${word} `;
+  const trigrams: string[] = [];
+  for (let start = 0; start + 3 <= padded.length; start++) {
+    trigrams.push(padded.slice(start, start + 3));
+  }
+  return trigrams;
+}
+
+/** The trigram set of a whole string: the union of each word's trigrams. */
+function trigramSet(input: string): Set<string> {
+  const words = input.split(NON_ALPHANUMERIC).filter((word) => word.length > 0);
+  const set = new Set<string>();
+  for (const word of words) {
+    for (const trigram of trigramsOfWord(word)) {
+      set.add(trigram);
+    }
+  }
+  return set;
+}
+
 /**
  * Jaccard similarity between the trigram sets of two strings (RF-200's
  * fuzzy-match step), used to catch spelling variants that survive
@@ -26,37 +65,9 @@
  * `normalizeDescription`, which uppercases (after stripping accents) — so
  * this function does not re-fold case itself. Folding case here too could
  * only ever disagree with the caller's own normalisation, never help it.
- */
-export const TRIGRAM_THRESHOLD = 0.8;
-
-/** A run of characters that are not ASCII letters or digits. */
-const NON_ALPHANUMERIC = /[^A-Za-z0-9]+/;
-
-/** Every 3-character substring of the padded word, in order (with repeats). */
-function trigramsOfWord(word: string): string[] {
-  const padded = `  ${word} `;
-  const trigrams: string[] = [];
-  for (let start = 0; start + 3 <= padded.length; start++) {
-    trigrams.push(padded.slice(start, start + 3));
-  }
-  return trigrams;
-}
-
-/** The trigram set of a whole string: the union of each word's trigrams. */
-function trigramSet(input: string): Set<string> {
-  const words = input.split(NON_ALPHANUMERIC).filter((word) => word.length > 0);
-  const set = new Set<string>();
-  for (const word of words) {
-    for (const trigram of trigramsOfWord(word)) {
-      set.add(trigram);
-    }
-  }
-  return set;
-}
-
-/**
- * Jaccard similarity `|A ∩ B| / |A ∪ B|` over the trigram sets of `a` and
- * `b`, in `[0, 1]`. Deterministic and symmetric.
+ *
+ * The result is `|A ∩ B| / |A ∪ B|` over the trigram sets of `a` and `b`,
+ * in `[0, 1]`. Deterministic and symmetric.
  *
  * Two empty inputs return `0`, not `1`: an empty description carries no
  * evidence that two lines describe the same charge, so it must not be
