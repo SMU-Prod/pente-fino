@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, isNull, ne } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, isNull, ne } from "drizzle-orm";
 import {
   computeDeadline, maskText, newId, newPublicToken, nextStage, PROTOCOL_WINDOW_DAYS,
   type CaseOutcome, type Category, type ContestDocument, type EventType, type Playbook, type Stage,
@@ -7,6 +7,7 @@ import { getUnscopedDb } from "./client.js";
 import { settleCaseFindings } from "./case-close.js";
 import {
   anonymousSessions, caseDocuments, caseProtocols, cases, events, findings, invoiceItems, invoices, issuers, rules,
+  users,
 } from "./schema.js";
 
 export type Session = { userId: string } | { sessionId: string };
@@ -297,6 +298,97 @@ export function withUser(session: Session, db: Db = getUnscopedDb()) {
     async cases() {
       if (!userId) return [];
       return db.select().from(cases).where(eq(cases.userId, userId)).orderBy(desc(cases.createdAt));
+    },
+
+    /**
+     * The account row a settings screen (Task 4) and RF-242's export (Task 7)
+     * both need: `id`, `email`, `plan`, `createdAt`, plus the two consent/
+     * lifecycle facts this block exists to expose — `aggregateConsentAt`
+     * (RF-245, null means off) and `deletedAt` (RF-243's "exclusão em
+     * andamento" marker). Listed explicitly, the same way `caseDocument`
+     * below lists its columns, rather than `select()`ing the whole row: this
+     * is the shape a caller outside `packages/db` is allowed to see, and a
+     * future column added to `users` should not silently start leaving this
+     * package without someone deciding it belongs here.
+     *
+     * An anonymous session (`{ sessionId }`) owns no `users` row at all —
+     * `userId` is `null` here exactly when that is true — so this returns
+     * `null` before ever building a query, the same short-circuit `cases()`
+     * just above and `caseDocument()` below both use, for the same reason:
+     * a query joined or filtered on a `null` id could only ever come back
+     * empty, and skipping it says so directly instead of making every
+     * caller infer it from an empty result.
+     */
+    async account() {
+      if (!userId) return null;
+      const [row] = await db.select({
+        id: users.id,
+        email: users.email,
+        plan: users.plan,
+        createdAt: users.createdAt,
+        aggregateConsentAt: users.aggregateConsentAt,
+        deletedAt: users.deletedAt,
+      }).from(users).where(eq(users.id, userId));
+      return row ?? null;
+    },
+
+    /**
+     * RF-245's consent to feed the anonymous aggregate base — the write half
+     * of `account()`'s `aggregateConsentAt`. `granted: true` sets the column
+     * to now; `granted: false` clears it back to `null`, which is what makes
+     * `invoicesEligibleForAggregation` (`aggregation.ts`) stop seeing this
+     * caller's invoices the moment withdrawal commits, with no separate flag
+     * to keep in sync.
+     *
+     * **Idempotent by construction, not by an `if` before the write.** The
+     * `UPDATE` folds the caller's current state into its own `WHERE`
+     * (`isNull`/`isNotNull` on `aggregateConsentAt`, mirroring the one-shot
+     * predicate `closeCase` above and `closeCaseAsSystem` use for the same
+     * reason): a request that asks for the state the row is already in
+     * matches no row, `updated` comes back `undefined`, and the branch below
+     * reads the current value back without writing a second event. This is
+     * the whole point — a screen that re-submits, or a genuine double click,
+     * must not fill `events` with `consent_granted`/`consent_withdrawn`
+     * noise that would make a real withdrawal impossible to find later, and
+     * a database-level guard is one a network retry racing this exact call
+     * cannot slip past the way a plain "read, compare, then write" could.
+     *
+     * Wrapped in a transaction for the same reason `closeCase` is: the state
+     * change and the event that records it (A3) must commit together, or a
+     * crash between the two would leave a consent flip nobody can see in the
+     * audit trail.
+     *
+     * Returns the account's consent state *after* the call — a `Date` when
+     * on, `null` when off — for both the state-changed and the
+     * already-in-that-state branches, so a caller never has to make a second
+     * round trip just to learn what it already caused. `null` for an
+     * anonymous session, same as `account()`.
+     */
+    async setAggregateConsent(granted: boolean) {
+      if (!userId) return null;
+      const now = new Date();
+      return db.transaction(async (tx) => {
+        const wasInThatState = granted ? isNull(users.aggregateConsentAt) : isNotNull(users.aggregateConsentAt);
+        const [updated] = await tx.update(users)
+          .set({ aggregateConsentAt: granted ? now : null, updatedAt: now })
+          .where(and(eq(users.id, userId), wasInThatState))
+          .returning({ aggregateConsentAt: users.aggregateConsentAt });
+        if (updated) {
+          await tx.insert(events).values({
+            id: newId("evt"),
+            userId,
+            type: (granted ? "consent_granted" : "consent_withdrawn") satisfies EventType,
+            occurredAt: now,
+            payload: {},
+          });
+          return updated.aggregateConsentAt;
+        }
+        // Already in the requested state (see doc comment above) — read the
+        // current value back, write nothing.
+        const [current] = await tx.select({ aggregateConsentAt: users.aggregateConsentAt })
+          .from(users).where(eq(users.id, userId));
+        return current?.aggregateConsentAt ?? null;
+      });
     },
 
     /**

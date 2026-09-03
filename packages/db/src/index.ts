@@ -17,6 +17,12 @@ export { withUser, ensureAnonymousSession, resolveSession, type Session, type Sc
 // system-closed case's findings shown on the report as a live dispute and
 // permanently barred from a new case. See `case-close.ts`.
 export { closeCaseAsSystem, settleCaseFindings, SETTLED_FINDING_STATUS } from "./case-close.js";
+// RF-245 (Task 2, E8), the same shape of exception as `closeCaseAsSystem`
+// just above: a future aggregation job has no user session to scope to, and
+// this hands out no raw data access of its own — every row it returns is
+// gated on the owning `users` row's own consent, decided inside the query
+// itself rather than left for a caller to remember. See `aggregation.ts`.
+export { invoicesEligibleForAggregation } from "./aggregation.js";
 export {
   requestClaimCode, confirmClaimCode,
   CLAIM_CODE_TTL_MS, CLAIM_CODE_MAX_ATTEMPTS, CLAIM_RATE_LIMIT_COUNT, CLAIM_RATE_LIMIT_WINDOW_MS,

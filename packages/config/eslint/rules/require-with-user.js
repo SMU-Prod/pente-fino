@@ -82,6 +82,14 @@ const ALLOWED_PACKAGE_EXPORTS = new Set([
   // session to scope it to and nothing it can be pointed at that the caller
   // did not already have.
   "closeCaseAsSystem",
+  // RF-245 (E8 Task 2): the same shape of exception as `closeCaseAsSystem`
+  // just above, for the same reason — a future aggregation job has no user
+  // session to scope to. It hands out no raw data access of its own: every
+  // row it returns is an invoice whose owner already consented, and that
+  // check is baked into the query (`aggregation.ts`), not left for the
+  // caller to apply itself. See that file's doc comment for why this
+  // export exists before anything calls it.
+  "invoicesEligibleForAggregation",
 ]);
 
 const PACKAGE_ENTRY = "@pentefino/db";
