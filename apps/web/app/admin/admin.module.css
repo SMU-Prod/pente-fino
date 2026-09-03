@@ -1,0 +1,329 @@
+/*
+ * The admin panel. Same system as `home.module.css`, `laudo/[id]/
+ * laudo.module.css` and `caso/[id]/caso.module.css`: PRD §13.1 tokens only,
+ * Fraunces for display, IBM Plex Mono for every label, every count and
+ * every status pill, `--deep` reserved for the row that needs the eye first.
+ * Wider than the person-facing screens on purpose — this is a dashboard for
+ * one person going through a list, not a document to read top to bottom.
+ */
+
+.page {
+  max-width: 64rem;
+  margin: 0 auto;
+  padding: clamp(1.5rem, 4vw, 3.5rem) 1.25rem 5rem;
+}
+
+.eyebrow {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  margin: 0 0 0.75rem;
+}
+
+.heading {
+  font-family: var(--font-display);
+  font-weight: 400;
+  font-size: clamp(1.5rem, 4vw, 2.25rem);
+  line-height: 1.2;
+  margin: 0 0 2rem;
+  color: var(--ink);
+}
+
+.sectionTitle {
+  font-family: var(--font-display);
+  font-weight: 400;
+  font-size: 1.35rem;
+  margin: 3rem 0 1rem;
+  color: var(--ink);
+  padding-top: 1.5rem;
+  border-top: 1px solid var(--line);
+}
+
+.sectionTitle:first-of-type {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: none;
+}
+
+.sectionHint {
+  margin: -0.6rem 0 1.25rem;
+  font-size: 0.88rem;
+  color: var(--ink-3);
+  max-width: 46ch;
+}
+
+/* --------------------------------------------------------------- overview */
+
+.statGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+  gap: 0.75rem;
+}
+
+.statCard {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 1rem 1.1rem;
+}
+
+.statLabel {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  margin: 0 0 0.4rem;
+}
+
+.statValue {
+  font-family: var(--font-mono);
+  font-size: 1.5rem;
+  color: var(--ink);
+  margin: 0;
+}
+
+.statBreakdown {
+  margin: 0.35rem 0 0;
+  font-size: 0.78rem;
+  color: var(--ink-2);
+  font-family: var(--font-mono);
+}
+
+/* ---------------------------------------------------------------- family */
+
+.family {
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--card);
+  padding: 1.1rem 1.25rem;
+  margin: 0 0 1rem;
+}
+
+.familyHead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+  margin: 0 0 0.75rem;
+}
+
+.familySlug {
+  font-family: var(--font-mono);
+  font-size: 0.95rem;
+  color: var(--ink);
+}
+
+.version {
+  border-top: 1px solid var(--line);
+  padding: 0.85rem 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem 1rem;
+  align-items: center;
+}
+
+.version:first-of-type {
+  border-top: none;
+  padding-top: 0;
+}
+
+.versionMeta {
+  flex: 1 1 20rem;
+}
+
+.versionLine {
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  color: var(--ink);
+  margin: 0 0 0.3rem;
+}
+
+.versionSub {
+  font-size: 0.82rem;
+  color: var(--ink-3);
+  margin: 0;
+}
+
+.pill {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  padding: 0.2rem 0.55rem;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  color: var(--ink-3);
+}
+
+.pillDraft { color: var(--ink-3); }
+.pillShadow { border-color: var(--mark); color: var(--mark); }
+.pillActive { border-color: var(--ok); color: var(--ok); background: var(--ok-soft); }
+.pillPaused { border-color: var(--mark); color: var(--mark); background: var(--mark-soft); }
+.pillPending { border-color: var(--deep); color: var(--ink); background: var(--card); font-weight: 600; }
+
+.metrics {
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  color: var(--ink-2);
+}
+
+/* ----------------------------------------------------------------- forms */
+
+.actionRow {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.button {
+  font: inherit;
+  font-size: 0.85rem;
+  font-weight: 500;
+  padding: 0.45rem 0.85rem;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--paper);
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.buttonPrimary {
+  background: var(--deep);
+  border-color: var(--deep);
+  color: #F3EEE7;
+}
+
+.buttonDanger {
+  border-color: var(--mark);
+  color: var(--mark);
+}
+
+.button:disabled {
+  cursor: progress;
+  opacity: 0.6;
+}
+
+.inlineForm {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-top: 0.5rem;
+}
+
+.textInput,
+.selectInput,
+.textArea {
+  font: inherit;
+  font-size: 0.88rem;
+  padding: 0.5rem 0.65rem;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--paper);
+  color: var(--ink);
+}
+
+.textArea {
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  width: 100%;
+  min-height: 8rem;
+  resize: vertical;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  margin: 0 0 0.9rem;
+}
+
+.fieldLabel {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+
+.fieldRow {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+  gap: 0.9rem;
+}
+
+.legalRow {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr auto;
+  gap: 0.5rem;
+  align-items: center;
+  margin: 0 0 0.5rem;
+}
+
+.errorList {
+  list-style: none;
+  padding: 0.85rem 1rem;
+  margin: 0 0 1rem;
+  background: var(--mark-soft);
+  border: 1px solid var(--mark);
+  border-radius: 10px;
+  font-size: 0.85rem;
+  color: var(--ink);
+}
+
+.errorList li + li {
+  margin-top: 0.35rem;
+}
+
+.notice {
+  padding: 0.7rem 1rem;
+  border-radius: 10px;
+  font-size: 0.85rem;
+  margin: 0 0 1rem;
+}
+
+.noticeOk {
+  background: var(--ok-soft);
+  color: var(--ok);
+}
+
+.noticeError {
+  background: var(--mark-soft);
+  color: var(--mark);
+}
+
+.empty {
+  font-size: 0.9rem;
+  color: var(--ink-3);
+  padding: 0.5rem 0;
+}
+
+.newRuleForm {
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--card);
+  padding: 1.25rem 1.4rem;
+}
+
+.templateRow {
+  display: flex;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+  margin: 0 0 1rem;
+}
+
+.templateButton {
+  font: inherit;
+  font-size: 0.78rem;
+  padding: 0.3rem 0.65rem;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--paper);
+  color: var(--ink-2);
+  cursor: pointer;
+}
