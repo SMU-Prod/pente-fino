@@ -62,25 +62,83 @@ export function createLocalStorage(options: {
   // somewhere it can look it up.
   const pendingUploads = new Map<string, { sizeBytes: number; contentHash: string; mimeType: string }>();
 
+  // Critical finding: naive colon-joining let a caller-controlled fileKey
+  // that itself contained colons and digit groups make an upload message
+  // and a download message collide on the exact same HMAC input - a
+  // signature minted for one purpose then replayed as valid for the other
+  // (`signDownload("somefile.pdf:9999999999999:1")` forging an upload sig
+  // for fileKey "download:somefile.pdf"). Domain separation by a leading
+  // literal prefix only worked as long as nothing else produced the same
+  // bytes; it never actually made field boundaries unambiguous. Framing
+  // each field as `<charLength>:<field>` does: decoding never guesses
+  // where one field ends and the next begins, it reads the digits before
+  // the next colon, consumes exactly that many characters, and moves on -
+  // so a colon, a digit group, or any other byte *inside* a field can never
+  // be misread as the boundary *between* fields, whatever the field
+  // contains. Putting the purpose tag ("upload" / "download") in as the
+  // first field, rather than as a bare string prefix, makes the two
+  // domains differ before either message's content fields have even been
+  // read, instead of resting on which literal prefix happens to come first.
+  function framed(...fields: (string | number)[]): string {
+    let out = "";
+    for (const field of fields) {
+      const s = String(field);
+      out += `${s.length}:${s}`;
+    }
+    return out;
+  }
+
+  // Reframing this message (it used to be naive colon-joining, like
+  // `signForDownload` below) changes what a previously-issued upload URL's
+  // signature covers. That is safe to do here and only here: `put()`
+  // refuses any fileKey with no live entry in the in-process
+  // `pendingUploads` map, so an upload URL signed before a process restart
+  // is already unusable regardless of what its signature says - there is no
+  // "old signature, still valid, now mis-verified" case to worry about, and
+  // nothing built on this format is deployed yet.
   function sign(fileKey: string, expiresAt: number, sizeBytes: number, contentHash: string): string {
     return createHmac("sha256", options.secret)
-      .update(`${fileKey}:${expiresAt}:${sizeBytes}:${contentHash}`)
+      .update(framed("upload", fileKey, expiresAt, sizeBytes, contentHash))
       .digest("hex");
   }
 
-  // Domain-separated from `sign()` above by the literal "download" tag in
-  // the HMAC input. An upload signature is computed over four fields
-  // (fileKey, expiresAt, sizeBytes, contentHash), so it already can't
-  // collide with a bare (fileKey, expiresAt) pair - but a download
-  // signature has only those two fields to work with, and nothing else
-  // would stop a HMAC-SHA256 digest of `${fileKey}:${expiresAt}` computed
-  // for some unrelated purpose under the same secret from being replayed
-  // here. The tag makes the two signature domains cryptographically
-  // distinct by construction, not by accident of which fields happen to be
-  // present - so a signature minted for one purpose can never verify as the
-  // other.
+  // Domain-separated from `sign()` above by its own "download" purpose tag
+  // as the first framed field - see `framed()`. `isSafeFileKey`, applied in
+  // signDownload below, closes the actual hole the reviewer found (a
+  // caller-controlled fileKey smuggling colons and digit groups); this
+  // framing closes the same class of bug structurally, so a signature
+  // minted for one purpose can never verify as the other even if some
+  // future caller of `sign`/`signForDownload` skips that validation.
   function signForDownload(fileKey: string, expiresAt: number): string {
-    return createHmac("sha256", options.secret).update(`download:${fileKey}:${expiresAt}`).digest("hex");
+    return createHmac("sha256", options.secret).update(framed("download", fileKey, expiresAt)).digest("hex");
+  }
+
+  // The only fileKeys this storage ever mints are
+  // `uploads/<owner>/<contentHash>.<ext>` - signUpload just below, and
+  // apps/jobs/src/tasks/dossier.ts's store(), which only ever calls
+  // signUpload and never builds a key by hand. signUpload already runs
+  // SAFE_KEY_SEGMENT over owner and contentHash before it mints one;
+  // signDownload has no such call in front of it - a caller hands it a
+  // fileKey directly - so it has to hold that same line itself, before it
+  // ever signs anything. Checked segment by segment, not as one regex over
+  // the whole string, so nothing - a colon, a stray "/", any other
+  // character - can smuggle itself into what looks like the owner, the
+  // hash, or the extension.
+  function isSafeFileKey(fileKey: string): boolean {
+    const parts = fileKey.split("/");
+    // `noUncheckedIndexedAccess` types every element of a non-tuple array as
+    // `string | undefined`, so the length check above cannot narrow `parts[1]`
+    // and `parts[2]` for TypeScript even though it guarantees them at
+    // runtime - checked explicitly rather than asserted away.
+    const [prefix, owner, nameAndExt] = parts;
+    if (parts.length !== 3 || prefix !== "uploads" || owner === undefined || nameAndExt === undefined) {
+      return false;
+    }
+    const dot = nameAndExt.lastIndexOf(".");
+    if (dot <= 0) return false;
+    const contentHash = nameAndExt.slice(0, dot);
+    const extension = nameAndExt.slice(dot + 1);
+    return SAFE_KEY_SEGMENT.test(owner) && SAFE_KEY_SEGMENT.test(contentHash) && SAFE_KEY_SEGMENT.test(extension);
   }
 
   // Every fileKey - whether minted by signUpload or handed in directly by a
@@ -216,6 +274,17 @@ export function createLocalStorage(options: {
     },
 
     async signDownload(fileKey): Promise<SignedDownload> {
+      // Critical finding: this used to accept any string that merely didn't
+      // escape the storage root, which is a much looser bar than the shape
+      // this storage actually mints - and a caller-supplied fileKey outside
+      // that shape (embedded colons, extra segments) is exactly what let a
+      // download signature be replayed as an upload signature for an
+      // attacker-chosen key, size and hash (see the comment on `sign`
+      // above). Refusing anything that is not `uploads/<owner>/<hash>.<ext>`
+      // closes that off at the source, before framing even comes into it.
+      if (!isSafeFileKey(fileKey)) {
+        throw new Error(`refusing unsafe fileKey: ${fileKey}`);
+      }
       // Resolved through pathFor purely to refuse a key that escapes the
       // storage root before it can ever be signed - same discipline as
       // signUpload, even though a download never touches the filesystem
