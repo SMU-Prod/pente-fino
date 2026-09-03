@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { createHash } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -358,6 +358,105 @@ describe("local storage", () => {
         // expected: the adapter must refuse, not write outside root.
       }
       expect(existsSync(outsideMarker)).toBe(false);
+    });
+  });
+
+  // --- RF-242: signDownload/verifyDownload. signDownload does not check
+  // exists() - that is deliberately the caller's question (Task 4 checks it
+  // first, so an already-expired file gets an honest "deleted on" marker
+  // instead of a dead link) - so these tests sign fileKeys that were never
+  // put(), the same way a real export would sign a key it read off an old
+  // events row without touching the file first.
+
+  describe("signed downloads", () => {
+    it("signs a download and returns a url carrying the file key and a signature", async () => {
+      const s = storage();
+      const signed = await s.signDownload("dossiers/case123/report.pdf");
+      expect(signed.url).toContain("dossiers/case123/report.pdf");
+      expect(signed.url).toContain("sig=");
+    });
+
+    it("accepts a fresh download signature", async () => {
+      const s = storage();
+      const signed = await s.signDownload("dossiers/case123/report.pdf");
+      expect(s.verifyDownload(signed.url)).toMatchObject({
+        fileKey: "dossiers/case123/report.pdf",
+        valid: true,
+      });
+    });
+
+    it("rejects the download signature after fifteen minutes, because the fake honours the real contract", async () => {
+      const s = storage();
+      const signed = await s.signDownload("dossiers/case123/report.pdf");
+      clock += 15 * 60 * 1000 + 1;
+      expect(s.verifyDownload(signed.url)).toMatchObject({ valid: false, reason: "expired" });
+    });
+
+    it("accepts a download signature at exactly the fifteen-minute boundary", async () => {
+      const s = storage();
+      const signed = await s.signDownload("dossiers/case123/report.pdf");
+      clock += 15 * 60 * 1000;
+      expect(s.verifyDownload(signed.url)).toMatchObject({ valid: true });
+    });
+
+    it("rejects a tampered download signature", async () => {
+      const s = storage();
+      const signed = await s.signDownload("dossiers/case123/report.pdf");
+      expect(s.verifyDownload(signed.url.replace(/sig=[0-9a-f]+/, "sig=deadbeef"))).toMatchObject({
+        valid: false,
+        reason: "bad_signature",
+      });
+    });
+
+    it("rejects a modified file key", async () => {
+      const s = storage();
+      const signed = await s.signDownload("dossiers/case123/report.pdf");
+      const tampered = signed.url.replace("dossiers/case123/report.pdf", "dossiers/case123/other.pdf");
+      expect(s.verifyDownload(tampered)).toMatchObject({ valid: false, reason: "bad_signature" });
+    });
+
+    it("rejects a malformed download URL without throwing", () => {
+      const s = storage();
+      expect(() => s.verifyDownload("not-a-url-at-all")).not.toThrow();
+      expect(s.verifyDownload("not-a-url-at-all")).toMatchObject({ valid: false });
+      expect(() => s.verifyDownload("")).not.toThrow();
+      expect(() => s.verifyDownload("local://dossiers/x.pdf?exp=notanumber&sig=zz")).not.toThrow();
+    });
+
+    it("rejects a fileKey that escapes the storage root before it is ever signed", async () => {
+      const s = storage();
+      await expect(s.signDownload("../../evil.bin")).rejects.toThrow();
+    });
+
+    // --- Domain separation: a download signature must never be replayed as
+    // an upload signature, and vice versa (see the comment on
+    // `signForDownload` in local.ts).
+
+    it("refuses a genuine upload URL's signature when it is presented to verifyDownload", async () => {
+      const s = storage();
+      const upload = await s.signUpload({
+        owner, contentHash: "abc", mimeType: "application/pdf", sizeBytes: 1000,
+      });
+      expect(s.verifyDownload(upload.uploadUrl)).toMatchObject({ valid: false });
+    });
+
+    it("refuses a genuine download URL's signature when it is presented to verify", async () => {
+      const s = storage();
+      const download = await s.signDownload(`uploads/${owner}/abc.pdf`);
+      expect(s.verify(download.url)).toMatchObject({ valid: false });
+    });
+
+    it("refuses a signature computed without the 'download' purpose tag, proving the tag is load-bearing", async () => {
+      const s = storage();
+      const fileKey = "dossiers/case123/report.pdf";
+      const expiresAt = clock + 15 * 60 * 1000;
+      // What signForDownload's digest would be if the literal "download:"
+      // prefix were dropped from its HMAC input - simulating a signature
+      // minted for some other purpose under the same secret over the bare
+      // (fileKey, expiresAt) pair that domain separation exists to keep out.
+      const forgedSig = createHmac("sha256", "test-secret").update(`${fileKey}:${expiresAt}`).digest("hex");
+      const forgedUrl = `local://${fileKey}?exp=${expiresAt}&sig=${forgedSig}`;
+      expect(s.verifyDownload(forgedUrl)).toMatchObject({ valid: false, reason: "bad_signature" });
     });
   });
 });

@@ -2,9 +2,22 @@ import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { sniffMimeType } from "@pentefino/core";
-import type { SignedUpload, Storage } from "@pentefino/core/ports";
+import type { SignedDownload, SignedUpload, Storage } from "@pentefino/core/ports";
 
 const TTL_MS = 5 * 60 * 1000;
+
+// RF-242's export bundle puts signed download links inside a JSON file the
+// person downloads and can keep or forward - unlike an upload URL (used once,
+// immediately, by the browser that just requested it, never persisted
+// anywhere), a download link's exposure window is however long that JSON
+// file survives on whatever disk, inbox or chat it ends up in. 15 minutes is
+// long enough to cover the export request/response round trip and a person
+// opening the file shortly after downloading it, and short enough that a
+// file forwarded or archived even an hour later carries dead links - while
+// staying two orders of magnitude under the 30-day retention window the
+// underlying object still has, so the link can never outlive what it points
+// to by any meaningful margin.
+const DOWNLOAD_TTL_MS = 15 * 60 * 1000;
 
 // Content hashes are hex/base64url digests and owners are ids minted by
 // newId() (nanoid's default alphabet), never arbitrary strings. Anything
@@ -13,6 +26,7 @@ const TTL_MS = 5 * 60 * 1000;
 const SAFE_KEY_SEGMENT = /^[A-Za-z0-9_-]+$/;
 
 const UPLOAD_URL_PATTERN = /^local:\/\/(.+)\?exp=(\d+)&size=(\d+)&hash=([A-Za-z0-9_-]+)&sig=([0-9a-f]+)$/;
+const DOWNLOAD_URL_PATTERN = /^local:\/\/(.+)\?exp=(\d+)&sig=([0-9a-f]+)$/;
 
 // Node's fs errors carry a `code` string; anything else about the shape of
 // `error` is not something we want to assume.
@@ -52,6 +66,21 @@ export function createLocalStorage(options: {
     return createHmac("sha256", options.secret)
       .update(`${fileKey}:${expiresAt}:${sizeBytes}:${contentHash}`)
       .digest("hex");
+  }
+
+  // Domain-separated from `sign()` above by the literal "download" tag in
+  // the HMAC input. An upload signature is computed over four fields
+  // (fileKey, expiresAt, sizeBytes, contentHash), so it already can't
+  // collide with a bare (fileKey, expiresAt) pair - but a download
+  // signature has only those two fields to work with, and nothing else
+  // would stop a HMAC-SHA256 digest of `${fileKey}:${expiresAt}` computed
+  // for some unrelated purpose under the same secret from being replayed
+  // here. The tag makes the two signature domains cryptographically
+  // distinct by construction, not by accident of which fields happen to be
+  // present - so a signature minted for one purpose can never verify as the
+  // other.
+  function signForDownload(fileKey: string, expiresAt: number): string {
+    return createHmac("sha256", options.secret).update(`download:${fileKey}:${expiresAt}`).digest("hex");
   }
 
   // Every fileKey - whether minted by signUpload or handed in directly by a
@@ -177,6 +206,37 @@ export function createLocalStorage(options: {
         string,
       ];
       const expected = sign(fileKey, Number(exp), Number(size), hash);
+      const a = Buffer.from(sig, "hex");
+      const b = Buffer.from(expected, "hex");
+      if (a.length !== b.length || !timingSafeEqual(a, b)) {
+        return { fileKey, valid: false, reason: "bad_signature" };
+      }
+      if (now() > Number(exp)) return { fileKey, valid: false, reason: "expired" };
+      return { fileKey, valid: true };
+    },
+
+    async signDownload(fileKey): Promise<SignedDownload> {
+      // Resolved through pathFor purely to refuse a key that escapes the
+      // storage root before it can ever be signed - same discipline as
+      // signUpload, even though a download never touches the filesystem
+      // here. Existence is deliberately not checked: that is the caller's
+      // question (RF-242's export handler checks it first, so an
+      // already-deleted file gets an honest "deleted on" marker instead of
+      // a dead link), not this method's.
+      pathFor(fileKey);
+      const expiresAt = now() + DOWNLOAD_TTL_MS;
+      const sig = signForDownload(fileKey, expiresAt);
+      return {
+        url: `local://${fileKey}?exp=${expiresAt}&sig=${sig}`,
+        expiresAt: new Date(expiresAt).toISOString(),
+      };
+    },
+
+    verifyDownload(url) {
+      const match = DOWNLOAD_URL_PATTERN.exec(url);
+      if (!match) return { fileKey: "", valid: false, reason: "bad_signature" };
+      const [, fileKey, exp, sig] = match as unknown as [string, string, string, string];
+      const expected = signForDownload(fileKey, Number(exp));
       const a = Buffer.from(sig, "hex");
       const b = Buffer.from(expected, "hex");
       if (a.length !== b.length || !timingSafeEqual(a, b)) {

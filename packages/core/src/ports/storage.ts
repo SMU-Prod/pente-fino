@@ -1,5 +1,7 @@
 export type SignedUpload = { uploadUrl: string; fileKey: string; expiresAt: string };
 
+export type SignedDownload = { url: string; expiresAt: string };
+
 export type Storage = {
   // `owner` is the same identifier RF-102's dedup index keys on -
   // `coalesce(user_id, session_id)` - and the caller (a route, which knows
@@ -16,4 +18,13 @@ export type Storage = {
   exists(fileKey: string): Promise<boolean>;
   delete(fileKey: string): Promise<void>;
   verify(uploadUrl: string): { fileKey: string; valid: boolean; reason?: "expired" | "bad_signature" };
+  // Signs a short-lived download link for a fileKey that is assumed to
+  // already exist. This method does not check `exists()` - existence is the
+  // caller's question, not the signer's: RF-242's export handler checks it
+  // first so an already-expired file gets an honest "deleted on" marker
+  // instead of a dead link, rather than paying a storage round trip here for
+  // a check every caller would have to make anyway to tell the two cases
+  // apart.
+  signDownload(fileKey: string): Promise<SignedDownload>;
+  verifyDownload(url: string): { fileKey: string; valid: boolean; reason?: "expired" | "bad_signature" };
 };
