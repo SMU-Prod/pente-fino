@@ -69,6 +69,7 @@ export const TARGET_PATHS = ["/"];
 const KNOWN_FUTURE_ROUTES = [
   { path: "/laudo/[id]", file: join("laudo", "[id]", "page.tsx") },
   { path: "/l/[token]", file: join("l", "[token]", "page.tsx") },
+  { path: "/caso/[id]", file: join("caso", "[id]", "page.tsx") },
 ];
 
 /** Themes RNF-10 asks to be verified in — set via `data-theme` per packages/ui/src/tokens.css. */

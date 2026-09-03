@@ -38,6 +38,7 @@ const urls = [`http://localhost:${PORT}/`];
 for (const [route, file] of [
   ["/laudo/[id]", join("app", "laudo", "[id]", "page.tsx")],
   ["/l/[token]", join("app", "l", "[token]", "page.tsx")],
+  ["/caso/[id]", join("app", "caso", "[id]", "page.tsx")],
 ]) {
   if (existsSync(join(__dirname, file))) {
     console.warn(
@@ -52,11 +53,20 @@ module.exports = {
   ci: {
     collect: {
       url: urls,
-      // One run keeps this job's cost down; Lighthouse's own guidance is
-      // 3+ runs (median) for stable numbers on noisy hardware. Revisit if
-      // this gate turns out flaky in practice — CI runners are usually
-      // quiet enough for a landing page that this hasn't been necessary.
-      numberOfRuns: 1,
+      // Three runs, median. The previous note here said one run was enough
+      // and to "revisit if this gate turns out flaky in practice". It did,
+      // on 02/09/2026: commit 5f218a5 failed with an LCP of 2278 ms against
+      // the 2000 ms budget, and the *same commit* passed on a re-run with
+      // nothing changed. The First Load JS table was byte-identical between
+      // the two runs (102 kB for `/`), so what moved was the runner, not the
+      // page.
+      //
+      // That is worse than it sounds. A gate that fails randomly gets
+      // re-run until it passes, and a gate people have learned to re-run is
+      // not a gate — it is a delay. Three runs against the median is
+      // Lighthouse's own guidance for noisy hardware, and the cost is about
+      // 25 seconds of CI.
+      numberOfRuns: 3,
       // `pnpm exec next start -p <port>` rather than `pnpm start -- -p
       // <port>`: pnpm's own "--" argument-forwarding mangles the
       // separator into a literal positional arg that `next start`
@@ -106,6 +116,12 @@ module.exports = {
       },
     },
     assert: {
+      // `median`, stated rather than left to the default. lhci's default
+      // aggregation is "optimistic", which for a `maxNumericValue` assertion
+      // takes the *best* of the runs — that would turn three runs into a
+      // licence to pass on the luckiest one, which is the opposite of why
+      // the run count went up.
+      aggregationMethod: "median",
       assertions: {
         // RNF-03: LCP <= 2.0s. Lighthouse's numeric audit value is in ms.
         "largest-contentful-paint": ["error", { maxNumericValue: 2000 }],
