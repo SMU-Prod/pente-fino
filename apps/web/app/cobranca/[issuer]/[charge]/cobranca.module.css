@@ -1,0 +1,301 @@
+/*
+ * RF-280's public content surface, in the language the rest of the product
+ * already speaks: PRD §13.1's tokens only, no invented colour, no shadcn
+ * skin. Every decision here is taken from a screen that already exists —
+ *
+ *   - the page frame, the mono uppercase eyebrow and the Fraunces headline
+ *     are `home.module.css`'s and `laudo/[id]/laudo.module.css`'s, to the
+ *     value (`clamp()` padding, `0.75rem`/`0.08em` eyebrow, `font-weight:
+ *     400` display);
+ *   - the pill that names the issuer is `l/[token]/public.module.css`'s
+ *     `.issuerBadge`, unchanged — the two public pages name a company the
+ *     same way;
+ *   - the hand-drawn underline is the front door's `.marked`/
+ *     `.markedUnderline`, minus its `white-space: nowrap` (a charge name can
+ *     be several words long and must be allowed to wrap on a phone);
+ *   - the stat cards are `laudo.module.css`'s `.statCard`/`.statLabel`/
+ *     `.statValue`, mono and `tabular-nums`, because RF-281's figures are
+ *     numbers on a bill like any other;
+ *   - the hairline rules between sections are `home.module.css`'s `.step`
+ *     border-top, used here to separate long-form blocks instead of a
+ *     three-column grid.
+ *
+ * `--deep` appears exactly once, on the provenance block. §13.1 reserves it
+ * for "seções de confiança", and on this page the block that says where the
+ * text came from — and that it is not a claim about any company — is
+ * precisely that section. The report screen spends it on the confidence
+ * stamp, the case screen on the current rung, the shared report on the call
+ * to action; here it belongs to the disclosure, and nothing else on the page
+ * competes with it.
+ *
+ * `--mark` likewise appears once, as the underline under the charge's own
+ * name in the headline. That is §13.1's "achado, acento": one accent, on the
+ * one thing the reader searched for.
+ */
+
+.page {
+  max-width: 40rem;
+  margin: 0 auto;
+  padding: clamp(1.5rem, 4vw, 3.5rem) 1.25rem 4rem;
+}
+
+/* ----------------------------------------------------------------- head */
+
+/*
+ * §13.1's eyebrow, to the value — mono, 0.75rem, 0.08em, uppercase — with
+ * one deliberate difference from the four screens that already have one:
+ * `--ink-2`, not `--ink-3`.
+ *
+ * Measured, in the browser, on this page's own markup: `--ink-3` on
+ * `--paper` is 3,81:1 in the light theme and 4,69:1 in the dark one, and
+ * `--ink-3` on `--card` (the labels below) is 4,04:1 light and 4,36:1 dark.
+ * Three of those four are under WCAG AA's 4,5:1 for text this size, and
+ * RNF-09 is "axe limpo nos dois temas" with `color-contrast` treated as
+ * fatal by `scripts/check-a11y.mjs`. `--ink-2` measures 8,34:1 and 9,70:1
+ * on the same surfaces.
+ *
+ * `home.module.css`, `laudo.module.css`, `caso.module.css` and
+ * `public.module.css` all still use `--ink-3` here, so they carry the same
+ * measurement; that is a product-wide pairing to revisit, not something to
+ * fix by leaving one more page below the line.
+ */
+.eyebrow {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+  margin: 0 0 0.75rem;
+}
+
+/* `l/[token]`'s `.issuerBadge`, with one deliberate change: its text is
+   `var(--ink)`, not `var(--deep)`. `--deep` is the one token PRD §13.1
+   fixes across both themes, so `--deep` text on a `--card` background is
+   near-black on near-black once the dark palette is in effect (#1E2A2E on
+   #1D1815). `--ink` flips with the theme, which is what a foreground on a
+   themed surface has to do. RNF-09 is "axe limpo nos dois temas", and this
+   page is measured in both. */
+.issuerBadge {
+  display: inline-flex;
+  font-family: var(--font-body);
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--ink);
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 0.3rem 0.85rem;
+  margin: 0 0 1.25rem;
+}
+
+.heading {
+  font-family: var(--font-display);
+  font-weight: 400;
+  font-size: clamp(1.6rem, 4.5vw, 2.4rem);
+  line-height: 1.2;
+  letter-spacing: -0.01em;
+  margin: 0 0 1.25rem;
+  color: var(--ink);
+}
+
+/* The product's signature: the charge's own name reads as if someone had
+   gone down the printed bill with a pen and circled it. */
+.marked {
+  position: relative;
+  display: inline-block;
+}
+
+.markedUnderline {
+  position: absolute;
+  left: -3%;
+  bottom: -0.2em;
+  width: 106%;
+  height: 0.45em;
+  pointer-events: none;
+  color: var(--mark);
+}
+
+.lede {
+  font-size: clamp(1rem, 2.2vw, 1.1rem);
+  line-height: 1.65;
+  color: var(--ink-2);
+  margin: 0 0 2.25rem;
+}
+
+/* ------------------------------------------------------- RF-281's block */
+
+/* Only a top rule: the first content section below carries its own
+   `border-top`, so a `border-bottom` here draws a second hairline a few
+   pixels away from it. Seen in the browser at 375px, not deduced. */
+.aggregate {
+  border-top: 1px solid var(--line);
+  padding: 1.5rem 0 0;
+  margin: 0 0 2.25rem;
+}
+
+.aggregateHeading {
+  font-family: var(--font-display);
+  font-weight: 400;
+  font-size: 1.25rem;
+  line-height: 1.35;
+  margin: 0 0 1rem;
+  color: var(--ink);
+}
+
+.aggregateRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin: 0 0 1rem;
+}
+
+.aggregateCard {
+  flex: 1 1 12rem;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--card);
+  padding: 0.9rem 1.1rem;
+}
+
+/* `--ink-2` rather than the `--ink-3` of `laudo.module.css`'s `.statLabel`
+   — same measurement, same reason as `.eyebrow` above. */
+.aggregateLabel {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+  margin: 0 0 0.35rem;
+}
+
+/* §13.1: every number is mono and tabular, so two figures side by side
+   line up on the digit rather than on the glyph. */
+.aggregateValue {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 1.35rem;
+  color: var(--ink);
+  margin: 0;
+}
+
+/* `--ink-2` for the same measured reason as `.eyebrow` — and this one is a
+   full sentence the reader has to actually read, since it is what says the
+   figures above are cumulative. */
+.aggregateNote {
+  margin: 0;
+  font-size: 0.85rem;
+  line-height: 1.6;
+  color: var(--ink-2);
+}
+
+/* -------------------------------------------------------------- content */
+
+.section {
+  border-top: 1px solid var(--line);
+  padding-top: 1.5rem;
+  margin: 0 0 2rem;
+}
+
+.section h2 {
+  font-family: var(--font-display);
+  font-weight: 400;
+  font-size: 1.35rem;
+  line-height: 1.3;
+  margin: 0 0 0.9rem;
+  color: var(--ink);
+}
+
+.section p {
+  margin: 0 0 1rem;
+  font-size: 1rem;
+  line-height: 1.7;
+  color: var(--ink-2);
+}
+
+.section p:last-child {
+  margin-bottom: 0;
+}
+
+.section h3 {
+  font-family: var(--font-body);
+  font-weight: 600;
+  font-size: 1rem;
+  line-height: 1.5;
+  margin: 1.5rem 0 0.5rem;
+  color: var(--ink);
+}
+
+.section h3:first-of-type {
+  margin-top: 0;
+}
+
+/* --------------------------------------------- the one confidence surface */
+
+/*
+ * The foreground here is the literal `#F3EEE7`, not `var(--paper)`, and
+ * that is deliberate — it is what `home.module.css`'s `.progress` and
+ * `caso.module.css`'s `.rungCurrent` already do on this same surface.
+ * `--deep` is the one token §13.1 gives a single value for in both themes
+ * (see `tokens.css`: "--deep is intentionally absent" from the dark
+ * block), so anything painted on it must be theme-independent too.
+ * `var(--paper)` is not: under the dark palette it is #14100E, which on
+ * #1E2A2E is unreadable. #F3EEE7 is not an invented colour either — it is
+ * §13.1's own dark-theme `--ink`, i.e. the value this design system already
+ * uses for light text.
+ *
+ * The body text carries no `opacity`, for the same reason: dimming the one
+ * paragraph that says "this is not a claim that any company did anything
+ * wrong" is the wrong thing to make quieter, and it costs contrast the
+ * dark theme has none to spare.
+ */
+.provenance {
+  background: var(--deep);
+  color: #F3EEE7;
+  border-radius: 14px;
+  padding: 1.75rem 1.5rem;
+  margin: 2.5rem 0 0;
+}
+
+.provenance h2 {
+  font-family: var(--font-display);
+  font-weight: 400;
+  font-size: 1.2rem;
+  line-height: 1.35;
+  margin: 0 0 0.75rem;
+  color: #F3EEE7;
+}
+
+.provenance p {
+  margin: 0;
+  font-size: 0.92rem;
+  line-height: 1.7;
+  color: #F3EEE7;
+}
+
+/* ------------------------------------------------------------- the 404 */
+
+.accessState {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  align-items: flex-start;
+  padding: 3rem 0;
+}
+
+.empty {
+  font-family: var(--font-display);
+  font-size: 1.15rem;
+  line-height: 1.6;
+  color: var(--ink-2);
+  border: 1px dashed var(--line);
+  border-radius: 12px;
+  padding: 2rem 1.5rem;
+  text-align: center;
+  margin: 0;
+  width: 100%;
+}
+
+.backLink {
+  color: var(--ink-2);
+  font-weight: 600;
+}
