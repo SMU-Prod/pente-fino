@@ -25,7 +25,26 @@ import styles from "./admin.module.css";
  * (`RuleActions`, `ProposalActions`, `NewRuleForm`) call `router.refresh()`
  * after a write instead of updating local state, so what an admin sees
  * after clicking is what the database actually committed.
+ *
+ * **`dynamic = "force-dynamic"` is not a performance knob here — it is the
+ * fix for a real bug this exact commit shipped.** Unlike `/laudo/[id]` and
+ * `/caso/[id]`, this route has no dynamic path segment, so Next.js's
+ * default behaviour is to try to *prerender it once at build time* and
+ * serve that same static HTML to every visitor. `container()` calls
+ * `getUnscopedDb()` before this function ever reaches a dynamic API
+ * (`cookies()`, inside `requireAdmin`), so in a build environment with no
+ * `DATABASE_URL` — exactly CI, and exactly what caught this — the build
+ * fails loudly. That is the *good* outcome. The bad one, which this
+ * directive also rules out, is a CI environment where `DATABASE_URL`
+ * happens to be reachable at build time: Next would have gladly baked one
+ * admin's overview and rule list into a static page served to every future
+ * visitor regardless of their own session — or cached `notFound()` for
+ * everyone if the build-time render had none. `force-dynamic` makes every
+ * request re-run `requireAdmin` for real, the way `apps/web/app/api/
+ * cron/[task]/route.ts` already forces the same thing for the same reason.
  */
+export const dynamic = "force-dynamic";
+
 export default async function AdminPage() {
   const { db } = container();
   const admin = await requireAdmin(db);
