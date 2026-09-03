@@ -1,6 +1,17 @@
 import type { NextConfig } from "next";
 
 const config: NextConfig = {
+  // RNF-03: LCP <= 2.0s on 4G. Measured at 2.4s with two separate
+  // render-blocking stylesheets - 1.5 kB and 2.0 kB - costing an estimated
+  // 820 ms between them. Not their size: their *count*. Two extra round
+  // trips on Lighthouse's mobile profile, for 3.5 kB of CSS that fits
+  // comfortably inside the document itself.
+  //
+  // `inlineCss` puts them in the HTML, so the first response carries
+  // everything the first paint needs. Measured before and after; the
+  // numbers are in the commit message.
+  experimental: { inlineCss: true },
+
   transpilePackages: [
     "@pentefino/core", "@pentefino/db", "@pentefino/adapters", "@pentefino/ai", "@pentefino/jobs", "@pentefino/ui",
   ],
