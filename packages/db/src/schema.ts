@@ -49,6 +49,20 @@ export const users = pgTable("users", {
   emailForwardToken: text("email_forward_token").unique(), // u-3f9a → inbound
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  // RF-245's consent to feed the anonymous aggregate base. A nullable
+  // timestamptz, not a boolean defaulting false: absence *is* "off", so
+  // refusal is the default by construction rather than by a default value
+  // someone could later change, and when it is on the row also carries the
+  // moment the person said yes, which a boolean would throw away.
+  // Withdrawal sets this back to NULL — the fact that a withdrawal
+  // happened lives in `events` (`consent_withdrawn`), not here, because
+  // this column only ever holds the current answer, never its history.
+  aggregateConsentAt: timestamp("aggregate_consent_at", { withTimezone: true }),
+  // The moment the person asked for the account to be destroyed (RF-243).
+  // Not a soft delete of the §6.1 "requisito legal de rastro" kind — the
+  // purge job deletes the row outright. This is a *pending* marker: while
+  // it is set the account is already unreachable, and its presence is what
+  // makes the row eligible for that purge job to pick up.
   deletedAt: timestamp("deleted_at", { withTimezone: true }),
 }, (t) => ({
   planValues: check("users_plan_values", sql`${t.plan} in ('free','premium')`),
