@@ -6,8 +6,8 @@ import {
 import { getUnscopedDb } from "./client.js";
 import { settleCaseFindings } from "./case-close.js";
 import {
-  anonymousSessions, caseDocuments, caseProtocols, cases, events, findings, invoiceItems, invoices, issuers, rules,
-  users,
+  anonymousSessions, caseDocuments, caseProtocols, cases, entitlements, events, findings, invoiceItems, invoices,
+  issuers, rules, users,
 } from "./schema.js";
 
 export type Session = { userId: string } | { sessionId: string };
@@ -248,6 +248,26 @@ type NewCaseDocument = {
 };
 
 /**
+ * The exact column list `account()` (Task 2) and `exportBundle()` (RF-242,
+ * Task 4) both need, factored out so the second caller reuses this select
+ * rather than repeating it - see `account()`'s own doc comment for what is
+ * included here and why. `userId` is assumed already proven non-null by
+ * both callers (the `{ sessionId }` short-circuit happens before either one
+ * reaches here), so this always queries for a real caller.
+ */
+async function accountRow(db: Db, userId: string) {
+  const [row] = await db.select({
+    id: users.id,
+    email: users.email,
+    plan: users.plan,
+    createdAt: users.createdAt,
+    aggregateConsentAt: users.aggregateConsentAt,
+    deletedAt: users.deletedAt,
+  }).from(users).where(eq(users.id, userId));
+  return row ?? null;
+}
+
+/**
  * The single door to user data (INV-008). Every read and write here carries
  * the ownership filter, and the eslint rule `require-with-user` stops any
  * other module outside `packages/db` from reaching around it, in four ways:
@@ -321,15 +341,7 @@ export function withUser(session: Session, db: Db = getUnscopedDb()) {
      */
     async account() {
       if (!userId) return null;
-      const [row] = await db.select({
-        id: users.id,
-        email: users.email,
-        plan: users.plan,
-        createdAt: users.createdAt,
-        aggregateConsentAt: users.aggregateConsentAt,
-        deletedAt: users.deletedAt,
-      }).from(users).where(eq(users.id, userId));
-      return row ?? null;
+      return accountRow(db, userId);
     },
 
     /**
@@ -389,6 +401,96 @@ export function withUser(session: Session, db: Db = getUnscopedDb()) {
           .from(users).where(eq(users.id, userId));
         return current?.aggregateConsentAt ?? null;
       });
+    },
+
+    /**
+     * RF-242's complete export (Task 4, E8) - everything this account owns,
+     * assembled in one place inside `packages/db` rather than as eight
+     * calls stitched together in a route. Every table here is reached
+     * through the same ownership filter the rest of this file already uses
+     * for it: `invoices` and `events` by their own `userId` (same predicate
+     * `invoices()`/`events()` use above); `cases` by `userId` (same as
+     * `cases()`); `entitlements` by `userId`, new to this method because
+     * nothing before it ever needed a caller's own entitlements back.
+     * `invoiceItems`/`findings` and `caseDocuments`/`caseProtocols` have no
+     * owner column of their own - the same reason `findingsForInvoice` and
+     * `caseDetail` join through `invoices`/`cases` to reach them - so they
+     * are filtered here to the id lists the owned `invoices`/`cases`
+     * queries just produced. That is the same join-through proof those two
+     * methods make, applied once over every owned parent at once instead of
+     * one invoice or case at a time: an id can only appear in
+     * `invoiceIds`/`caseIds` by having already passed `eq(invoices.userId,
+     * userId)` / `eq(cases.userId, userId)` immediately above, so a child
+     * row can only be pulled in by way of a parent this call already proved
+     * belongs to the caller. `inArray(col, [])` compiles to `false`
+     * (`createCase`'s own note on the same point), so an account with no
+     * invoices or cases yet gets empty arrays back rather than a query
+     * needing to special-case them.
+     *
+     * **Plain data only - no signed links, no storage access.** This
+     * package has no `Storage` dependency today, and RF-242's honest
+     * "deleted on X" marker for an already-expired file needs
+     * `storage.exists`, which only the route - holding the real adapter -
+     * can call. Handing back `invoices` and `events` exactly as stored
+     * (`fileKey` included, `dossier_generated`'s `payload.fileKey` included)
+     * is what lets the route do that work without a second round trip back
+     * into this file.
+     *
+     * **`formatVersion`** is a plain integer, unrelated to any count or id
+     * already in this bundle, so a person who keeps an old export - or a
+     * future tool built to read one - can tell a later shape change apart
+     * from this one without guessing from which keys happen to be present.
+     * It is bumped only when a key is removed, renamed, or changes meaning;
+     * adding a key is free, the same rule `events.ts`'s own header states
+     * for event names.
+     *
+     * **An anonymous session returns `null`**, the same short-circuit
+     * `account()` and `cases()` use above and for the same reason: §8.2
+     * puts this endpoint under `/api/me`, and a session with no `users` row
+     * has no "me" to export.
+     */
+    async exportBundle() {
+      if (!userId) return null;
+      const account = await accountRow(db, userId);
+      if (!account) return null;
+
+      const [invoiceRows, caseRows, entitlementRows, eventRows] = await Promise.all([
+        db.select().from(invoices).where(eq(invoices.userId, userId)).orderBy(desc(invoices.createdAt)),
+        db.select().from(cases).where(eq(cases.userId, userId)).orderBy(desc(cases.createdAt)),
+        db.select().from(entitlements).where(eq(entitlements.userId, userId)).orderBy(desc(entitlements.createdAt)),
+        db.select().from(events).where(eq(events.userId, userId)).orderBy(desc(events.occurredAt)),
+      ]);
+
+      const invoiceIds = invoiceRows.map((row) => row.id);
+      const caseIds = caseRows.map((row) => row.id);
+
+      const [itemRows, findingRows, documentRows, protocolRows] = await Promise.all([
+        db.select().from(invoiceItems)
+          .where(inArray(invoiceItems.invoiceId, invoiceIds))
+          .orderBy(invoiceItems.invoiceId, invoiceItems.lineNo),
+        db.select().from(findings)
+          .where(inArray(findings.invoiceId, invoiceIds))
+          .orderBy(findings.createdAt, findings.id),
+        db.select().from(caseDocuments)
+          .where(inArray(caseDocuments.caseId, caseIds))
+          .orderBy(caseDocuments.createdAt, caseDocuments.id),
+        db.select().from(caseProtocols)
+          .where(inArray(caseProtocols.caseId, caseIds))
+          .orderBy(caseProtocols.registeredAt, caseProtocols.id),
+      ]);
+
+      return {
+        formatVersion: 1,
+        account,
+        invoices: invoiceRows,
+        invoiceItems: itemRows,
+        findings: findingRows,
+        cases: caseRows,
+        caseDocuments: documentRows,
+        caseProtocols: protocolRows,
+        entitlements: entitlementRows,
+        events: eventRows,
+      };
     },
 
     /**

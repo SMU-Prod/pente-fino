@@ -17,7 +17,12 @@ const TTL_MS = 5 * 60 * 1000;
 // staying two orders of magnitude under the 30-day retention window the
 // underlying object still has, so the link can never outlive what it points
 // to by any meaningful margin.
-const DOWNLOAD_TTL_MS = 15 * 60 * 1000;
+//
+// Exported (unlike the upload TTL_MS above) so the export route's own
+// user-facing copy (`apps/web/app/api/me/export/copy.ts`) can state this
+// exact number instead of carrying a second, hand-typed "15 minutes" that
+// this value could silently drift away from.
+export const DOWNLOAD_TTL_MS = 15 * 60 * 1000;
 
 // Content hashes are hex/base64url digests and owners are ids minted by
 // newId() (nanoid's default alphabet), never arbitrary strings. Anything

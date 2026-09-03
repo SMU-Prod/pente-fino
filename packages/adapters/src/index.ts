@@ -12,7 +12,7 @@ import { createLocalMailer } from "./mailer/local.js";
 import { createInProcessQueue, type TaskHandler } from "./queue/in-process.js";
 import { createLocalStorage } from "./storage/local.js";
 
-export { createLocalStorage } from "./storage/local.js";
+export { createLocalStorage, DOWNLOAD_TTL_MS } from "./storage/local.js";
 export { createInProcessQueue, type TaskHandler } from "./queue/in-process.js";
 export { createFixtureAiProvider } from "./ai/fixture.js";
 export { createGatewayAiProvider } from "./ai/gateway.js";
