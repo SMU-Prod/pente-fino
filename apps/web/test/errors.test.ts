@@ -2,10 +2,14 @@ import { describe, expect, it } from "vitest";
 import { ERROR_CATALOGUE, apiError } from "../lib/errors.js";
 
 describe("error catalogue", () => {
-  it("covers exactly the seven codes of PRD §8.1", () => {
+  // PRD §8.1's seven codes, plus the two E11 Task 4 added for the admin
+  // panel's HTTP surface (`rule_invalid`, `proposal_conflict`) — §8.1's own
+  // catalogue has no admin-facing entry, since the admin panel did not exist
+  // when it was written.
+  it("covers exactly the seven codes of PRD §8.1 plus block E11's two admin codes", () => {
     expect(Object.keys(ERROR_CATALOGUE).sort()).toEqual([
       "extraction_failed", "file_too_large", "forbidden", "not_found",
-      "quota_exceeded", "rate_limited", "unsupported_type",
+      "proposal_conflict", "quota_exceeded", "rate_limited", "rule_invalid", "unsupported_type",
     ]);
   });
 

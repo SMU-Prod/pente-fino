@@ -7,6 +7,15 @@ export const ERROR_CATALOGUE = {
   rate_limited: { http: 429, message: "Muitos envios seguidos. Aguarde um minuto." },
   not_found: { http: 404, message: "Não encontramos esse item." },
   forbidden: { http: 403, message: "Você não tem acesso a esse item." },
+  // E11 Task 4 — the admin panel's HTTP surface.
+  rule_invalid: {
+    http: 422,
+    message: "Essa versão da regra não passou na validação. Corrija os campos indicados e envie de novo.",
+  },
+  proposal_conflict: {
+    http: 409,
+    message: "Não foi possível aplicar essa decisão agora. Atualize a lista de propostas e tente de novo.",
+  },
 } as const;
 
 export type ErrorCode = keyof typeof ERROR_CATALOGUE;
