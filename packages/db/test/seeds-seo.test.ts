@@ -132,6 +132,57 @@ describe("seo_pages seed", () => {
     }
   });
 
+  // The check above only walks `SEO_ISSUER_VOICES`, which every *dynamic*
+  // section mention (`sectionsPhrase`, used by `whyItAppears`, `howToCheck`
+  // and `svaSectionPage`'s own intro/heading) is generated from.
+  // `SVA_ISSUER_FAQ` is not: it is a `Record` of hand-written literals, so a
+  // rename in `issuers.ts` can leave a quoted section name — or a stated
+  // count, "São dois nomes de seção" — wrong on a live page while the check
+  // above stays green. This asserts both against the same seeded `sections`
+  // column, over every "what is an SVA section" page's full text.
+  it("keeps every SVA page's quoted section names and stated counts in sync with issuers.sections", async () => {
+    const rows = await ctx.db
+      .select({ slug: schema.issuers.slug, sections: schema.issuers.sections })
+      .from(schema.issuers);
+    const seeded = new Map(rows.map((r) => [r.slug, r.sections ?? []]));
+
+    // Curly-quoted phrases the corpus deliberately writes that are NOT a
+    // claim about `issuers.sections`: TIM's FAQ quotes the generic term in
+    // lowercase and without "(SVA)", precisely because it is not repeating
+    // the section's exact printed form; Vivo's FAQ quotes a sub-package name
+    // ("Serviços Digitais III", §7.1.1) and an item's own bill text, neither
+    // of which is one of Vivo's four section names.
+    const NON_SECTION_QUOTES = new Set([
+      "serviços de valor adicionado",
+      "Serviços Digitais III",
+      "Serviços de Terceiro TDATA",
+    ]);
+    const QUOTE = /“([^”]+)”/gu;
+    const COUNT_CLAIM = /\bSão\s+(um|dois|três|quatro|cinco)\s+nomes?\s+de\s+seç/giu;
+    const COUNT_WORD_VALUE: Record<string, number> = { um: 1, dois: 2, três: 3, quatro: 4, cinco: 5 };
+
+    for (const page of SEO_PAGES.filter((p) => p.chargeSlug === "servicos-de-valor-adicionado")) {
+      const sections = seeded.get(page.issuerSlug) ?? [];
+      const text = [
+        page.content.intro,
+        ...page.content.sections.flatMap((s) => [s.heading, ...s.paragraphs]),
+        ...page.content.faq.flatMap((f) => [f.question, f.answer]),
+      ].join("\n");
+
+      for (const match of text.matchAll(QUOTE)) {
+        const quoted = match[1]!;
+        if (NON_SECTION_QUOTES.has(quoted)) continue;
+        expect(sections, `${page.issuerSlug} quotes “${quoted}” as a section name`).toContain(quoted);
+      }
+
+      for (const match of text.matchAll(COUNT_CLAIM)) {
+        const word = match[1]!.toLowerCase();
+        expect(sections.length, `${page.issuerSlug} claims "São ${word} nomes de seção"`)
+          .toBe(COUNT_WORD_VALUE[word]);
+      }
+    }
+  });
+
   // The six "what is an SVA section" pages name the items this corpus has a
   // page for, so a reader on the TIM page is not told there is nothing to
   // name while `tim-movel/ubook` ships. A pointer to a page that does *not*

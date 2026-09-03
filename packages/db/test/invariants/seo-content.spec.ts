@@ -144,21 +144,34 @@ const ACCUSATORY_PHRASES = ["má-fé", "de propósito"];
  * writes "sem cancelar", "sem mexer no plano" and "sem abreviar", which is
  * why the verb and noun lists below are enumerated rather than left as a
  * wildcard after "sem".
+ *
+ * Every alternative is anchored with a left word boundary
+ * (`(?<![\p{L}\p{N}])`) before "sem" itself. Without it, "sem" matches as a
+ * bare substring wherever it happens to occur inside a longer word —
+ * "quisessem contratar" ends in "...s-sem", and "sem" immediately followed
+ * by "\s+contratar" would read as the "sem <verbo>" construction even though
+ * no one wrote "sem" there at all. `"sem <substantivo>"` also allows an
+ * optional possessive between "sem" and the noun ("sem minha autorização",
+ * "sem meu consentimento" say the identical thing "sem autorização" says),
+ * and "contrato" was added to the noun list and "eu" to the pronoun
+ * alternation of `"sem que <alguém> …"` ("sem que eu pedisse" is the same
+ * construction as "sem que o cliente pedisse", just first person).
  */
 const ACCUSATORY_CONSTRUCTIONS: ReadonlyArray<{ label: string; source: string }> = [
   {
     label: "sem que <alguém> …",
-    source: "sem\\s+que\\s+(?:o|a|os|as|voce|voces|ninguem|nenhum|nenhuma|alguem)\\b",
+    source:
+      "(?<![\\p{L}\\p{N}])sem\\s+que\\s+(?:o|a|os|as|eu|voce|voces|ninguem|nenhum|nenhuma|alguem)\\b",
   },
   {
     label: "sem <verbo>",
     source:
-      "sem\\s+(?:pedir|solicitar|avisar|informar|comunicar|autorizar|consentir|saber|perceber|combinar|contratar|querer|assinar)\\b",
+      "(?<![\\p{L}\\p{N}])sem\\s+(?:pedir|solicitar|avisar|informar|comunicar|autorizar|consentir|saber|perceber|combinar|contratar|querer|assinar)\\b",
   },
   {
     label: "sem <substantivo>",
     source:
-      "sem\\s+(?:autorizacao|consentimento|aviso|permissao|aceite|conhecimento|contratacao|pedido|solicitacao|anuencia|previo\\s+aviso)\\b",
+      "(?<![\\p{L}\\p{N}])sem\\s+(?:minha|meu|sua|seu)?\\s*(?:autorizacao|consentimento|aviso|permissao|aceite|conhecimento|contratacao|contrato|pedido|solicitacao|anuencia|previo\\s+aviso)\\b",
   },
 ];
 
@@ -200,26 +213,28 @@ const CORPUS_PRODUCT_WORDS = [
 ];
 
 /**
- * Capitalised words the corpus writes that name no company at all: ordinary
- * Portuguese words at the start of a sentence, the bill-section names quoted
- * verbatim off `issuers.sections`, and the norms and file formats the pages
- * mention. Long and boring on purpose — its length is what makes the guard
- * above cheap to satisfy honestly and impossible to satisfy by accident. A
+ * Capitalised words the corpus writes that name no company at all: the
+ * handful of ordinary Portuguese words that never happen to appear lowercase
+ * anywhere else in the corpus (`undeclaredNames` auto-exempts the rest — see
+ * its own comment), the bill-section names quoted verbatim off
+ * `issuers.sections`, and the norms and file formats the pages mention. A
  * new word here is one line; a new *company* here would be a mistake a
  * reviewer can see, which is the whole point of making them separate lists.
+ *
+ * This whole guard, including the lowercase auto-exemption, is word-level,
+ * not phrase-level (see `capitalisedWords`'s own comment for why). That
+ * means a future *name* built entirely out of words this file already
+ * declares — "Vivo Play", "Claro Premium" — would pass silently: every word
+ * in it is accounted for, so nothing here would notice the pairing is new.
+ * This file is a drift alarm for previously-unseen capitalised words, not a
+ * complete guarantee that every new company name gets caught.
  */
 const NOT_A_COMPANY = [
-  // Ordinary words, almost all of them sentence-initial.
-  "A", "Ainda", "Algum", "Anote", "Antes", "Ao", "As", "Assinaturas", "Cada",
-  "Cancelar", "Cancelei", "Com", "Comece", "Como", "Compare", "Confira",
-  "Copie", "Dá", "Depende", "Depois", "É", "Ela", "Ele", "Em", "Entre",
-  "Essa", "Esse", "Esta", "Estão", "Este", "Eu", "Existe", "Faça", "Fora",
-  "Isso", "Ler", "Meu", "Muda", "Multiplique", "Na", "Nada", "Não", "Nem",
-  "Nenhum", "Nenhuma", "No", "Nos", "O", "Olhe", "Onde", "Os", "Para",
-  "Peça", "Pedidos", "Pedindo", "Pela", "Pelo", "Percorra", "Pode", "Por",
-  "Porque", "Posso", "Preciso", "Procure", "Quais", "Qual", "Quando", "Que",
-  "Renovação", "São", "Se", "Sem", "Sim", "Sob", "Tenho", "Terceiro",
-  "Terceiros", "Um", "Uma", "Vale", "Valor", "Vi",
+  // Ordinary words that never occur lowercase anywhere else in the corpus,
+  // so `undeclaredNames`'s auto-exemption has no lowercase sighting to find
+  // for them. Almost all sentence-initial.
+  "Comece", "Copie", "Faça", "Multiplique", "Nem", "Olhe", "Pedidos",
+  "Pedindo", "Percorra", "Posso", "Terceiro", "Vi",
   // Bill-section vocabulary, quoted verbatim from `issuers.sections`.
   "Adicionais", "Aplicativos", "Cobrança", "COBRANCAS", "Contratados",
   "Digitais", "FACILIDADES", "Mensais", "OUTRAS", "Outros", "Pacotes",
@@ -407,6 +422,35 @@ function declaredWords(companyNames: readonly string[]): Set<string> {
 }
 
 /**
+ * Every letter-led word the corpus writes, case preserved — the raw material
+ * `wordOccursLowercase` below scans for a lowercase spelling of a candidate.
+ * Unlike `capitalisedWords`, this is not restricted to capitalised matches:
+ * a word here can be "comece" just as easily as "Comece".
+ */
+function wordsAsWritten(entries: readonly Labeled[]): string[] {
+  const out: string[] = [];
+  for (const entry of entries) {
+    for (const match of entry.text.matchAll(/\p{L}[\p{L}\p{N}]*/gu)) out.push(match[0]);
+  }
+  return out;
+}
+
+/**
+ * Whether `word` (accent-folded, case ignored for the comparison itself) is
+ * also written **starting with a lowercase letter** somewhere in `words` — a
+ * capitalised occurrence of a company name never happens this way, so a
+ * lowercase sighting is evidence the word is ordinary vocabulary rather than
+ * a name that only ever appears capitalised because it is one.
+ */
+function wordOccursLowercase(word: string, words: readonly string[]): boolean {
+  const target = fold(word);
+  return words.some((w) => {
+    const first = w.charAt(0);
+    return first === first.toLowerCase() && first !== first.toUpperCase() && fold(w) === target;
+  });
+}
+
+/**
  * Capitalised words the corpus writes that no declared list accounts for.
  * This is the drift guard the company-name half was missing: the issuer half
  * is read from `issuers` and widens on its own, so a new operator is
@@ -414,12 +458,29 @@ function declaredWords(companyNames: readonly string[]): Set<string> {
  * hand and a page added later could name a partner nothing protects. It
  * cannot now: the new name is a capitalised word, no list claims it, and the
  * suite fails until somebody decides which list it belongs in.
+ *
+ * A capitalised word is also let through when its own lowercase spelling
+ * appears elsewhere in the same `entries` — a sentence-initial "Comece" is
+ * accounted for the moment "comece" shows up mid-sentence anywhere else,
+ * because no company's name does that. This is what keeps `NOT_A_COMPANY`'s
+ * hand-typed "ordinary words" bucket to the handful that this corpus never
+ * happens to write in lowercase, instead of every sentence-initial word in
+ * ~440 strings of prose — a list long enough that the first person it
+ * annoys deletes it rather than reads it.
+ *
+ * Stated trade-off: this would just as readily exempt a company whose name
+ * is an ordinary Portuguese word used lowercase somewhere else in the
+ * corpus (none of today's does). This check is a drift alarm for "who does
+ * this corpus name", not a guarantee that no such company could ever slip
+ * through — same as `NOT_A_COMPANY` itself was before this change.
  */
 function undeclaredNames(entries: readonly Labeled[], companyNames: readonly string[]): string[] {
   const declared = declaredWords(companyNames);
+  const allWords = wordsAsWritten(entries);
   const out: string[] = [];
   for (const [word, labels] of capitalisedWords(entries)) {
     if (declared.has(fold(word))) continue;
+    if (wordOccursLowercase(word, allWords)) continue;
     out.push(`${word} (in ${labels.slice(0, 2).join(", ")}${labels.length > 2 ? ", …" : ""})`);
   }
   return out.sort();
@@ -515,14 +576,29 @@ describe("the checks themselves catch a deliberately bad string", () => {
     ["nominalisation (irregularidades)", "A Sky cometeu irregularidades na cobrança do cliente."],
     ["agent noun (golpista)", "A Oi agiu como golpista com quem assinou."],
     ["sem que <alguém> <verbo>", "A Claro ativou o Ubook sem que o cliente pedisse."],
+    ["sem que <alguém> <verbo>, first person (eu)", "A TIM ativou o pacote sem que eu pedisse."],
     ["sem <verbo>", "A Vivo ativou o McAfee sem avisar o cliente."],
     ["sem <substantivo>", "O Skeelo entrou na conta sem pedido do cliente."],
+    ["sem <substantivo>, with possessive (minha autorização)", "A Vivo cobrou o Skeelo sem minha autorização."],
+    ["sem <substantivo>, with possessive (meu consentimento)", "A Claro ativou o Ubook sem meu consentimento."],
+    ["sem <substantivo> (contrato)", "A Oi cobrou o valor do item sem contrato."],
     ["intent adverb (deliberadamente)", "O nome TDATA é deliberadamente pouco claro."],
     ["intent adverb (propositalmente)", "A Vivo cobrou o Skeelo propositalmente."],
   ];
 
   it.each(POISONED)("accusation check flags %s", (_label, text) => {
     expect(accusationHits(fixture(text), COMPANY_NAMES)).toHaveLength(1);
+  });
+
+  // Without a left word boundary, "sem" matches wherever it occurs as a bare
+  // substring, not only where someone actually wrote the word "sem". This
+  // sentence has no "sem" at all — "quisessem contratar" ends in "...s-sem"
+  // immediately followed by "\s+contratar", which the unanchored "sem
+  // <verbo>" construction used to read as an accusation, combined with the
+  // company name earlier in the same sentence.
+  it("accusation check does not read 'sem' out of the tail of an unrelated word (quisessem contratar)", () => {
+    expect(accusationHits(fixture("A Vivo atende clientes que quisessem contratar o serviço."), COMPANY_NAMES))
+      .toEqual([]);
   });
 
   // The mirror of the table above: ordinary sentences this corpus actually
@@ -534,6 +610,27 @@ describe("the checks themselves catch a deliberately bad string", () => {
     "O Skeelo segue na conta sem nenhuma outra ação depois da contratação.",
   ])("accusation check leaves ordinary prose alone: %s", (text) => {
     expect(accusationHits(fixture(text), COMPANY_NAMES)).toEqual([]);
+  });
+
+  // A known, accepted collision, not a bug: "saber" is in the "sem <verbo>"
+  // enumeration so the matcher can catch "sem que o cliente soubesse" and its
+  // siblings, and the shipped `oi/servicos-de-valor-adicionado` FAQ
+  // legitimately writes "sem saber de antemão que serviço é" about the
+  // *reader*, not about a company. It passes today only because that
+  // sentence names no company — the second assertion below shows the
+  // collision is real: naming a company in the same sentence does trip the
+  // check. That is the intended failure mode (a human reviews before it can
+  // ship), not something to special-case "saber" out of. Documented with a
+  // live assertion so the next author who adds a company name near this
+  // sentence reads this as a deliberate trade instead of reporting a false
+  // negative.
+  it("documents a known collision: 'sem saber' is in the 'sem <verbo>' list and appears verbatim in the shipped Oi FAQ", () => {
+    const shipped =
+      "Com esses três dados o pedido ao atendimento fica objetivo, mesmo sem saber de antemão que serviço é.";
+    expect(accusationHits(fixture(shipped), COMPANY_NAMES)).toEqual([]);
+
+    const poisoned = "Na Oi, o pedido fica objetivo mesmo sem saber de antemão que serviço é.";
+    expect(accusationHits(fixture(poisoned), COMPANY_NAMES)).toHaveLength(1);
   });
 
   // Scoping is the whole point: a document-wide check would flag the two
@@ -566,7 +663,11 @@ describe("the checks themselves catch a deliberately bad string", () => {
   });
 
   it("drift guard flags a partner named by a page but by no list", () => {
-    const newPartner = fixture("O pacote inclui uma assinatura do Deezer, cobrada na mesma fatura.");
+    // The sentence-initial "O" repeats lowercase later in the same fixture
+    // ("e o valor") so the lowercase-occurrence exemption accounts for it the
+    // way it would in the real ~440-string corpus — leaving "Deezer", which
+    // never occurs lowercase anywhere here, as the one genuinely new name.
+    const newPartner = fixture("O pacote inclui uma assinatura do Deezer, e o valor entra na mesma fatura.");
     expect(undeclaredNames(newPartner, COMPANY_NAMES)).toHaveLength(1);
   });
 

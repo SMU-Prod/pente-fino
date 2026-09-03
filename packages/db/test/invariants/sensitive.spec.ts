@@ -138,13 +138,20 @@ function repoRoot(): string {
 }
 
 /**
- * Every tracked TypeScript file under `packages/db/src/seeds` — where a
- * hard-coded starter rule catalog is expected to live once seeded (see
- * `packages/db/src/seeds/rules/pattern.ts`, planned for this same block).
- * This check runs against the file the moment sensitive vocabulary is
- * typed into it, before it is ever wired into `seedAll` and before any test
- * DB would see it as a row — the check below this one, which reads the
+ * Every TypeScript file under `packages/db/src/seeds`, tracked or not —
+ * where a hard-coded starter rule catalog is expected to live once seeded
+ * (see `packages/db/src/seeds/rules/pattern.ts`, planned for this same
+ * block). This check runs against the file the moment sensitive vocabulary
+ * is typed into it, before it is ever wired into `seedAll` and before any
+ * test DB would see it as a row — the check below this one, which reads the
  * `rules` table, cannot see that far ahead.
+ *
+ * `git ls-files` alone only lists files already known to git, so a brand-new
+ * seed file is invisible to it for exactly as long as the file is new —
+ * which is precisely the moment this check claims to cover. Unioned here
+ * with `git ls-files --others --exclude-standard` (untracked, not
+ * `.gitignore`d), so a file is checked from the moment it is saved, not from
+ * the moment it is staged.
  *
  * `execFileSync` with an argv array, never a shell string: on Windows,
  * `execSync`'s default shell is cmd.exe, which does not strip single quotes
@@ -154,8 +161,14 @@ function repoRoot(): string {
  * bug this repository already shipped once.
  */
 function seedSourceFiles(root: string): string[] {
-  const out = execFileSync("git", ["-C", root, "ls-files", "packages/db/src/seeds"], { encoding: "utf8" });
-  return out.split("\n").filter((file) => file.endsWith(".ts"));
+  const tracked = execFileSync("git", ["-C", root, "ls-files", "packages/db/src/seeds"], { encoding: "utf8" });
+  const untracked = execFileSync(
+    "git",
+    ["-C", root, "ls-files", "--others", "--exclude-standard", "packages/db/src/seeds"],
+    { encoding: "utf8" },
+  );
+  const files = new Set([...tracked.split("\n"), ...untracked.split("\n")]);
+  return [...files].filter((file) => file.endsWith(".ts"));
 }
 
 // A "card" invoice's line items are exactly where a real Brazilian

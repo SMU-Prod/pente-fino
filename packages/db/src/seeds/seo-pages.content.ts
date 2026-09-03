@@ -119,9 +119,19 @@ function sectionsPhrase(names: readonly string[]): string {
  * "artigos jurídicos" is §7.0's own wording and cannot be used here —
  * "jurídico" is on PRD §14.3's forbidden list — so the clause says what
  * those articles are instead of what they are called.
+ *
+ * The subject is the corpus, not the page: the MP-GO process grounds
+ * §7.1.1's section-name anchor, and the client-report/company-page material
+ * behind other pages is not uniform across all nineteen either — the McAfee
+ * page, for instance, rests on a documented Vivo activation page, not on the
+ * Ministério Público process. "Esta página foi montada a partir de [todas as
+ * quatro classes]" would be literally false for every page but the one the
+ * MP-GO process actually grounds, so the paragraph speaks for the site's
+ * descriptions as a set, which is what is actually true of all four classes
+ * together.
  */
 export const SEO_PROVENANCE =
-  "Esta página foi montada a partir de relatos públicos de clientes, das páginas que as próprias empresas publicam sobre os seus serviços, de artigos e notícias que descrevem casos concretos e de um processo do Ministério Público sobre esse tipo de cobrança. Nenhuma fatura real foi lida para escrevê-la, e nomes de produto mudam com o tempo. Por isso ela descreve o que costuma aparecer, não o que está na sua conta: um serviço citado aqui não é uma afirmação de que alguma empresa fez algo errado. O único jeito de saber se a cobrança da sua fatura está certa é conferir se você contratou aquele serviço — e é isso que os passos acima ajudam a fazer.";
+  "As descrições deste site foram montadas a partir de relatos públicos de clientes, das páginas que as próprias empresas publicam sobre os seus serviços, de artigos e notícias que descrevem casos concretos e de um processo do Ministério Público sobre esse tipo de cobrança. Nenhuma fatura real foi lida para escrevê-las, e nomes de produto mudam com o tempo. Por isso elas descrevem o que costuma aparecer, não o que está na sua conta: um serviço citado aqui não é uma afirmação de que alguma empresa fez algo errado. O único jeito de saber se a cobrança da sua fatura está certa é conferir se você contratou aquele serviço — e é isso que os passos acima ajudam a fazer.";
 
 /**
  * The mechanism, told as a mechanism. Third-party billing is an ordinary,
@@ -359,7 +369,11 @@ const SVA_ISSUER_FAQ: Record<string, SeoPageContent["faq"]> = {
     {
       question: "Posso usar a sigla SVA ao falar com o atendimento?",
       answer:
-        "A sigla é como muita gente descreve esse tipo de cobrança, então ela costuma ser entendida. Ainda assim, o que identifica a linha é o texto exato impresso na fatura: leve os dois, a sigla para explicar o assunto e o texto para localizar o item.",
+        // §7.1.1's Algar row evidences the acronym in a *customer's*
+        // complaint title, not in Algar's support vocabulary — so this says
+        // only that the acronym is recognisable to whoever writes about this
+        // kind of charge, not that a support call will go a certain way.
+        "A sigla é como muita gente descreve esse tipo de cobrança, então costuma ser reconhecida por quem escreve sobre o tema. Ainda assim, o que identifica a linha é o texto exato impresso na fatura: leve os dois, a sigla para explicar o assunto e o texto para localizar o item.",
     },
   ],
 };
