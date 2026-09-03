@@ -66,6 +66,20 @@ describe("the public entry point", () => {
       "assembleContest",
       "collectExpiredDeadlines",
       "expiredDeadlineSentence",
+      // E10 Task 1: `packages/db`'s seed and `apps/web`'s
+      // `/cobranca/[issuer]/[charge]` route (Tasks 2 and 3, not yet built)
+      // both reach the content model through this barrel — the seed writes
+      // `serializeSeoContent`'s output, the route reads it back with
+      // `parseSeoContent`, and both must validate a charge slug with the
+      // same `seoChargeSlug`/`isSeoChargeSlug`, or a slug valid on one side
+      // and rejected on the other is a silent 404.
+      "serializeSeoContent",
+      "parseSeoContent",
+      "SeoContentParseError",
+      "seoChargeSlug",
+      "isSeoChargeSlug",
+      "SEO_FAQ_HEADING",
+      "SEO_PROVENANCE_HEADING",
     ];
     const missing = expected.filter((name) => !(name in core));
     expect(missing).toEqual([]);
