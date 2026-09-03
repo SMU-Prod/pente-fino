@@ -10,10 +10,10 @@ import { apiError } from "@/lib/errors.js";
 // type the same way `RuleSpec` is; `effect` is left a bare string here for
 // the same reason `spec` below is left a shallow passthrough — re-typing its
 // six-value union in zod would be a second copy that can silently drift from
-// the one `packages/core` already declares. `validateRuleDraft` does not
-// currently re-check `effect` either (it only checks `legalBasis.length`),
-// so this schema is not withholding a check `createRuleVersion` would
-// otherwise perform.
+// the one `packages/core` already declares. This schema is not withholding a
+// check `createRuleVersion` would otherwise perform: `validateRuleDraft`
+// validates `effect` against that same six-value union itself (and `law`/
+// `article` as non-empty strings), so a bare `z.string()` here loses nothing.
 const LegalRefBody = z.object({
   law: z.string(),
   article: z.string(),
@@ -86,6 +86,14 @@ export async function GET() {
  * in a form needs to see, so it becomes `422` with the pt-BR `problems`
  * array as `details` (`rule_invalid`, `apps/web/lib/errors.ts`), not a
  * generic `not_found`.
+ *
+ * Any other error `createRuleVersion` throws (a database failure, say) is
+ * not actionable the same way: it is logged server-side, the same way
+ * `apps/web/app/api/cron/[task]/route.ts` logs a failed scheduled task and
+ * `admin/rules/[id]/activate|pause/route.ts` log a failed transition, and
+ * answered with the same `not_found` this route already uses for every
+ * other refusal — never re-thrown into an unhandled 500 that would leak the
+ * raw error message to the caller.
  */
 export async function POST(request: Request) {
   const { db } = container();
@@ -120,6 +128,7 @@ export async function POST(request: Request) {
     if (error instanceof RuleDraftError) {
       return apiError("rule_invalid", error.problems);
     }
-    throw error;
+    console.error("admin/rules: POST failed", error);
+    return apiError("not_found");
   }
 }

@@ -1,4 +1,8 @@
-/** PRD §8.1, verbatim. Messages are pt-BR and ready to display. */
+/**
+ * PRD §8.1, verbatim, through `forbidden` — plus two admin-only additions
+ * below it (E11 Task 4: `rule_invalid`, `proposal_conflict`) that §8.1 does
+ * not define. Messages are pt-BR and ready to display.
+ */
 export const ERROR_CATALOGUE = {
   file_too_large: { http: 413, message: "Esse arquivo é maior que 15 MB. Tente enviar só as páginas da fatura." },
   unsupported_type: { http: 415, message: "Esse formato não é aceito. Envie PDF ou foto." },

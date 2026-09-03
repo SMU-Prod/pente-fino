@@ -277,6 +277,28 @@ describe("POST /api/admin/rules", () => {
     );
     expect(await draftRuleRow(DRAFT_BODY.slug)).toBeUndefined();
   });
+
+  // Regression: `validateRuleDraft` used to check nothing at all for the six
+  // non-"pattern" `RuleSpec` kinds beyond `kind === spec.kind` — a body like
+  // this one used to pass straight through both the route's loose zod shape
+  // check and `validateRuleDraft`, and land in `rules` as a `draft`.
+  it("422s on a structurally-invalid non-pattern spec (missing required fields), and creates no rule", async () => {
+    useCookies(adminCookie());
+    const res = await createRule(
+      postRequest("http://localhost/api/admin/rules", {
+        ...DRAFT_BODY,
+        kind: "threshold",
+        spec: { kind: "threshold" },
+      }),
+    );
+    expect(res.status).toBe(422);
+    const body = await res.json();
+    expect(body.error.code).toBe("rule_invalid");
+    expect(body.error.details).toEqual(
+      expect.arrayContaining([expect.objectContaining({ field: "spec.expr", code: "spec_expr_required" })]),
+    );
+    expect(await draftRuleRow(DRAFT_BODY.slug)).toBeUndefined();
+  });
 });
 
 describe("POST /api/admin/rules/:id/activate", () => {

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { validateRuleDraft, type RuleDraftInput } from "./draft.js";
+import type { LegalRef, RuleSpec } from "./spec.js";
 
 const VALID_PATTERN_DRAFT: RuleDraftInput = {
   slug: "gasto-recorrente-teste",
@@ -29,6 +30,66 @@ const VALID_SUPPRESSOR_DRAFT: RuleDraftInput = {
   reason: "RN-090: suprime tese morta sobre ICMS na TUSD.",
 };
 
+const VALID_DELTA_DRAFT: RuleDraftInput = {
+  slug: "delta-recorrente-teste",
+  category: "telecom",
+  issuerId: null,
+  kind: "delta",
+  spec: { kind: "delta", field: "amount", comparedTo: "previous_invoice", changeAtLeastPct: 10 },
+  legalBasis: [{ law: "CDC", article: "39", effect: "dobro" }],
+  confidenceBase: 0.7,
+  author: "admin-teste",
+  reason: "Regra de teste para o tipo delta.",
+};
+
+const VALID_THRESHOLD_DRAFT: RuleDraftInput = {
+  slug: "threshold-recorrente-teste",
+  category: "telecom",
+  issuerId: null,
+  kind: "threshold",
+  spec: { kind: "threshold", expr: "total_amount", operator: ">", value: 100 },
+  legalBasis: [{ law: "CDC", article: "39", effect: "dobro" }],
+  confidenceBase: 0.7,
+  author: "admin-teste",
+  reason: "Regra de teste para o tipo threshold.",
+};
+
+const VALID_REFERENCE_DRAFT: RuleDraftInput = {
+  slug: "reference-recorrente-teste",
+  category: "energy",
+  issuerId: null,
+  kind: "reference",
+  spec: { kind: "reference", source: "aneel_tariff", tolerancePct: 5 },
+  legalBasis: [{ law: "CDC", article: "39", effect: "dobro" }],
+  confidenceBase: 0.7,
+  author: "admin-teste",
+  reason: "Regra de teste para o tipo reference.",
+};
+
+const VALID_CONFIRM_DRAFT: RuleDraftInput = {
+  slug: "confirm-recorrente-teste",
+  category: "telecom",
+  issuerId: null,
+  kind: "confirm",
+  spec: { kind: "confirm", question: "O valor cobrado bate com o contrato?", options: ["sim", "nao"], onNo: "create_finding" },
+  legalBasis: [{ law: "CDC", article: "39", effect: "dobro" }],
+  confidenceBase: 0.7,
+  author: "admin-teste",
+  reason: "Regra de teste para o tipo confirm.",
+};
+
+const VALID_ARITHMETIC_DRAFT: RuleDraftInput = {
+  slug: "arithmetic-recorrente-teste",
+  category: "telecom",
+  issuerId: null,
+  kind: "arithmetic",
+  spec: { kind: "arithmetic", formula: "base * aliquota", expect: "valor_total", tolerancePct: 1 },
+  legalBasis: [{ law: "CDC", article: "39", effect: "dobro" }],
+  confidenceBase: 0.7,
+  author: "admin-teste",
+  reason: "Regra de teste para o tipo arithmetic.",
+};
+
 describe("validateRuleDraft: a fully valid draft", () => {
   it("returns ok: true for a valid pattern draft", () => {
     expect(validateRuleDraft(VALID_PATTERN_DRAFT)).toEqual({ ok: true });
@@ -36,6 +97,26 @@ describe("validateRuleDraft: a fully valid draft", () => {
 
   it("returns ok: true for a valid suppressor draft with an empty legalBasis", () => {
     expect(validateRuleDraft(VALID_SUPPRESSOR_DRAFT)).toEqual({ ok: true });
+  });
+
+  it("returns ok: true for a valid delta draft", () => {
+    expect(validateRuleDraft(VALID_DELTA_DRAFT)).toEqual({ ok: true });
+  });
+
+  it("returns ok: true for a valid threshold draft", () => {
+    expect(validateRuleDraft(VALID_THRESHOLD_DRAFT)).toEqual({ ok: true });
+  });
+
+  it("returns ok: true for a valid reference draft", () => {
+    expect(validateRuleDraft(VALID_REFERENCE_DRAFT)).toEqual({ ok: true });
+  });
+
+  it("returns ok: true for a valid confirm draft", () => {
+    expect(validateRuleDraft(VALID_CONFIRM_DRAFT)).toEqual({ ok: true });
+  });
+
+  it("returns ok: true for a valid arithmetic draft", () => {
+    expect(validateRuleDraft(VALID_ARITHMETIC_DRAFT)).toEqual({ ok: true });
   });
 });
 
@@ -120,7 +201,112 @@ describe("validateRuleDraft: check 4 — author and reason", () => {
   });
 });
 
-describe("validateRuleDraft: check 5 — assertSafePattern on spec.match/notMatch", () => {
+describe("validateRuleDraft: check 5 — spec structural validation per kind", () => {
+  it("rejects a structurally-invalid pattern spec (missing match) without throwing", () => {
+    let result: ReturnType<typeof validateRuleDraft> | undefined;
+    expect(() => {
+      result = validateRuleDraft({ ...VALID_PATTERN_DRAFT, spec: { kind: "pattern" } as unknown as RuleSpec });
+    }).not.toThrow();
+    expect(result?.ok).toBe(false);
+    if (!result || result.ok) throw new Error("unreachable");
+    expect(result.problems).toContainEqual(
+      expect.objectContaining({ field: "spec.match", code: "spec_match_required" }),
+    );
+    // A crash would come back as `unsafe_pattern` never even being reached —
+    // this asserts the structural problem is there, not that `unsafe_pattern`
+    // is absent (a bogus `match` should not be handed to `assertSafePattern`).
+    expect(result.problems.some((p) => p.code === "unsafe_pattern")).toBe(false);
+  });
+
+  it("rejects a structurally-invalid delta spec", () => {
+    const result = validateRuleDraft({ ...VALID_DELTA_DRAFT, spec: { kind: "delta" } as unknown as RuleSpec });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.problems).toContainEqual(
+      expect.objectContaining({ field: "spec.field", code: "spec_field_invalid" }),
+    );
+    expect(result.problems).toContainEqual(
+      expect.objectContaining({ field: "spec.comparedTo", code: "spec_comparedTo_invalid" }),
+    );
+  });
+
+  it("rejects a structurally-invalid threshold spec", () => {
+    const result = validateRuleDraft({ ...VALID_THRESHOLD_DRAFT, spec: { kind: "threshold" } as unknown as RuleSpec });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.problems).toContainEqual(
+      expect.objectContaining({ field: "spec.expr", code: "spec_expr_required" }),
+    );
+    expect(result.problems).toContainEqual(
+      expect.objectContaining({ field: "spec.operator", code: "spec_operator_invalid" }),
+    );
+    expect(result.problems).toContainEqual(
+      expect.objectContaining({ field: "spec.value", code: "spec_value_invalid" }),
+    );
+  });
+
+  it("rejects a structurally-invalid reference spec", () => {
+    const result = validateRuleDraft({ ...VALID_REFERENCE_DRAFT, spec: { kind: "reference" } as unknown as RuleSpec });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.problems).toContainEqual(
+      expect.objectContaining({ field: "spec.source", code: "spec_source_invalid" }),
+    );
+    expect(result.problems).toContainEqual(
+      expect.objectContaining({ field: "spec.tolerancePct", code: "spec_tolerancePct_invalid" }),
+    );
+  });
+
+  it("rejects a structurally-invalid confirm spec", () => {
+    const result = validateRuleDraft({ ...VALID_CONFIRM_DRAFT, spec: { kind: "confirm" } as unknown as RuleSpec });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.problems).toContainEqual(
+      expect.objectContaining({ field: "spec.question", code: "spec_question_required" }),
+    );
+    expect(result.problems).toContainEqual(
+      expect.objectContaining({ field: "spec.options", code: "spec_options_invalid" }),
+    );
+    expect(result.problems).toContainEqual(
+      expect.objectContaining({ field: "spec.onNo", code: "spec_onNo_invalid" }),
+    );
+  });
+
+  it("rejects a structurally-invalid arithmetic spec", () => {
+    const result = validateRuleDraft({
+      ...VALID_ARITHMETIC_DRAFT,
+      spec: { kind: "arithmetic" } as unknown as RuleSpec,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.problems).toContainEqual(
+      expect.objectContaining({ field: "spec.formula", code: "spec_formula_required" }),
+    );
+    expect(result.problems).toContainEqual(
+      expect.objectContaining({ field: "spec.expect", code: "spec_expect_required" }),
+    );
+    expect(result.problems).toContainEqual(
+      expect.objectContaining({ field: "spec.tolerancePct", code: "spec_tolerancePct_invalid" }),
+    );
+  });
+
+  it("rejects a structurally-invalid suppressor spec", () => {
+    const result = validateRuleDraft({
+      ...VALID_SUPPRESSOR_DRAFT,
+      spec: { kind: "suppressor" } as unknown as RuleSpec,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.problems).toContainEqual(
+      expect.objectContaining({ field: "spec.blocks", code: "spec_blocks_invalid" }),
+    );
+    expect(result.problems).toContainEqual(
+      expect.objectContaining({ field: "spec.reason", code: "spec_reason_required" }),
+    );
+  });
+});
+
+describe("validateRuleDraft: check 6 — assertSafePattern on spec.match/notMatch", () => {
   it("rejects a catastrophically-backtracking spec.match", () => {
     const result = validateRuleDraft({
       ...VALID_PATTERN_DRAFT,
@@ -156,7 +342,7 @@ describe("validateRuleDraft: check 5 — assertSafePattern on spec.match/notMatc
   });
 });
 
-describe("validateRuleDraft: check 6 — INV-006 sensitive vocabulary", () => {
+describe("validateRuleDraft: check 7 — INV-006 sensitive vocabulary", () => {
   it("rejects a spec.match carrying a sensitive-category term", () => {
     const result = validateRuleDraft({
       ...VALID_PATTERN_DRAFT,
@@ -191,7 +377,7 @@ describe("validateRuleDraft: check 6 — INV-006 sensitive vocabulary", () => {
   });
 });
 
-describe("validateRuleDraft: check 7 — RF-129 legalBasis, exempting suppressor", () => {
+describe("validateRuleDraft: check 8 — RF-129 legalBasis, exempting suppressor", () => {
   it("rejects an empty legalBasis for a non-suppressor kind", () => {
     const result = validateRuleDraft({ ...VALID_PATTERN_DRAFT, legalBasis: [] });
     expect(result.ok).toBe(false);
@@ -203,6 +389,57 @@ describe("validateRuleDraft: check 7 — RF-129 legalBasis, exempting suppressor
 
   it("does not require legalBasis for a suppressor", () => {
     expect(validateRuleDraft(VALID_SUPPRESSOR_DRAFT)).toEqual({ ok: true });
+  });
+});
+
+describe("validateRuleDraft: check 9 — LegalRef structural validation", () => {
+  it("rejects an invalid LegalRef.effect", () => {
+    const result = validateRuleDraft({
+      ...VALID_PATTERN_DRAFT,
+      legalBasis: [{ law: "CDC", article: "39", effect: "invalido" as unknown as LegalRef["effect"] }],
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.problems).toContainEqual(
+      expect.objectContaining({ field: "legalBasis[0].effect", code: "legal_basis_effect_invalid" }),
+    );
+  });
+
+  it("rejects an empty law", () => {
+    const result = validateRuleDraft({
+      ...VALID_PATTERN_DRAFT,
+      legalBasis: [{ law: "", article: "39", effect: "dobro" }],
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.problems).toContainEqual(
+      expect.objectContaining({ field: "legalBasis[0].law", code: "legal_basis_law_required" }),
+    );
+  });
+
+  it("rejects an empty article", () => {
+    const result = validateRuleDraft({
+      ...VALID_PATTERN_DRAFT,
+      legalBasis: [{ law: "CDC", article: "", effect: "dobro" }],
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.problems).toContainEqual(
+      expect.objectContaining({ field: "legalBasis[0].article", code: "legal_basis_article_required" }),
+    );
+  });
+
+  it("accepts every declared LegalRef.effect literal", () => {
+    const effects: LegalRef["effect"][] = [
+      "dobro", "suspensao", "cancelamento", "amostra_gratis", "vedada", "limite",
+    ];
+    for (const effect of effects) {
+      const result = validateRuleDraft({
+        ...VALID_PATTERN_DRAFT,
+        legalBasis: [{ law: "CDC", article: "39", effect }],
+      });
+      expect(result).toEqual({ ok: true });
+    }
   });
 });
 

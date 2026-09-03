@@ -235,6 +235,35 @@ describe("POST /api/admin/proposals/:id — decision: approve", () => {
     expect(proposalRow?.decidedBy).toBe(ADMIN_EMAIL);
   });
 
+  // Mirrors admin-rules.test.ts's "creates version 1, authored by the
+  // admin's e-mail from the session — never a body field": `decidedBy` is
+  // always the authenticated admin's e-mail, never a value the request body
+  // gets to claim — a spoofed `decidedBy` here would make the append-only
+  // decision history (global constraint 6) record who the caller *said*
+  // decided, not who actually did.
+  it("decidedBy is the admin's e-mail from the session, never a spoofed body field", async () => {
+    const rule = await insertShadowRule("rn-decidedby-spoof");
+    const proposalId = await insertPendingPromotionProposal(rule.id);
+    useCookies(adminCookie());
+
+    const res = await decideProposal(
+      postRequest(`http://localhost/api/admin/proposals/${proposalId}`, {
+        decision: "approve",
+        reason: "Ratio consistentemente baixo, 30+ disparos.",
+        decidedBy: "attacker@example.com",
+      }),
+      { params: Promise.resolve({ id: proposalId }) },
+    );
+    expect(res.status).toBe(200);
+
+    const [proposalRow] = await ctx.db.select().from(agentProposals).where(eq(agentProposals.id, proposalId));
+    expect(proposalRow?.decidedBy).toBe(ADMIN_EMAIL);
+
+    const decided = await ctx.db.select().from(events).where(eq(events.type, "proposal_decided"));
+    expect(decided).toHaveLength(1);
+    expect(decided[0]?.payload).toMatchObject({ proposalId, decidedBy: ADMIN_EMAIL });
+  });
+
   it("returns 409 the second time the same proposal is approved, and does not double-write events", async () => {
     const rule = await insertShadowRule("rn-promovida-duas-vezes");
     const proposalId = await insertPendingPromotionProposal(rule.id);
