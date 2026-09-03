@@ -446,9 +446,32 @@ describe("adminOverview", () => {
 });
 
 describe("global constraint 7 — exactly one promotion path", () => {
-  it("packages/db/src/admin.ts never writes rules.status to \"active\"", () => {
+  it("packages/db/src/admin.ts never assigns rules.status the literal \"active\"", () => {
     const adminSrcPath = fileURLToPath(new URL("../src/admin.ts", import.meta.url));
     const source = readFileSync(adminSrcPath, "utf8");
-    expect(source).not.toContain('status: "active"');
+
+    // Strip comments first: this module's own header documents the
+    // constraint in prose — including the word "active" in backticks — and
+    // that must not itself trip the check below.
+    const code = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+
+    // Whitespace- and quote-tolerant, unlike a literal `toContain('status:
+    // "active"')`: this still catches `status:"active"`, `status:
+    // 'active'`, and the assignment split across lines. It deliberately
+    // matches only the *write* shape (`status` immediately followed by a
+    // colon) — `pauseRuleVersion` legitimately *reads* and compares
+    // `rule.status !== "active"` a few lines down, and that comparison is
+    // not this invariant's concern.
+    const directAssignment = /status\s*:\s*(['"`])active\1/;
+
+    // A promotion path assembled from a constant (`.set({ status: ACTIVE
+    // })`) wouldn't spell "active" next to the word `status` at all, but it
+    // still has to bind that literal to a name somewhere in this file for
+    // the assignment to work. Catching the binding itself closes that gap
+    // without needing to trace the constant into every `.set(...)` call.
+    const namedConstant = /\b(?:const|let|var)\s+\w+\s*(?::\s*[\w.]+\s*)?=\s*(['"`])active\1/;
+
+    expect(directAssignment.test(code)).toBe(false);
+    expect(namedConstant.test(code)).toBe(false);
   });
 });
