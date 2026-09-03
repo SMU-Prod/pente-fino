@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { formatCentsBRL } from "@/lib/report.js";
+import { formatCentsBRL } from "@pentefino/core";
 import * as copy from "./copy.js";
 import { sendFeedback } from "./feedback-client.js";
 import styles from "./laudo.module.css";

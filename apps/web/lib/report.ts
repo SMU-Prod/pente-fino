@@ -1,4 +1,4 @@
-import type { Finding } from "@pentefino/core";
+import { formatCentsBRL, type Finding } from "@pentefino/core";
 import type { ScopedDb } from "@pentefino/db";
 
 export type AskUser = NonNullable<Finding["askUser"]>;
@@ -22,21 +22,6 @@ export function confidenceBand(confidence: number): ReportBand {
   if (confidence < 0.55) return "question";
   if (confidence <= 0.8) return "verify";
   return "likely";
-}
-
-/**
- * Plain-cents BRL formatting, deliberately not `Intl.NumberFormat`: pt-BR's
- * ICU output separates "R$" from the digits with a non-breaking space
- * (U+00A0), not the plain ASCII space PRD §10's RF-128 acceptance example is
- * written with ("R$ 51,60") - matching that example byte-for-byte needs a
- * formatter that never introduces one.
- */
-export function formatCentsBRL(cents: number): string {
-  const sign = cents < 0 ? "-" : "";
-  const abs = Math.abs(cents);
-  const reais = Math.floor(abs / 100).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ".");
-  const centavos = String(abs % 100).padStart(2, "0");
-  return `${sign}R$ ${reais},${centavos}`;
 }
 
 export type ReportFinding = Omit<FindingRow, "ruleSpec" | "section"> & {

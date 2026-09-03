@@ -178,6 +178,20 @@ describe("GET /api/card/[token]", () => {
     expect(collectText(capturedTree)).toContain("Encontramos R$ 10,00 para você verificar");
   });
 
+  // Every money fixture in this file used to sit under R$ 1.000,00 and none
+  // used a credit line, so the card's own private copy of `formatCentsBRL`
+  // was never asked the two questions its twin in `@pentefino/core` and its
+  // twin in `apps/jobs`'s PDF renderer answered differently (E5 task 7).
+  // The copy is gone; this keeps the question being asked.
+  it("separates thousands in the headline, above R$ 1.000,00", async () => {
+    const issuerId = await seedIssuer("Claro");
+    const { invoiceId, publicToken } = await seedAnalyzedInvoice({ issuerId });
+    await seedFinding(invoiceId, 118990);
+
+    await GET(request(publicToken), ctxFor(publicToken));
+    expect(collectText(capturedTree)).toContain("Encontramos R$ 1.189,90 para você verificar");
+  });
+
   it("uses a category tag when the invoice has no issuer assigned", async () => {
     const { invoiceId, publicToken } = await seedAnalyzedInvoice({});
     await seedFinding(invoiceId, 100);

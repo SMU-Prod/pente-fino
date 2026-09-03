@@ -1,7 +1,7 @@
 import { ImageResponse } from "next/og";
 import { and, eq } from "drizzle-orm";
 import React from "react";
-import { containsPii, type Category } from "@pentefino/core";
+import { containsPii, formatCentsBRL, type Category } from "@pentefino/core";
 import type { Database } from "@pentefino/db";
 // eslint-disable-next-line pentefino/require-with-user -- RF-145's card is a deliberate public exception (PRD §8.2: "público por token"): it is reached by an unguessable capability token (invoices.publicToken), never by session, so withUser's session-ownership filter does not apply. loadCardData below is the one place that runs unscoped, and it selects a narrow, fixed set of columns - never invoices.canonical, invoiceItems, userId, sessionId or fileKey - so this exception cannot widen into a general leak.
 import { schema } from "@pentefino/db";
@@ -61,21 +61,6 @@ function safeIssuerLabel(displayName: string | null, category: Category | null):
   if (displayName && !containsPii(displayName)) return displayName;
   if (category) return CATEGORY_LABELS[category];
   return "Fatura";
-}
-
-/**
- * Plain-cents BRL formatting, deliberately not `Intl.NumberFormat` - see the
- * identical comment on the report route's own copy of this function
- * (apps/web/app/api/invoices/[id]/report/route.ts): pt-BR's ICU output uses
- * a non-breaking space after "R$" that PRD §10's own acceptance text does
- * not.
- */
-function formatCentsBRL(cents: number): string {
-  const sign = cents < 0 ? "-" : "";
-  const abs = Math.abs(cents);
-  const reais = Math.floor(abs / 100).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ".");
-  const centavos = String(abs % 100).padStart(2, "0");
-  return `${sign}R$ ${reais},${centavos}`;
 }
 
 function findingsLine(count: number): string {

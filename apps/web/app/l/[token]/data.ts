@@ -1,5 +1,5 @@
 import { and, eq } from "drizzle-orm";
-import { containsPii, type Category } from "@pentefino/core";
+import { containsPii, formatCentsBRL, type Category } from "@pentefino/core";
 // eslint-disable-next-line pentefino/require-with-user -- RF-146's public page is the deliberate INV-008 exception: it is reached by an unguessable capability token (invoices.publicToken), never by session, exactly like RF-145's card (see apps/web/app/api/card/[token]/route.tsx's identical disable comment, which this file's loadPublicReport mirrors). This is the one unscoped read in this route and selects a narrow, fixed set of columns - never invoices.canonical, invoiceItems, userId, sessionId, fileKey, periodStart/periodEnd/dueDate, or a finding's own evidence - so this exception cannot widen into a general leak.
 import { schema } from "@pentefino/db";
 import type { Database } from "@pentefino/db";
@@ -128,18 +128,4 @@ export async function loadPublicReport(token: string, db: Database): Promise<Pub
     findingsCount: findingRows.length,
     issuerLabel: safeIssuerLabel(row.issuerDisplayName, row.issuerCategory),
   };
-}
-
-/**
- * Plain-cents BRL formatting, deliberately not `Intl.NumberFormat` - see
- * the identical comment on `apps/web/lib/report.ts`'s and the card route's
- * own copies of this function: pt-BR's ICU output uses a non-breaking
- * space after "R$" that PRD §10's own acceptance text does not.
- */
-export function formatCentsBRL(cents: number): string {
-  const sign = cents < 0 ? "-" : "";
-  const abs = Math.abs(cents);
-  const reais = Math.floor(abs / 100).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ".");
-  const centavos = String(abs % 100).padStart(2, "0");
-  return `${sign}R$ ${reais},${centavos}`;
 }

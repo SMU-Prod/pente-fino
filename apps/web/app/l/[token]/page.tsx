@@ -1,7 +1,8 @@
 import { notFound } from "next/navigation";
+import { formatCentsBRL } from "@pentefino/core";
 import { container } from "@/lib/container.js";
 import * as copy from "./copy.js";
-import { formatCentsBRL, loadPublicReport } from "./data.js";
+import { loadPublicReport } from "./data.js";
 import styles from "./public.module.css";
 
 /**

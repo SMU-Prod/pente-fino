@@ -1,7 +1,8 @@
 import { cookies } from "next/headers";
+import { formatCentsBRL } from "@pentefino/core";
 import { withUser } from "@pentefino/db";
 import { container } from "@/lib/container.js";
-import { formatCentsBRL, loadReport } from "@/lib/report.js";
+import { loadReport } from "@/lib/report.js";
 import { SESSION_COOKIE, getSessionSecret, readSession } from "@/lib/session.js";
 import { FindingsList } from "./FindingsList.js";
 import * as copy from "./copy.js";
