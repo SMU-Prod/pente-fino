@@ -26,6 +26,8 @@ const FIXTURE_NAMES = [
   "reversal-double-n1",
   "still-charged-n",
   "still-charged-n1",
+  "recurring-credit-n",
+  "recurring-credit-n1",
   "reappeared-n2",
 ];
 
@@ -78,6 +80,19 @@ describe("diff pair fixtures (§18 gate)", () => {
     const current = loadFixture("still-charged-n1");
     const contested: ContestedItem[] = [
       { findingId: "fin_still_charged", description: "NBA Básico", amountCents: 1990 },
+    ];
+
+    const outcome = classifyContestedItems({ previous, current, contested });
+
+    expect(outcome.resolutions[0]?.verdict).toBe("still_charged");
+    expect(outcome.resolutions[0]?.recoveredCents).toBe(0);
+  });
+
+  it("recurring-credit: a credit that already existed on the previous invoice is not a reversal", () => {
+    const previous = loadFixture("recurring-credit-n");
+    const current = loadFixture("recurring-credit-n1");
+    const contested: ContestedItem[] = [
+      { findingId: "fin_recurring_credit", description: "Skeelo Premium", amountCents: 1990 },
     ];
 
     const outcome = classifyContestedItems({ previous, current, contested });

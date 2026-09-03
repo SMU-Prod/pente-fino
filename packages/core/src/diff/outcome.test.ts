@@ -282,4 +282,55 @@ describe("classifyContestedItems", () => {
       ["fin_clube", "disappeared"],
     ]);
   });
+
+  // RF-201 ruling: a credit that also existed on the previous invoice is
+  // not an estorno, because a line present on both N and N+1 is by
+  // construction not a change between them - it is the same recurring
+  // line (here, a loyalty discount) billed again, not evidence that money
+  // came back. Without the `diff.paired` exclusion in `matchCredits`, this
+  // recurring -1990 credit would be read as a reversal of the contested
+  // 1990 charge even though the charge is still being billed.
+  it("does not treat a credit as a reversal when the same credit line already existed on the previous invoice", () => {
+    const previous = invoiceWith({ start: "2026-07-01", end: "2026-07-31" }, [
+      { name: "Serviços Digitais", items: [{ description: "Skeelo Premium", amountCents: 1990 }] },
+      { name: "Ajustes", items: [{ description: "Desconto Fidelidade", amountCents: -1990 }] },
+    ]);
+    const current = invoiceWith({ start: "2026-08-01", end: "2026-08-31" }, [
+      { name: "Serviços Digitais", items: [{ description: "Skeelo Premium", amountCents: 1990 }] },
+      { name: "Ajustes", items: [{ description: "Desconto Fidelidade", amountCents: -1990 }] },
+    ]);
+    const contested: ContestedItem[] = [{ findingId: "fin_1", description: "Skeelo Premium", amountCents: 1990 }];
+
+    const outcome = classifyContestedItems({ previous, current, contested });
+
+    expect(outcome.resolutions).toEqual([
+      {
+        findingId: "fin_1",
+        verdict: "still_charged",
+        recoveredCents: 0,
+        evidence: 'still charged as "Skeelo Premium" (1990)',
+      },
+    ]);
+    expect(outcome.recoveredCents).toBe(0);
+    expect(outcome.allSettled).toBe(false);
+  });
+
+  // Minor 2: the type comment on `ContestedItem.amountCents` says "positive
+  // integer cents" but nothing enforced it - a caller passing reais (19.9)
+  // instead of cents would flow straight into `recoveredCents` as a float.
+  // This mirrors the fail-loud stance already taken for the other
+  // caller-bug class (no matching previous line).
+  it("throws when a contested item's amountCents is not a positive integer", () => {
+    const previous = invoiceWith({ start: "2026-07-01", end: "2026-07-31" }, [
+      { name: "Serviços", items: [{ description: "Plano Controle 20GB", amountCents: 7990 }] },
+    ]);
+    const current = invoiceWith({ start: "2026-08-01", end: "2026-08-31" }, [
+      { name: "Serviços", items: [{ description: "Plano Controle 20GB", amountCents: 7990 }] },
+    ]);
+    const contested: ContestedItem[] = [
+      { findingId: "fin_reais", description: "Plano Controle 20GB", amountCents: 19.9 },
+    ];
+
+    expect(() => classifyContestedItems({ previous, current, contested })).toThrow(/fin_reais.*19\.9/);
+  });
 });

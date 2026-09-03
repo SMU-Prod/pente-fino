@@ -1,6 +1,6 @@
 import type { InvoiceCanonical, InvoiceItem } from "../invoice/canonical.js";
 import { normalizeDescription } from "../invoice/normalize.js";
-import { pairInvoiceItems } from "./index.js";
+import { pairInvoiceItems, type InvoiceDiff } from "./index.js";
 
 export type ContestedItem = {
   /** `findings.id` — carried through so the caller can settle the row. */
@@ -106,12 +106,27 @@ type CreditMatch = { credit: InvoiceItem; kind: "exact" | "double" };
 
 /**
  * Assigns each contested item at most one credit line, per RF-201's
- * "estorno" rule: a credit (an item with `amountCents < 0`) reverses a
- * contested item when its absolute value equals the contested amount
- * (exact) or double it (double). Matching is by amount only — RF-201 says
- * nothing about the credit's description, and a real reversal line is
- * routinely worded nothing like the charge it reverses ("Crédito
- * referente a acordo").
+ * "estorno" rule: a credit (a current-invoice item with `amountCents < 0`
+ * that is not itself recurring from the previous invoice — see below)
+ * reverses a contested item when its absolute value equals the contested
+ * amount (exact) or double it (double). Matching is by amount only —
+ * RF-201 says nothing about the credit's description, and a real reversal
+ * line is routinely worded nothing like the charge it reverses ("Crédito
+ * referente a acordo"); this ruling adds no description comparison on top
+ * of that.
+ *
+ * **A credit that also existed on the previous invoice is not an
+ * estorno.** RF-201 is a rule about a *diff*: a line present on both N
+ * and N+1 is, by construction, not a change between the two invoices, so
+ * it is not evidence that money came back — it is the same recurring
+ * line (e.g. a loyalty discount) billed again. Whether a credit is
+ * recurring this way is answered for free by `diff`, the
+ * `pairInvoiceItems` result already computed by the caller: a credit
+ * whose current-side item appears as some `paired[].current` is recurring
+ * by construction, and is excluded from the candidate credits below
+ * before either matching pass runs. A genuinely new credit — one with no
+ * previous-invoice counterpart, landing in `diff.appeared` — remains
+ * eligible.
  *
  * Each credit line settles at most one contested item. When several
  * contested items could claim the same credit, this resolves the
@@ -124,8 +139,15 @@ type CreditMatch = { credit: InvoiceItem; kind: "exact" | "double" };
  * pass, a contested item claims the earliest not-yet-consumed eligible
  * credit in current-invoice document order.
  */
-function matchCredits(current: InvoiceCanonical, contested: ContestedItem[]): Map<number, CreditMatch> {
-  const credits = flattenItems(current).filter((item) => item.amountCents < 0);
+function matchCredits(
+  current: InvoiceCanonical,
+  contested: ContestedItem[],
+  diff: InvoiceDiff,
+): Map<number, CreditMatch> {
+  const recurringCurrentItems = new Set<InvoiceItem>(diff.paired.map((pair) => pair.current));
+  const credits = flattenItems(current).filter(
+    (item) => item.amountCents < 0 && !recurringCurrentItems.has(item),
+  );
   const consumed = new Set<InvoiceItem>();
   const matches = new Map<number, CreditMatch>();
 
@@ -186,10 +208,20 @@ export function classifyContestedItems(input: {
 }): ContestedOutcome {
   const { previous, current, contested } = input;
 
-  const located = locatePreviousItems(previous, current, contested);
-  const creditMatches = matchCredits(current, contested);
+  for (const item of contested) {
+    if (!Number.isInteger(item.amountCents) || item.amountCents <= 0) {
+      throw new Error(
+        `[outcome.ts:ContestedItem.amountCents] contested item ${item.findingId} has ` +
+          `amountCents ${item.amountCents}, which is not a positive integer; ` +
+          `ContestedItem.amountCents must be positive integer cents, not reais or any other unit`,
+      );
+    }
+  }
 
+  const located = locatePreviousItems(previous, current, contested);
   const diff = pairInvoiceItems(previous, current);
+  const creditMatches = matchCredits(current, contested, diff);
+
   const currentByPreviousItem = new Map<InvoiceItem, InvoiceItem>();
   for (const pair of diff.paired) {
     currentByPreviousItem.set(pair.previous, pair.current);

@@ -1,0 +1,22 @@
+{
+  "_note": "Fatura sintética para o caso 'recurring-credit' do RF-201 (Task 2, E6): a N+1 da mesma linha, com o SVA contestado ('Skeelo Premium') ainda cobrado E o mesmo desconto de fidelidade recorrente presente em N - o crédito não é evidência de estorno porque já existia na fatura anterior (é a mesma linha recorrente, não dinheiro que voltou). NÃO é golden set.",
+  "issuer": { "name": "Vivo", "category": "telecom" },
+  "period": { "start": "2026-08-01", "end": "2026-08-31" },
+  "dueDate": "2026-09-10",
+  "totalCents": 7990,
+  "sections": [
+    {
+      "name": "Serviços",
+      "items": [{ "description": "Plano Controle 20GB", "amountCents": 7990 }]
+    },
+    {
+      "name": "Serviços Digitais",
+      "items": [{ "description": "Skeelo Premium", "amountCents": 1990 }]
+    },
+    {
+      "name": "Ajustes",
+      "items": [{ "description": "Desconto Fidelidade", "amountCents": -1990 }]
+    }
+  ],
+  "extraction": { "confidence": 0.95, "warnings": [] }
+}
