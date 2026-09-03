@@ -123,15 +123,33 @@ describe("empirical proof: the guard actually holds against real catastrophic ba
   // entirely; only the difference in algorithmic complexity remains. A
   // throwaway warm-up call keeps one-time JIT compilation cost out of
   // both measurements.
+  //
+  // Even the ratio alone was not enough. On a real GitHub Actions run this
+  // came back 616ms against a required >857ms (safe.elapsedMs * 50) - a
+  // genuine ~36x, "orders of magnitude" by eye, still short of the 50x
+  // floor, because a single-shot measurement can catch either side
+  // mid-GC-pause or mid-JIT-tier-up and there is no way to tell afterwards
+  // which one it was. Scheduler and GC noise only ever ADD delay, never
+  // remove it - so `timeMatch` below takes the minimum across several
+  // repeated trials rather than one sample. The true, noise-free cost is a
+  // lower bound none of the samples can undercut; one clean sample among
+  // several is enough to reveal it, and a single unlucky one can no longer
+  // sink the whole assertion.
   const DANGEROUS_PATTERN = "(a+)+$";
   const SAFE_COMPARISON_PATTERN = "a+$"; // same idea, no nested quantifier
   const input = "a".repeat(22) + "!";
+  const TIMING_TRIALS = 7;
 
   function timeMatch(pattern: string): { matched: boolean; elapsedMs: number } {
     new RegExp(pattern).test("a"); // warm up JIT compilation of this pattern first
-    const start = performance.now();
-    const matched = new RegExp(pattern).test(input);
-    return { matched, elapsedMs: performance.now() - start };
+    let matched = false;
+    let minElapsed = Number.POSITIVE_INFINITY;
+    for (let trial = 0; trial < TIMING_TRIALS; trial++) {
+      const start = performance.now();
+      matched = new RegExp(pattern).test(input);
+      minElapsed = Math.min(minElapsed, performance.now() - start);
+    }
+    return { matched, elapsedMs: minElapsed };
   }
 
   it("the raw, unguarded catastrophic RegExp is dramatically slower than an equivalent safe one on the same input, on the same run", () => {
