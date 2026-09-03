@@ -157,4 +157,60 @@ describe("requireAdmin", () => {
 
     expect(actor).toBeNull();
   });
+
+  // getSessionSecret() throws instead of folding into this function's
+  // null-only contract when SESSION_SIGNING_SECRET is unset in production
+  // (see the doc comment above requireAdmin). These tests mutate NODE_ENV
+  // via vi.stubEnv/vi.unstubAllEnvs, rather than passing an env object the
+  // way session.test.ts does for getSessionSecret itself, because
+  // requireAdmin calls getSessionSecret() with no arguments and so always
+  // reads process.env — there is no injection seam here to use instead. (A
+  // plain `process.env.NODE_ENV = ...` doesn't typecheck in this project:
+  // @types/node's ProcessEnv marks NODE_ENV readonly. vi.stubEnv sidesteps
+  // that, and vi.unstubAllEnvs restores exactly what was there before.)
+  describe("when SESSION_SIGNING_SECRET is unset in production", () => {
+    beforeEach(() => {
+      vi.stubEnv("NODE_ENV", "production");
+      delete process.env.SESSION_SIGNING_SECRET; // outer beforeEach sets this; undo it here
+    });
+
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    it("throws, rather than returning null, when ADMIN_EMAILS is unset", async () => {
+      // ADMIN_EMAILS deliberately left unset (the outer beforeEach already
+      // deletes it). This is the ordering fix under test: getSessionSecret()
+      // must run before the allowlist's size===0 short-circuit, or a
+      // misconfigured production deploy with no admin roster configured
+      // would return null (a 404) here instead of throwing (a 500) - the
+      // one case that used to slip through.
+      await expect(requireAdmin(ctx.db)).rejects.toThrow(/SESSION_SIGNING_SECRET/);
+    });
+
+    it("throws the same way when ADMIN_EMAILS IS set", async () => {
+      process.env.ADMIN_EMAILS = "admin@example.com";
+
+      await expect(requireAdmin(ctx.db)).rejects.toThrow(/SESSION_SIGNING_SECRET/);
+    });
+  });
+
+  describe("when SESSION_SIGNING_SECRET is set in production", () => {
+    beforeEach(() => {
+      vi.stubEnv("NODE_ENV", "production");
+      // SESSION_SIGNING_SECRET stays set to SECRET from the outer beforeEach.
+    });
+
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    it("still fails closed (returns null, does not throw) exactly as outside production", async () => {
+      const { sessionId } = await seedClaimedUser("admin@example.com");
+      // ADMIN_EMAILS deliberately left unset.
+      useCookies(createCookieStore({ pf_session: signSession(sessionId, SECRET) }));
+
+      await expect(requireAdmin(ctx.db)).resolves.toBeNull();
+    });
+  });
 });

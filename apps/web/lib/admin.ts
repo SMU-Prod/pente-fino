@@ -44,16 +44,19 @@ export function parseAdminEmails(raw: string | undefined): Set<string> {
  * make (d) true. Only whoever can set environment variables on the
  * deployment can grant or revoke admin status.
  *
- * **Fails closed, in every direction, with no exception.** With
- * `ADMIN_EMAILS` unset or empty, this returns `null` for absolutely
+ * **Fails closed, with no exception, for every *authorization* outcome.**
+ * With `ADMIN_EMAILS` unset or empty, this returns `null` for absolutely
  * everyone, including a real, logged-in, otherwise-legitimate user — there
  * is no "first user becomes admin" fallback, no `NODE_ENV !== "production"`
- * bypass, and no localhost exemption. Every failure above — no cookie, a
- * wrongly-signed cookie, an unclaimed session, an unlisted e-mail, a
- * soft-deleted account, or no roster configured at all — returns the exact
- * same `null`. The caller can never distinguish which one occurred, on
- * purpose: nothing here should ever tempt a caller into treating one kind of
- * rejection as safer to relax than another.
+ * bypass, and no localhost exemption. Every authorization failure above — no
+ * cookie, a wrongly-signed cookie, an unclaimed session, an unlisted
+ * e-mail, a soft-deleted account, or no roster configured at all — returns
+ * the exact same `null`. The caller can never distinguish which one
+ * occurred, on purpose: nothing here should ever tempt a caller into
+ * treating one kind of rejection as safer to relax than another. The one
+ * thing that is not an authorization outcome — `getSessionSecret()` refusing
+ * to run at all, discussed below — is this function's sole, deliberate
+ * exception to that rule.
  *
  * **What this does not protect against**, stated plainly rather than
  * reassuringly:
@@ -77,18 +80,26 @@ export function parseAdminEmails(raw: string | undefined): Set<string> {
  * `getSessionSecret()` is the one call in here that can throw instead of
  * folding into this function's `null`-only contract, and that is
  * deliberate: it throws only when `SESSION_SIGNING_SECRET` is unset in
- * production (see its own doc comment in `./session.ts`), which is a
- * boot-time misconfiguration, not a per-request authorization outcome.
- * Every other route in this app (`apps/web/app/api/cases/route.ts`) lets
- * that same throw surface rather than swallowing it, and this function
- * follows that precedent instead of quietly downgrading a missing secret in
- * production to an ordinary "not an admin" rejection.
+ * production (see its own doc comment in `./session.ts`), which isn't a
+ * per-request authorization outcome at all — it's a deploy that cannot
+ * verify the signature on *any* cookie, admin or not. It is called first,
+ * before the allowlist is even read, so that this throw looks identical
+ * whether or not `ADMIN_EMAILS` is configured; the ordering exists
+ * specifically so a misconfigured production deploy can't be probed for
+ * "does this deployment even have an admin roster" by comparing a 500
+ * against the 404 an absent roster would otherwise produce here. And it is
+ * deliberately loud rather than folded into `null`: every other
+ * session-consuming route in this app (`apps/web/app/api/cases/route.ts`,
+ * `apps/web/app/caso/[id]/page.tsx`) already lets that same throw surface,
+ * so this function follows that precedent instead of quietly downgrading a
+ * missing secret in production to an ordinary "not an admin" rejection.
  */
 export async function requireAdmin(db: Database): Promise<AdminActor | null> {
+  const secret = getSessionSecret();
+
   const allowlist = parseAdminEmails(process.env.ADMIN_EMAILS);
   if (allowlist.size === 0) return null;
 
-  const secret = getSessionSecret();
   const cookie = (await cookies()).get(SESSION_COOKIE)?.value;
   const sessionId = cookie ? readSession(cookie, secret) : null;
   if (!sessionId) return null;
