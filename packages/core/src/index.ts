@@ -34,6 +34,20 @@ export { runRules, type ActiveRule, type RuleEngineInput } from "./rules/engine.
 export {
   assertSafePattern, compileSafePattern, UnsafePatternError,
 } from "./rules/evaluators/safe-regex.js";
+// INV-006's vocabulary, moved here (Task 1, E11) from a test file that could
+// only ever catch a seeded rule, never one an admin types into the panel.
+// Exported so `validateRuleDraft` below is not the only production caller
+// able to reach it — `packages/db`'s own invariant spec imports these same
+// three names instead of keeping a second, driftable copy.
+export { findSensitiveTerm, stringsIn, SENSITIVE_VOCABULARY } from "./rules/sensitive.js";
+// The pure-function gate every admin-authored `rules` row passes through
+// before it becomes an INSERT (RF-301). Exported so later E11 tasks' write
+// path can call it from `packages/db` without reimplementing any of its
+// checks.
+export {
+  validateRuleDraft,
+  type RuleDraftInput, type RuleDraftProblem, type RuleDraftValidation,
+} from "./rules/draft.js";
 export { TARIFF_FLAGS, type TariffFlag, type ReferenceTariff, type ReferenceFlag } from "./rules/references.js";
 export {
   nextStage, CASE_OUTCOMES, STAGE_EVENT_TYPES,
