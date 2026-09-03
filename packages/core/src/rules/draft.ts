@@ -1,7 +1,7 @@
 import type { Category } from "../invoice/canonical.js";
 import { assertSafePattern, UnsafePatternError } from "./evaluators/safe-regex.js";
 import { findSensitiveTerm, stringsIn } from "./sensitive.js";
-import { LEGAL_REF_EFFECTS, type LegalRef, type RuleKind, type RuleSpec } from "./spec.js";
+import { LEGAL_REF_EFFECTS, RULE_KINDS, type LegalRef, type RuleKind, type RuleSpec } from "./spec.js";
 
 export type RuleDraftInput = {
   slug: string;
@@ -96,6 +96,16 @@ function isOneOf<T extends string>(value: unknown, options: readonly T[]): value
  * is safe to hand them to `assertSafePattern` — a non-string or missing
  * `match` must never reach it (see that function's `source.length` access),
  * so this check has to run, and be consulted, before check 6 does.
+ *
+ * The `switch` below has a `default` case for exactly the reason the block
+ * comment above it exists: `spec.kind` is typed as one of `RuleSpec`'s seven
+ * literals, but the route's edge schema (`z.object({ kind: z.string()
+ * }).passthrough()`) accepts *any* string there. Without a `default`, an
+ * eighth value falls through every `case`, this function implicitly returns
+ * `undefined`, and `validateRuleDraft`'s `const { matchOk, notMatchOk } =
+ * validateSpecStructure(...)` throws a `TypeError` instead of collecting a
+ * `RuleDraftProblem` — the exact crash this whole function exists to
+ * prevent, just on an eighth `kind` instead of a malformed seventh one.
  */
 function validateSpecStructure(spec: RuleSpec, problems: RuleDraftProblem[]): { matchOk: boolean; notMatchOk: boolean } {
   switch (spec.kind) {
@@ -274,6 +284,25 @@ function validateSpecStructure(spec: RuleSpec, problems: RuleDraftProblem[]): { 
         });
       }
       return { matchOk: true, notMatchOk: true };
+    }
+
+    default: {
+      // At the type level every literal `RuleSpec["kind"]` declares was just
+      // handled above, so `spec` is narrowed to `never` here. But `spec`'s
+      // real callers hand it data cast from a loosely-parsed HTTP body (this
+      // function's own header comment) — `spec.kind` at runtime can be any
+      // string the request carried, including one none of the seven `case`s
+      // above matched. Reading it back through `unknown` is what lets the
+      // message name the actual bogus value instead of just saying "wrong".
+      const unknownKind = (spec as unknown as { kind: unknown }).kind;
+      problems.push({
+        field: "spec.kind",
+        code: "spec_kind_unknown",
+        message:
+          `O campo "spec.kind" tem um valor desconhecido (${JSON.stringify(unknownKind)}); ` +
+          `os tipos aceitos são: ${RULE_KINDS.map((kind) => `"${kind}"`).join(", ")}.`,
+      });
+      return { matchOk: false, notMatchOk: false };
     }
   }
 }

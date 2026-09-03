@@ -299,6 +299,35 @@ describe("POST /api/admin/rules", () => {
     );
     expect(await draftRuleRow(DRAFT_BODY.slug)).toBeUndefined();
   });
+
+  // Regression: `validateSpecStructure` (packages/core/src/rules/draft.ts)
+  // used to `switch (spec.kind)` with no `default`. The route's edge schema
+  // only checks `spec.kind` is *a* string (`z.object({ kind: z.string()
+  // }).passthrough()`), so a value outside `RuleSpec`'s seven kinds reached
+  // that switch, fell through every case, and the function implicitly
+  // returned `undefined` — `validateRuleDraft` then threw destructuring it,
+  // which this route's `catch` swallowed into the generic `not_found` used
+  // for every unrelated 404, not the 422 `rule_invalid` this is actually a
+  // case of. This body's `kind: "pattern"` is a valid RULE_KINDS value —
+  // only `spec.kind` is bogus — so it clears the route's `Body` zod schema
+  // and reaches `validateRuleDraft`.
+  it("422s (rule_invalid) on an unknown spec.kind, not the generic not_found, and creates no rule", async () => {
+    useCookies(adminCookie());
+    const res = await createRule(
+      postRequest("http://localhost/api/admin/rules", {
+        ...DRAFT_BODY,
+        kind: "pattern",
+        spec: { kind: "totally-bogus-kind" },
+      }),
+    );
+    expect(res.status).toBe(422);
+    const body = await res.json();
+    expect(body.error.code).toBe("rule_invalid");
+    expect(body.error.details).toEqual(
+      expect.arrayContaining([expect.objectContaining({ field: "spec.kind", code: "spec_kind_unknown" })]),
+    );
+    expect(await draftRuleRow(DRAFT_BODY.slug)).toBeUndefined();
+  });
 });
 
 describe("POST /api/admin/rules/:id/activate", () => {

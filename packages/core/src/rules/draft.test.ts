@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { validateRuleDraft, type RuleDraftInput } from "./draft.js";
-import type { LegalRef, RuleSpec } from "./spec.js";
+import type { LegalRef, RuleKind, RuleSpec } from "./spec.js";
 
 const VALID_PATTERN_DRAFT: RuleDraftInput = {
   slug: "gasto-recorrente-teste",
@@ -302,6 +302,58 @@ describe("validateRuleDraft: check 5 — spec structural validation per kind", (
     );
     expect(result.problems).toContainEqual(
       expect.objectContaining({ field: "spec.reason", code: "spec_reason_required" }),
+    );
+  });
+});
+
+describe("validateRuleDraft: an unknown kind — no `default` in validateSpecStructure's switch", () => {
+  // Reproduces the reviewer's exact repro: `kind` is a valid RuleKind
+  // ("pattern") but `spec.kind` is a string no `RuleSpec` variant declares.
+  // Before this fix, `validateSpecStructure`'s switch had no `default`,
+  // fell through every `case`, and implicitly returned `undefined` —
+  // `validateRuleDraft`'s `const { matchOk, notMatchOk } =
+  // validateSpecStructure(...)` then threw a `TypeError` trying to
+  // destructure it. A test that only checked `result.ok === false` would
+  // also pass if the call threw and `result` was never assigned — wrapping
+  // the call itself in `expect(...).not.toThrow()` is what forces a
+  // regression here to fail the test, not silently skip the assertions
+  // below it.
+  it("rejects an unknown spec.kind without throwing, and reports which value was unknown", () => {
+    let result: ReturnType<typeof validateRuleDraft> | undefined;
+    expect(() => {
+      result = validateRuleDraft({
+        ...VALID_PATTERN_DRAFT,
+        spec: { kind: "totally-bogus-kind" } as unknown as RuleSpec,
+      });
+    }).not.toThrow();
+    expect(result?.ok).toBe(false);
+    if (!result || result.ok) throw new Error("unreachable");
+    expect(result.problems).toContainEqual(
+      expect.objectContaining({ field: "spec.kind", code: "spec_kind_unknown" }),
+    );
+  });
+
+  // The mirror case: `input.kind` itself (not just `spec.kind`) outside
+  // `RULE_KINDS`. `input.kind` and `spec.kind` are set to the *same* bogus
+  // value on purpose — if they disagreed, check 2's `kind_spec_mismatch`
+  // would already report a problem regardless of whether the switch had a
+  // `default`, and this test would prove nothing about the switch itself.
+  // With them equal, the only thing standing between this call and the same
+  // `TypeError` is `validateSpecStructure`'s `default` case.
+  it("rejects an unknown input.kind (agreeing with an equally-unknown spec.kind) without throwing, and does not also report a spurious kind_spec_mismatch", () => {
+    let result: ReturnType<typeof validateRuleDraft> | undefined;
+    expect(() => {
+      result = validateRuleDraft({
+        ...VALID_PATTERN_DRAFT,
+        kind: "totally-bogus-kind" as unknown as RuleKind,
+        spec: { kind: "totally-bogus-kind" } as unknown as RuleSpec,
+      });
+    }).not.toThrow();
+    expect(result?.ok).toBe(false);
+    if (!result || result.ok) throw new Error("unreachable");
+    expect(result.problems.some((p) => p.code === "kind_spec_mismatch")).toBe(false);
+    expect(result.problems).toContainEqual(
+      expect.objectContaining({ field: "spec.kind", code: "spec_kind_unknown" }),
     );
   });
 });
