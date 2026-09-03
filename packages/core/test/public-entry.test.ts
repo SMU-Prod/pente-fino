@@ -42,6 +42,8 @@ describe("the public entry point", () => {
       "PROTOCOL_WINDOW_DAYS",
       "TELECOM_PLAYBOOK_V1",
       "pairInvoiceItems",
+      "trigramSimilarity",
+      "TRIGRAM_THRESHOLD",
       "extractionQuality",
       "VISION_THRESHOLD",
       "detectIssuer",

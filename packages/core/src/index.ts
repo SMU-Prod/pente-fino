@@ -59,6 +59,9 @@ export { PROTOCOL_WINDOW_DAYS } from "./cases/next-stage.table.js";
 // writes `@pentefino/ai`'s versioned prompt constants into `prompts`.
 export { TELECOM_PLAYBOOK_V1 } from "./cases/telecom-playbook.js";
 export { pairInvoiceItems, type InvoiceDiff, type PairedItem } from "./diff/index.js";
+// RF-200's threshold constant: Task 2's outcome logic and the diff job
+// need it too, and neither may retype the PRD's 0.8 as a fresh literal.
+export { trigramSimilarity, TRIGRAM_THRESHOLD } from "./diff/trigram.js";
 export {
   extractionQuality, VISION_THRESHOLD,
   type QualityScore, type Anchor,
